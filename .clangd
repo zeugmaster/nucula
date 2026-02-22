@@ -1,0 +1,17 @@
+CompileFlags:
+  CompilationDatabase: build/
+  Remove:
+    - -fno-shrink-wrap
+    - -fstrict-volatile-bitfields
+    - -fno-tree-switch-conversion
+    - -march=*
+    - -mabi=*
+    - -mno-*
+    - -fno-jump-tables
+    - -fno-tree-loop-distribute-patterns
+  Compiler: clang
+
+Diagnostics:
+  UnusedIncludes: None
+  Suppress:
+    - drv_unknown_argument

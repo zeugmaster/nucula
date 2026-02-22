@@ -1,0 +1,16 @@
+{
+    // Disable Microsoft C/C++ IntelliSense (conflicts with clangd)
+    "C_Cpp.intelliSenseEngine": "disabled",
+    "C_Cpp.autocomplete": "disabled",
+    "C_Cpp.errorSquiggles": "disabled",
+    
+    // Use clangd for IntelliSense
+    "clangd.path": "/usr/bin/clangd",
+    "clangd.arguments": [
+        "--compile-commands-dir=${workspaceFolder}/build",
+        "--query-driver=/Users/dariolass/.espressif/tools/riscv32-esp-elf/esp-14.2.0_20241119/riscv32-esp-elf/bin/riscv32-esp-elf-*",
+        "--background-index",
+        "--clang-tidy",
+        "--header-insertion=iwyu"
+    ]
+}
