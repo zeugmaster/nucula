@@ -3,6 +3,7 @@
 #include "secp256k1.h"
 #include "crypto.h"
 #include "crypto_test.h"
+#include "wifi.h"
 #include "cashu.hpp"
 
 #define TAG "nucula"
@@ -11,6 +12,10 @@ extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "nucula cashu wallet");
 
+    if (wifi_init() != ESP_OK) {
+        ESP_LOGE(TAG, "wifi failed, continuing offline");
+    }
+
     secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
     if (!ctx) {
         ESP_LOGE(TAG, "failed to create secp256k1 context");
@@ -18,6 +23,8 @@ extern "C" void app_main(void)
     }
 
     crypto_run_tests(ctx);
+
+    ESP_LOGI(TAG, "online: %s", wifi_is_connected() ? "yes" : "no");
 
     secp256k1_context_destroy(ctx);
 }

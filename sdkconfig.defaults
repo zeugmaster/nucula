@@ -1,1 +1,13 @@
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+
+# Size optimization: -Os instead of -Og saves ~100-150KB
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# We only need STA mode, disable SoftAP (~30KB)
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
+
+# Disable IPv6 since mints are IPv4 (~20KB)
+CONFIG_LWIP_IPV6=n
+
+# Reduce max sockets (default 10 is overkill)
+CONFIG_LWIP_MAX_SOCKETS=4
