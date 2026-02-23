@@ -5,6 +5,10 @@
 #include <stddef.h>
 #include "secp256k1.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * Hash a message to a point on the secp256k1 curve.
  * Implements the Cashu hash_to_curve function (NUT-00).
@@ -130,5 +134,9 @@ int cashu_pubkey_serialize(const secp256k1_context *ctx,
 int cashu_pubkey_parse(const secp256k1_context *ctx,
                        secp256k1_pubkey *out,
                        const unsigned char input[33]);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

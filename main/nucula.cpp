@@ -1,11 +1,13 @@
-#include <stdio.h>
+#include <cstdio>
 #include <esp_log.h>
 #include "secp256k1.h"
+#include "crypto.h"
 #include "crypto_test.h"
+#include "cashu.hpp"
 
 #define TAG "nucula"
 
-void app_main(void)
+extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "nucula cashu wallet");
 
@@ -16,7 +18,6 @@ void app_main(void)
     }
 
     crypto_run_tests(ctx);
-    crypto_run_benchmark(ctx);
 
     secp256k1_context_destroy(ctx);
 }

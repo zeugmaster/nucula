@@ -3,7 +3,15 @@
 
 #include "secp256k1.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int crypto_run_tests(const secp256k1_context *ctx);
 void crypto_run_benchmark(const secp256k1_context *ctx);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
