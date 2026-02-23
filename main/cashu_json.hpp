@@ -85,6 +85,12 @@ bool deserialize(const char* json_str, T& out) {
 bool from_json_keyset_response(const cJSON* j, std::vector<Keyset>& out);
 bool from_json_keyset_info_response(const cJSON* j, std::vector<KeysetInfo>& out);
 
+// Blob serialization for NVS persistence
+std::string proofs_to_json(const std::vector<Proof>& proofs);
+bool proofs_from_json(const char* json_str, std::vector<Proof>& out);
+std::string keysets_to_json(const std::vector<Keyset>& keysets);
+bool keysets_from_json(const char* json_str, std::vector<Keyset>& out);
+
 // V3 token serialization: Token <-> "cashuA..." string
 std::string serialize_token_v3(const Token& token);
 bool deserialize_token_v3(const char* token_str, Token& out);

@@ -6,16 +6,24 @@
 #include <string>
 #include <vector>
 
+static const int MAX_MINTS = 3;
+
 namespace cashu {
 
 class Wallet {
 public:
-    Wallet(const std::string& mint_url, secp256k1_context* ctx);
+    Wallet(const std::string& mint_url, secp256k1_context* ctx, int nvs_slot = 0);
 
     bool load_keysets();
+    bool load_from_nvs();
+    bool save_mint_url();
+    bool erase_nvs();
     const Keyset* active_keyset(const std::string& unit = "sat") const;
+    const Keyset* keyset_for_id(const std::string& id) const;
     int calculate_fee(const std::vector<Proof>& inputs) const;
     static std::vector<int> split_amount(int amount);
+
+    static std::string load_mint_url_for_slot(int slot);
 
     struct BlindingData {
         std::vector<BlindedMessage> outputs;
@@ -42,12 +50,20 @@ public:
     const std::string& mint_url() const { return mint_url_; }
     const std::vector<Keyset>& keysets() const { return keysets_; }
     const std::vector<Proof>& proofs() const { return proofs_; }
+    int nvs_slot() const { return nvs_slot_; }
 
 private:
     std::string mint_url_;
     std::vector<Keyset> keysets_;
     std::vector<Proof> proofs_;
     secp256k1_context* ctx_;
+    int nvs_slot_;
+
+    bool save_proofs();
+    bool load_proofs();
+    bool save_keysets();
+    bool load_keysets_nvs();
+    void merge_keysets(const std::vector<Keyset>& fresh);
 };
 
 } // namespace cashu

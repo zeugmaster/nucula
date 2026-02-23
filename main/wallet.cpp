@@ -8,13 +8,225 @@
 #include <cstring>
 #include <esp_log.h>
 #include <esp_random.h>
+#include <nvs_flash.h>
+#include <nvs.h>
 
 #define TAG "wallet"
 
+static const char* NVS_NS = "wallet";
+
+static void slot_key(char* buf, size_t sz, const char* base, int slot)
+{
+    snprintf(buf, sz, "%s_%d", base, slot);
+}
+
 namespace cashu {
 
-Wallet::Wallet(const std::string& mint_url, secp256k1_context* ctx)
-    : mint_url_(mint_url), ctx_(ctx) {}
+Wallet::Wallet(const std::string& mint_url, secp256k1_context* ctx, int nvs_slot)
+    : mint_url_(mint_url), ctx_(ctx), nvs_slot_(nvs_slot) {}
+
+// -------------------------------------------------------------------------
+// NVS persistence
+// -------------------------------------------------------------------------
+
+bool Wallet::save_mint_url()
+{
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &handle) != ESP_OK)
+        return false;
+    char key[16];
+    slot_key(key, sizeof(key), "url", nvs_slot_);
+    esp_err_t err = nvs_set_str(handle, key, mint_url_.c_str());
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+    return err == ESP_OK;
+}
+
+std::string Wallet::load_mint_url_for_slot(int slot)
+{
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NS, NVS_READONLY, &handle) != ESP_OK)
+        return "";
+    char key[16];
+    slot_key(key, sizeof(key), "url", slot);
+    size_t len = 0;
+    if (nvs_get_str(handle, key, nullptr, &len) != ESP_OK || len == 0) {
+        nvs_close(handle);
+        return "";
+    }
+    std::string url(len - 1, '\0');
+    nvs_get_str(handle, key, url.data(), &len);
+    nvs_close(handle);
+    return url;
+}
+
+bool Wallet::erase_nvs()
+{
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &handle) != ESP_OK)
+        return false;
+    char key[16];
+    slot_key(key, sizeof(key), "url", nvs_slot_);
+    nvs_erase_key(handle, key);
+    slot_key(key, sizeof(key), "proofs", nvs_slot_);
+    nvs_erase_key(handle, key);
+    slot_key(key, sizeof(key), "keys", nvs_slot_);
+    nvs_erase_key(handle, key);
+    nvs_commit(handle);
+    nvs_close(handle);
+    ESP_LOGI(TAG, "erased NVS slot %d", nvs_slot_);
+    return true;
+}
+
+bool Wallet::save_proofs()
+{
+    std::string blob = proofs_to_json(proofs_);
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    char key[16];
+    slot_key(key, sizeof(key), "proofs", nvs_slot_);
+    err = nvs_set_blob(handle, key, blob.data(), blob.size());
+    if (err == ESP_OK)
+        err = nvs_commit(handle);
+    nvs_close(handle);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "save_proofs failed: %s", esp_err_to_name(err));
+        return false;
+    }
+    ESP_LOGI(TAG, "[%d] saved %d proofs (%d bytes)",
+             nvs_slot_, (int)proofs_.size(), (int)blob.size());
+    return true;
+}
+
+bool Wallet::load_proofs()
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NS, NVS_READONLY, &handle);
+    if (err != ESP_OK)
+        return false;
+
+    char key[16];
+    slot_key(key, sizeof(key), "proofs", nvs_slot_);
+    size_t required = 0;
+    err = nvs_get_blob(handle, key, nullptr, &required);
+    if (err != ESP_OK || required == 0) {
+        nvs_close(handle);
+        return false;
+    }
+
+    std::string blob(required, '\0');
+    err = nvs_get_blob(handle, key, blob.data(), &required);
+    nvs_close(handle);
+    if (err != ESP_OK)
+        return false;
+
+    std::vector<Proof> loaded;
+    if (!proofs_from_json(blob.c_str(), loaded))
+        return false;
+
+    proofs_ = std::move(loaded);
+    ESP_LOGI(TAG, "[%d] loaded %d proofs from NVS", nvs_slot_, (int)proofs_.size());
+    return true;
+}
+
+bool Wallet::save_keysets()
+{
+    std::string blob = keysets_to_json(keysets_);
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    char key[16];
+    slot_key(key, sizeof(key), "keys", nvs_slot_);
+    err = nvs_set_blob(handle, key, blob.data(), blob.size());
+    if (err == ESP_OK)
+        err = nvs_commit(handle);
+    nvs_close(handle);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "save_keysets failed: %s", esp_err_to_name(err));
+        return false;
+    }
+    ESP_LOGI(TAG, "[%d] saved %d keysets (%d bytes)",
+             nvs_slot_, (int)keysets_.size(), (int)blob.size());
+    return true;
+}
+
+bool Wallet::load_keysets_nvs()
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NS, NVS_READONLY, &handle);
+    if (err != ESP_OK)
+        return false;
+
+    char key[16];
+    slot_key(key, sizeof(key), "keys", nvs_slot_);
+    size_t required = 0;
+    err = nvs_get_blob(handle, key, nullptr, &required);
+    if (err != ESP_OK || required == 0) {
+        nvs_close(handle);
+        return false;
+    }
+
+    std::string blob(required, '\0');
+    err = nvs_get_blob(handle, key, blob.data(), &required);
+    nvs_close(handle);
+    if (err != ESP_OK)
+        return false;
+
+    std::vector<Keyset> loaded;
+    if (!keysets_from_json(blob.c_str(), loaded))
+        return false;
+
+    keysets_ = std::move(loaded);
+    ESP_LOGI(TAG, "[%d] loaded %d keysets from NVS", nvs_slot_, (int)keysets_.size());
+    return true;
+}
+
+void Wallet::merge_keysets(const std::vector<Keyset>& fresh)
+{
+    for (const auto& fk : fresh) {
+        bool found = false;
+        for (auto& existing : keysets_) {
+            if (existing.id == fk.id) {
+                existing.active = fk.active;
+                existing.input_fee_ppk = fk.input_fee_ppk;
+                if (existing.keys.empty())
+                    existing.keys = fk.keys;
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            keysets_.push_back(fk);
+    }
+}
+
+bool Wallet::load_from_nvs()
+{
+    load_proofs();
+    load_keysets_nvs();
+    return !keysets_.empty() || !proofs_.empty();
+}
+
+const Keyset* Wallet::keyset_for_id(const std::string& id) const
+{
+    for (const auto& k : keysets_)
+        if (k.id == id)
+            return &k;
+    return nullptr;
+}
 
 // -------------------------------------------------------------------------
 // Keyset loading
@@ -92,9 +304,9 @@ bool Wallet::load_keysets()
         return false;
     }
 
-    keysets_ = std::move(result);
-    ESP_LOGI(TAG, "loaded %d keyset(s) from %s",
-             (int)keysets_.size(), mint_url_.c_str());
+    merge_keysets(result);
+    ESP_LOGI(TAG, "loaded %d keyset(s) from %s (total %d after merge)",
+             (int)result.size(), mint_url_.c_str(), (int)keysets_.size());
 
     for (const auto& k : keysets_) {
         ESP_LOGI(TAG, "  keyset %s unit=%s active=%d keys=%d fee=%d",
@@ -102,6 +314,7 @@ bool Wallet::load_keysets()
                  (int)k.keys.size(), k.input_fee_ppk);
     }
 
+    save_keysets();
     return true;
 }
 
@@ -408,7 +621,12 @@ bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
     proofs_out.insert(proofs_out.end(), new_proofs.begin(), new_proofs.end());
     proofs_out.insert(proofs_out.end(), change.begin(), change.end());
 
-    // Store in wallet
+    // Strip DLEQ/witness before storing -- only needed during verification
+    for (auto& p : proofs_out) {
+        p.dleq = std::nullopt;
+        p.witness = std::nullopt;
+    }
+
     for (const auto& p : proofs_out)
         proofs_.push_back(p);
 
@@ -417,6 +635,7 @@ bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
         total += p.amount;
 
     ESP_LOGI(TAG, "received %d sat (%d proofs)", total, (int)proofs_out.size());
+    save_proofs();
     return true;
 }
 

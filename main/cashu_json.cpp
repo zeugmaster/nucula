@@ -408,6 +408,44 @@ bool from_json_keyset_info_response(const cJSON *j, std::vector<KeysetInfo> &out
 }
 
 // ---------------------------------------------------------------------------
+// Blob serialization for NVS persistence
+// ---------------------------------------------------------------------------
+
+std::string proofs_to_json(const std::vector<Proof>& proofs) {
+    cJSON* arr = to_json_array(proofs);
+    char* str = cJSON_PrintUnformatted(arr);
+    std::string result(str);
+    cJSON_free(str);
+    cJSON_Delete(arr);
+    return result;
+}
+
+bool proofs_from_json(const char* json_str, std::vector<Proof>& out) {
+    cJSON* arr = cJSON_Parse(json_str);
+    if (!arr) return false;
+    bool ok = from_json_array(arr, out);
+    cJSON_Delete(arr);
+    return ok;
+}
+
+std::string keysets_to_json(const std::vector<Keyset>& keysets) {
+    cJSON* arr = to_json_array(keysets);
+    char* str = cJSON_PrintUnformatted(arr);
+    std::string result(str);
+    cJSON_free(str);
+    cJSON_Delete(arr);
+    return result;
+}
+
+bool keysets_from_json(const char* json_str, std::vector<Keyset>& out) {
+    cJSON* arr = cJSON_Parse(json_str);
+    if (!arr) return false;
+    bool ok = from_json_array(arr, out);
+    cJSON_Delete(arr);
+    return ok;
+}
+
+// ---------------------------------------------------------------------------
 // V3 token serialization
 // ---------------------------------------------------------------------------
 
