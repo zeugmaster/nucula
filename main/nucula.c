@@ -16,6 +16,7 @@ void app_main(void)
     }
 
     crypto_run_tests(ctx);
+    crypto_run_benchmark(ctx);
 
     secp256k1_context_destroy(ctx);
 }

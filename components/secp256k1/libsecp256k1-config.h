@@ -1,7 +1,12 @@
 #ifndef LIBSECP256K1_CONFIG_H
 #define LIBSECP256K1_CONFIG_H
 
+#ifndef ECMULT_WINDOW_SIZE
 #define ECMULT_WINDOW_SIZE 4
+#endif
+
+#ifndef ECMULT_GEN_PREC_BITS
 #define ECMULT_GEN_PREC_BITS 2
+#endif
 
 #endif

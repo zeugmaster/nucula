@@ -3,6 +3,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <esp_log.h>
+#include <esp_timer.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #define TAG "crypto_test"
 
@@ -245,4 +248,44 @@ int crypto_run_tests(const secp256k1_context *ctx)
         ESP_LOGE(TAG, "some crypto tests FAILED");
 
     return pass;
+}
+
+void crypto_run_benchmark(const secp256k1_context *ctx)
+{
+    #define BENCH_N 1000
+
+    ESP_LOGI(TAG, "benchmarking %d blind messages...", BENCH_N);
+
+    unsigned char secret[32] = {0};
+    unsigned char r[32] = {0};
+    r[31] = 1;
+    secp256k1_pubkey B_;
+
+    int64_t start = esp_timer_get_time();
+
+    for (int i = 0; i < BENCH_N; i++) {
+        secret[0] = (unsigned char)(i & 0xff);
+        secret[1] = (unsigned char)((i >> 8) & 0xff);
+        r[0] = (unsigned char)((i + 77) & 0xff);
+        r[1] = (unsigned char)(((i + 77) >> 8) & 0xff);
+
+        if (!cashu_blind_message(ctx, &B_, secret, 32, r)) {
+            ESP_LOGE(TAG, "benchmark: blind_message failed at i=%d", i);
+            return;
+        }
+
+        if (i % 100 == 99)
+            vTaskDelay(1);
+    }
+
+    int64_t elapsed_us = esp_timer_get_time() - start;
+    int64_t per_op_us = elapsed_us / BENCH_N;
+
+    ESP_LOGI(TAG, "blind_message x%d: %lld ms total, %lld us/op (~%lld ops/sec)",
+             BENCH_N,
+             elapsed_us / 1000,
+             per_op_us,
+             per_op_us > 0 ? (int64_t)1000000 / per_op_us : 0);
+
+    #undef BENCH_N
 }
