@@ -71,7 +71,7 @@ static void test_http_connectivity()
     }
 
     http_response_t resp = {};
-    esp_err_t err = http_get("https://mint.minibits.cash/Bitcoin/v1/info", &resp);
+    esp_err_t err = http_get("https://testmint.macadamia.cash/v1/info", &resp);
     if (err == ESP_OK && resp.status == 200 && resp.body) {
         ESP_LOGI(TAG, "http test: OK (status %d, %zu bytes)", resp.status, resp.body_len);
     } else {
