@@ -1,83 +1,151 @@
 #include <cstdio>
 #include <cstring>
 #include <esp_log.h>
+#include <esp_system.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include "secp256k1.h"
 #include "crypto.h"
 #include "crypto_test.h"
 #include "wifi.h"
-#include "http.h"
 #include "cashu.hpp"
 #include "cashu_json.hpp"
 #include "wallet.hpp"
+#include "console.h"
 
 #define TAG "nucula"
 
-// -------------------------------------------------------------------------
-// Paste your cashuA... token here for the receive test
-// -------------------------------------------------------------------------
-static const char *TEST_TOKEN =
-    "cashuAeyJtZW1vIjoidGVzdCIsInRva2VuIjpbeyJtaW50IjoiaHR0cHM6XC9cL3Rlc3RtaW50Lm1hY2FkYW1pYS5jYXNoIiwicHJvb2ZzIjpbeyJzZWNyZXQiOiJjNTU2MWRkNmRlNDM0OTc2MjM3ZTcyNDBkYTdiNDA2NjYwMWYyOWQ2MmZmNTNjNTBhOWQ0NDViYmFjNGFjMTJhIiwiQyI6IjAzN2I3YjgwYjM5YzlkMGRiNWZiOTEyMmMwMjYzZDdiZjliMzA3YTlkMzE1MzViMDlmMWNkYjY5ZjA4YmRmMDZmNCIsImlkIjoiMDBlYTBkNDE2NjQ0MTI4YyIsImFtb3VudCI6MTZ9LHsic2VjcmV0IjoiZjY3MWNmOTQxODVmZjA4NTA1ODk2Y2FmN2MxOTQ4MjU0M2I1NDFiZGVkNGZiM2JkNmY2NmRmZmNiM2QxY2U5NCIsIkMiOiIwM2IxMTc0NjFhZGMwYjUwMzNjYzNiNzgyZmY2YjQxNzk4NDYwNmI1OWIxN2JmOTk5NDNmYTQ5NWUyYTMxNmUzNDgiLCJpZCI6IjAwZWEwZDQxNjY0NDEyOGMiLCJhbW91bnQiOjF9LHsic2VjcmV0IjoiOTFiYmVmNGU5N2Y2MzJjNDAyZTJhZjc3MTlhOTNkMjRhMTJhZDcyOWNmNGE2MzVjMzI4ODMxNTQwMGZjZjZkMyIsIkMiOiIwMjEwNDFmMDA4YzEzMjZiMTJmNWQ5YzNhYmU4MWY2ZDQxZmFiODEwNzAxYjRmODNkNTRlNzlmYjAxM2QxMWQ1MzAiLCJpZCI6IjAwZWEwZDQxNjY0NDEyOGMiLCJhbW91bnQiOjJ9LHsic2VjcmV0IjoiNzg1ODRkNjQ0NDc2ZjBhZDA4MzBhNWFkOTIzOWZlYjk4M2MzYzQ0Zjg4ODJjM2ZhOTJmZjI5MDY1OGI1MWYwNSIsIkMiOiIwMzgyMmVlMzM5YWIyYzg2OGU0MTZjMjI5MjZlNzQxZDk1NDIyNDFhYjY1MTc2NDI5YmZjYWQ4MmUxMTM5Y2RhYmIiLCJpZCI6IjAwZWEwZDQxNjY0NDEyOGMiLCJhbW91bnQiOjJ9XX1dLCJ1bml0Ijoic2F0In0=";
+static secp256k1_context *g_ctx = nullptr;
+static cashu::Wallet *g_wallet = nullptr;
 
-static void test_receive(secp256k1_context* ctx)
+// -------------------------------------------------------------------------
+// Console commands
+// -------------------------------------------------------------------------
+
+static void cmd_status(const char *arg)
 {
+    (void)arg;
+    console_printf("wifi:    %s\r\n", wifi_is_connected() ? "connected" : "disconnected");
+
+    if (g_wallet) {
+        int n_keysets = (int)g_wallet->keysets().size();
+        const cashu::Keyset *ks = g_wallet->active_keyset();
+        console_printf("mint:    %s\r\n", g_wallet->mint_url().c_str());
+        console_printf("keysets: %d\r\n", n_keysets);
+        if (ks)
+            console_printf("active:  %s (%d keys)\r\n",
+                           ks->id.c_str(), (int)ks->keys.size());
+
+        int balance = 0;
+        for (const auto &p : g_wallet->proofs())
+            balance += p.amount;
+        console_printf("balance: %d sat (%d proofs)\r\n",
+                       balance, (int)g_wallet->proofs().size());
+    } else {
+        nucula_console_write("wallet:  not initialized\r\n");
+    }
+}
+
+static void cmd_balance(const char *arg)
+{
+    (void)arg;
+    if (!g_wallet) {
+        nucula_console_write("wallet not initialized\r\n");
+        return;
+    }
+
+    int total = 0;
+    for (const auto &p : g_wallet->proofs()) {
+        console_printf("  %d sat  (keyset %s)\r\n", p.amount, p.id.c_str());
+        total += p.amount;
+    }
+    console_printf("total: %d sat\r\n", total);
+}
+
+static void cmd_receive(const char *arg)
+{
+    if (!arg || strlen(arg) == 0) {
+        nucula_console_write("usage: receive <cashuA...token>\r\n");
+        return;
+    }
     if (!wifi_is_connected()) {
-        ESP_LOGW(TAG, "receive test: skipped (offline)");
+        nucula_console_write("error: not connected to wifi\r\n");
         return;
     }
 
     cashu::Token token;
-    if (!cashu::deserialize_token_v3(TEST_TOKEN, token)) {
-        ESP_LOGE(TAG, "receive test: failed to decode token");
+    if (!cashu::deserialize_token_v3(arg, token)) {
+        nucula_console_write("error: failed to decode token\r\n");
         return;
     }
 
     int input_total = 0;
-    for (const auto& p : token.proofs)
+    for (const auto &p : token.proofs)
         input_total += p.amount;
-    ESP_LOGI(TAG, "receive test: decoded token from %s (%d proofs, %d sat)",
-             token.mint.c_str(), (int)token.proofs.size(), input_total);
+    console_printf("token: %d sat in %d proofs from %s\r\n",
+                   input_total, (int)token.proofs.size(), token.mint.c_str());
 
-    cashu::Wallet wallet(token.mint, ctx);
-
-    if (!wallet.load_keysets()) {
-        ESP_LOGE(TAG, "receive test: failed to load keysets");
-        return;
+    if (!g_wallet || g_wallet->mint_url() != token.mint) {
+        nucula_console_write("loading keysets for token mint...\r\n");
+        delete g_wallet;
+        g_wallet = new cashu::Wallet(token.mint, g_ctx);
+        if (!g_wallet->load_keysets()) {
+            nucula_console_write("error: failed to load keysets\r\n");
+            return;
+        }
     }
 
+    nucula_console_write("swapping...\r\n");
     std::vector<cashu::Proof> received;
-    if (!wallet.receive(token, received)) {
-        ESP_LOGE(TAG, "receive test: swap failed");
+    if (!g_wallet->receive(token, received)) {
+        nucula_console_write("error: receive failed\r\n");
         return;
     }
 
     int output_total = 0;
-    for (const auto& p : received) {
+    for (const auto &p : received)
         output_total += p.amount;
-        ESP_LOGI(TAG, "  proof: %d sat (keyset %s)",
-                 p.amount, p.id.c_str());
-    }
-    ESP_LOGI(TAG, "receive test: SUCCESS - received %d sat in %d proofs",
-             output_total, (int)received.size());
+    console_printf("received %d sat in %d proofs\r\n",
+                   output_total, (int)received.size());
 }
+
+static void cmd_reboot(const char *arg)
+{
+    (void)arg;
+    nucula_console_write("rebooting...\r\n");
+    vTaskDelay(pdMS_TO_TICKS(100));
+    esp_restart();
+}
+
+// -------------------------------------------------------------------------
+// Main
+// -------------------------------------------------------------------------
 
 extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "nucula cashu wallet");
 
-    if (wifi_init() != ESP_OK) {
+    if (wifi_init() != ESP_OK)
         ESP_LOGE(TAG, "wifi failed, continuing offline");
-    }
 
-    secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
-    if (!ctx) {
+    g_ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
+    if (!g_ctx) {
         ESP_LOGE(TAG, "failed to create secp256k1 context");
         return;
     }
 
-    crypto_run_tests(ctx);
-    test_receive(ctx);
+    crypto_run_tests(g_ctx);
 
-    ESP_LOGI(TAG, "online: %s", wifi_is_connected() ? "yes" : "no");
+    if (wifi_is_connected()) {
+        g_wallet = new cashu::Wallet("https://testmint.macadamia.cash", g_ctx);
+        if (!g_wallet->load_keysets())
+            ESP_LOGE(TAG, "failed to load keysets");
+    }
 
-    secp256k1_context_destroy(ctx);
+    console_init(NULL);
+    console_register_cmd("status",  cmd_status,  "show system and wallet status");
+    console_register_cmd("balance", cmd_balance,  "show wallet balance");
+    console_register_cmd("receive", cmd_receive,  "receive a cashuA token");
+    console_register_cmd("reboot",  cmd_reboot,   "restart the device");
+    console_start();
 }
