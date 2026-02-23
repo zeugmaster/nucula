@@ -81,6 +81,10 @@ bool deserialize(const char* json_str, T& out) {
     return ok;
 }
 
+// V3 token serialization: Token <-> "cashuA..." string
+std::string serialize_token_v3(const Token& token);
+bool deserialize_token_v3(const char* token_str, Token& out);
+
 } // namespace cashu
 
 #endif

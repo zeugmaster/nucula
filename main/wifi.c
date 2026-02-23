@@ -9,7 +9,7 @@
 #include "esp_netif.h"
 #include "nvs_flash.h"
 
-#define WIFI_SSID     "Delos Inc."
+#define WIFI_SSID     "Delos Inc. "
 #define WIFI_PASS     "beauty_in_this_world!"
 #define MAX_RETRIES   5
 
