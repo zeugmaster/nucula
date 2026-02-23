@@ -30,6 +30,7 @@ static bool get_bool(const cJSON* obj, const char* key, bool& out) {
     if (!item) return false;
     if (cJSON_IsTrue(item)) { out = true; return true; }
     if (cJSON_IsFalse(item)) { out = false; return true; }
+    if (cJSON_IsNumber(item)) { out = item->valueint != 0; return true; }
     return false;
 }
 
@@ -176,7 +177,7 @@ bool from_json(const cJSON* j, Keyset& out) {
     out.id = id;
     out.unit = unit;
     if (!get_bool(j, "active", out.active))
-        out.active = false;
+        out.active = true;
     if (!get_int(j, "input_fee_ppk", out.input_fee_ppk))
         out.input_fee_ppk = 0;
     out.keys.clear();
@@ -212,7 +213,7 @@ bool from_json(const cJSON* j, KeysetInfo& out) {
     out.id = id;
     out.unit = unit;
     if (!get_bool(j, "active", out.active))
-        out.active = false;
+        out.active = true;
     if (!get_int(j, "input_fee_ppk", out.input_fee_ppk))
         out.input_fee_ppk = 0;
     return true;
@@ -388,6 +389,22 @@ bool from_json(const cJSON* j, Token& out) {
     const char* unit = get_string(j, "unit");
     out.unit = unit ? unit : "sat";
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Keyset list response (GET /v1/keys, GET /v1/keys/{id})
+// ---------------------------------------------------------------------------
+
+bool from_json_keyset_response(const cJSON *j, std::vector<Keyset> &out) {
+    const cJSON *keysets = cJSON_GetObjectItemCaseSensitive(j, "keysets");
+    if (!keysets) return false;
+    return from_json_array(keysets, out);
+}
+
+bool from_json_keyset_info_response(const cJSON *j, std::vector<KeysetInfo> &out) {
+    const cJSON *keysets = cJSON_GetObjectItemCaseSensitive(j, "keysets");
+    if (!keysets) return false;
+    return from_json_array(keysets, out);
 }
 
 // ---------------------------------------------------------------------------

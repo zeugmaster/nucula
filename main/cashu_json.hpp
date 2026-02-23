@@ -81,6 +81,10 @@ bool deserialize(const char* json_str, T& out) {
     return ok;
 }
 
+// Parse the {"keysets": [...]} response from GET /v1/keys or /v1/keysets
+bool from_json_keyset_response(const cJSON* j, std::vector<Keyset>& out);
+bool from_json_keyset_info_response(const cJSON* j, std::vector<KeysetInfo>& out);
+
 // V3 token serialization: Token <-> "cashuA..." string
 std::string serialize_token_v3(const Token& token);
 bool deserialize_token_v3(const char* token_str, Token& out);
