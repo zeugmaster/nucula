@@ -91,6 +91,7 @@ esp_err_t wifi_init(void)
                                            pdMS_TO_TICKS(15000));
 
     if (bits & CONNECTED_BIT) {
+        esp_wifi_set_ps(WIFI_PS_NONE);
         return ESP_OK;
     }
 

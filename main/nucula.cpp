@@ -10,8 +10,10 @@
 #include "wifi.h"
 #include "cashu.hpp"
 #include "cashu_json.hpp"
+#include "cashu_cbor.hpp"
 #include "wallet.hpp"
 #include "console.h"
+#include "display.h"
 
 #define TAG "nucula"
 
@@ -44,6 +46,90 @@ static int wallet_count()
     for (int i = 0; i < MAX_MINTS; i++)
         if (g_wallets[i]) n++;
     return n;
+}
+
+// -------------------------------------------------------------------------
+// Display
+// -------------------------------------------------------------------------
+
+static void display_refresh()
+{
+    int y = 4;
+    display_clear(COLOR_BLACK);
+
+    // Title
+    const char *title = "nucula";
+    int tx = (LCD_W - display_text_width(title, 2)) / 2;
+    display_text(tx, y, title, COLOR_AMBER, COLOR_BLACK, 2);
+    y += 20;
+    display_fill_rect(4, y, LCD_W - 8, 1, COLOR_DGRAY);
+    y += 8;
+
+    // Balance
+    int total_balance = 0;
+    int total_proofs = 0;
+    for (int i = 0; i < MAX_MINTS; i++) {
+        if (!g_wallets[i]) continue;
+        for (const auto &p : g_wallets[i]->proofs())
+            total_balance += p.amount;
+        total_proofs += (int)g_wallets[i]->proofs().size();
+    }
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%d", total_balance);
+    int bx = (LCD_W - display_text_width(buf, 4)) / 2;
+    display_text(bx, y, buf, COLOR_WHITE, COLOR_BLACK, 4);
+    y += 36;
+
+    int ux = (LCD_W - display_text_width("sat", 2)) / 2;
+    display_text(ux, y, "sat", COLOR_LGRAY, COLOR_BLACK, 2);
+    y += 24;
+
+    snprintf(buf, sizeof(buf), "%d proofs", total_proofs);
+    int px = (LCD_W - display_text_width(buf, 1)) / 2;
+    display_text(px, y, buf, COLOR_LGRAY, COLOR_BLACK, 1);
+    y += 16;
+
+    display_fill_rect(4, y, LCD_W - 8, 1, COLOR_DGRAY);
+    y += 8;
+
+    // Mints
+    int count = wallet_count();
+    snprintf(buf, sizeof(buf), "mints: %d/%d", count, MAX_MINTS);
+    display_text(4, y, buf, COLOR_LGRAY, COLOR_BLACK, 1);
+    y += 12;
+
+    for (int i = 0; i < MAX_MINTS; i++) {
+        if (!g_wallets[i]) continue;
+        const char *url = g_wallets[i]->mint_url().c_str();
+        if (strncmp(url, "https://", 8) == 0) url += 8;
+        else if (strncmp(url, "http://", 7) == 0) url += 7;
+
+        char line[30];
+        snprintf(line, sizeof(line), "[%d] %.24s", i, url);
+        display_text(4, y, line, COLOR_CYAN, COLOR_BLACK, 1);
+        y += 10;
+
+        int bal = 0;
+        for (const auto &p : g_wallets[i]->proofs())
+            bal += p.amount;
+        snprintf(line, sizeof(line), "    %d sat", bal);
+        display_text(4, y, line, COLOR_LGRAY, COLOR_BLACK, 1);
+        y += 12;
+    }
+
+    display_fill_rect(4, y, LCD_W - 8, 1, COLOR_DGRAY);
+    y += 8;
+
+    // Status
+    snprintf(buf, sizeof(buf), "wifi: %s",
+             wifi_is_connected() ? "connected" : "offline");
+    display_text(4, y, buf, wifi_is_connected() ? COLOR_GREEN : COLOR_AMBER,
+                 COLOR_BLACK, 1);
+    y += 12;
+
+    snprintf(buf, sizeof(buf), "heap: %lu",
+             (unsigned long)esp_get_free_heap_size());
+    display_text(4, y, buf, COLOR_LGRAY, COLOR_BLACK, 1);
 }
 
 // -------------------------------------------------------------------------
@@ -108,7 +194,7 @@ static void cmd_balance(const char *arg)
 static void cmd_receive(const char *arg)
 {
     if (!arg || strlen(arg) == 0) {
-        nucula_console_write("usage: receive <cashuA...token>\r\n");
+        nucula_console_write("usage: receive <cashu token>\r\n");
         return;
     }
     if (!wifi_is_connected()) {
@@ -117,7 +203,13 @@ static void cmd_receive(const char *arg)
     }
 
     cashu::Token token;
-    if (!cashu::deserialize_token_v3(arg, token)) {
+    bool decoded = false;
+    if (strncmp(arg, "cashuB", 6) == 0)
+        decoded = cashu::deserialize_token_v4(arg, token);
+    else if (strncmp(arg, "cashuA", 6) == 0)
+        decoded = cashu::deserialize_token_v3(arg, token);
+
+    if (!decoded) {
         nucula_console_write("error: failed to decode token\r\n");
         return;
     }
@@ -162,6 +254,7 @@ static void cmd_receive(const char *arg)
         output_total += p.amount;
     console_printf("received %d sat in %d proofs\r\n",
                    output_total, (int)received.size());
+    display_refresh();
 }
 
 static void cmd_mint(const char *arg)
@@ -213,6 +306,7 @@ static void cmd_mint(const char *arg)
         } else {
             nucula_console_write("offline: keysets will load when connected\r\n");
         }
+        display_refresh();
         return;
     }
 
@@ -251,6 +345,7 @@ static void cmd_mint(const char *arg)
         w->erase_nvs();
         delete w;
         g_wallets[slot] = nullptr;
+        display_refresh();
         return;
     }
 
@@ -272,6 +367,8 @@ static void cmd_reboot(const char *arg)
 extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "nucula cashu wallet");
+
+    display_init();
 
     if (wifi_init() != ESP_OK)
         ESP_LOGE(TAG, "wifi failed, continuing offline");
@@ -301,6 +398,8 @@ extern "C" void app_main(void)
                 ESP_LOGW(TAG, "failed to refresh keysets for [%d]", i);
         }
     }
+
+    display_refresh();
 
     console_init(NULL);
     console_register_cmd("status",  cmd_status,  "show system and wallet status");

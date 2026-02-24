@@ -118,6 +118,32 @@ struct KeysetInfo {
     int input_fee_ppk;
 };
 
+// NUT-18: Transport method for payment requests
+struct Transport {
+    std::string type;
+    std::string target;
+    std::optional<std::vector<std::vector<std::string>>> tags;
+};
+
+// NUT-10: Locking condition option for payment requests
+struct NUT10Option {
+    std::string kind;
+    std::string data;
+    std::optional<std::vector<std::vector<std::string>>> tags;
+};
+
+// NUT-18: Payment request
+struct PaymentRequest {
+    std::optional<std::string> payment_id;
+    std::optional<int> amount;
+    std::optional<std::string> unit;
+    std::optional<bool> single_use;
+    std::optional<std::vector<std::string>> mints;
+    std::optional<std::string> description;
+    std::optional<std::vector<Transport>> transports;
+    std::optional<NUT10Option> nut10;
+};
+
 } // namespace cashu
 
 #endif
