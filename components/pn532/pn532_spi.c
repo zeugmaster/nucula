@@ -194,30 +194,25 @@ esp_err_t pn532_spi_wakeup(pn532_handle_t *handle)
 esp_err_t pn532_spi_wait_ready(pn532_handle_t *handle, uint32_t timeout_ms)
 {
     if (!handle || handle->transport != PN532_TRANSPORT_SPI) return ESP_ERR_INVALID_ARG;
-    
+
     uint32_t start = xTaskGetTickCount();
-    int polls = 0;
-    
+
     while ((xTaskGetTickCount() - start) < pdMS_TO_TICKS(timeout_ms)) {
         gpio_set_level(handle->spi_ss_gpio, 0);
-        
+
         uint8_t cmd = SPI_STATUS_READ;
         uint8_t status;
         spi_transfer(handle, &cmd, NULL, 1);
         spi_transfer(handle, NULL, &status, 1);
-        
+
         gpio_set_level(handle->spi_ss_gpio, 1);
-        
+
         if (status & 0x01) return ESP_OK;
-        
-        // Fast polling for first few attempts, then slow down
-        if (++polls < 10) {
-            esp_rom_delay_us(100);
-        } else {
-            vTaskDelay(pdMS_TO_TICKS(1));
-        }
+
+        // Always yield to let IDLE task and other tasks run
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
-    
+
     return ESP_ERR_TIMEOUT;
 }
 
@@ -250,10 +245,9 @@ esp_err_t pn532_spi_read_ack(pn532_handle_t *handle)
     static const uint8_t ACK[] = {0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00};
     uint8_t buf[6];
     uint8_t cmd = SPI_DATA_READ;
-    
-    // Minimal delay for ACK to be ready
-    esp_rom_delay_us(500);
-    
+
+    pn532_spi_wait_ready(handle, 100);
+
     gpio_set_level(handle->spi_ss_gpio, 0);
     esp_rom_delay_us(100);
     

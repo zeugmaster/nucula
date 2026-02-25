@@ -227,9 +227,6 @@ esp_err_t pn532_send_command(pn532_handle_t *handle, uint8_t cmd,
         ret = pn532_spi_write_command(handle, handle->command_buffer, frame_len);
         if (ret != ESP_OK) return ret;
 
-        // Quick wait then read ACK - don't wait too long
-        pn532_spi_wait_ready(handle, 50);
-        
         ret = pn532_spi_read_ack(handle);
         if (ret != ESP_OK) {
             ESP_LOGD(TAG, "No ACK for cmd 0x%02X", cmd);
