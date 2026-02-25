@@ -50,9 +50,12 @@ esp_err_t pn532_i2c_init(pn532_handle_t *handle, const pn532_i2c_config_t *confi
         return ret;
     }
     
-    // Set timeout -- ESP32-C6 has a smaller max than other chips
-    i2c_set_timeout(handle->i2c_port, 0xFFFFF);
-    // Ignore errors: some chips accept different max values
+    // Set timeout - use a reasonable value that works with ESP32-C6
+    // The max timeout value varies by chip, use a safe value
+    ret = i2c_set_timeout(handle->i2c_port, 0x1FFFF);  // ~1.6ms timeout
+    if (ret != ESP_OK) {
+        ESP_LOGD(TAG, "i2c_set_timeout returned %s (may be ignored)", esp_err_to_name(ret));
+    }
 
     ESP_LOGI(TAG, "I2C bus initialized successfully");
     return ESP_OK;

@@ -17,19 +17,18 @@ static const char *TAG = "PN532";
 
 // ==================== Type 4 Tag Constants ====================
 
-// Capability Container - optimized for iOS compatibility
-// Using Mapping Version 1.0, write access ENABLED
+// Capability Container - matches Numo POS HCE protocol
 static const uint8_t capability_container[] = {
     0x00, 0x0F,             // CCLEN (15 bytes)
-    0x10,                   // Mapping Version 1.0 (best compatibility)
+    0x20,                   // Mapping Version 2.0
     0x00, 0x3B,             // MLe (max R-APDU data = 59 bytes)
     0x00, 0x34,             // MLc (max C-APDU data = 52 bytes)
     0x04,                   // NDEF File Control TLV - Type
     0x06,                   // NDEF File Control TLV - Length
     0xE1, 0x04,             // NDEF File ID
-    0x00, 0xFF,             // Max NDEF size (255 bytes)
+    0x70, 0xFF,             // Max NDEF size (28,671 bytes)
     0x00,                   // Read access: granted
-    0x00,                   // Write access: granted (WRITABLE)
+    0x00,                   // Write access: granted
 };
 
 // Callback for when NDEF data is written
@@ -144,15 +143,8 @@ esp_err_t pn532_init(pn532_handle_t *handle, const pn532_i2c_config_t *config)
     uint8_t wakeup[] = {0x55, 0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
     ret = pn532_i2c_write_command(handle, wakeup, sizeof(wakeup));
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "I2C wakeup write failed: %s (may be normal on first try)", esp_err_to_name(ret));
-        // Retry once after a delay -- some modules need a moment after power-on
-        vTaskDelay(pdMS_TO_TICKS(100));
-        ret = pn532_i2c_write_command(handle, wakeup, sizeof(wakeup));
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "I2C wakeup retry failed: %s", esp_err_to_name(ret));
-            pn532_i2c_deinit(handle);
-            return ret;
-        }
+        pn532_i2c_deinit(handle);
+        return ret;
     }
     
     vTaskDelay(pdMS_TO_TICKS(50));
@@ -235,9 +227,12 @@ esp_err_t pn532_send_command(pn532_handle_t *handle, uint8_t cmd,
         ret = pn532_spi_write_command(handle, handle->command_buffer, frame_len);
         if (ret != ESP_OK) return ret;
 
+        // Quick wait then read ACK - don't wait too long
+        pn532_spi_wait_ready(handle, 50);
+        
         ret = pn532_spi_read_ack(handle);
         if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "No ACK for cmd 0x%02X (err=%s)", cmd, esp_err_to_name(ret));
+            ESP_LOGD(TAG, "No ACK for cmd 0x%02X", cmd);
             return ret;
         }
 
@@ -430,93 +425,13 @@ static void process_written_ndef(const uint8_t *ndef_file, size_t file_len)
     
     const uint8_t *ndef_msg = &ndef_file[2];
     ESP_LOGI(TAG, "Received NDEF message (%d bytes)", ndef_len);
-    
-    // Call callback if set
+
     if (ndef_write_callback) {
         ndef_write_callback(ndef_msg, ndef_len);
     }
-    
-    // Parse NDEF records
-    size_t offset = 0;
-    int record_num = 0;
-    
-    while (offset < ndef_len) {
-        record_num++;
-        uint8_t header = ndef_msg[offset++];
-        
-        bool me = (header & 0x40) != 0;  // Message End
-        bool sr = (header & 0x10) != 0;  // Short Record
-        uint8_t tnf = header & 0x07;     // Type Name Format
-        (void)record_num;  // May be used for debug
-        
-        if (offset >= ndef_len) break;
-        uint8_t type_len = ndef_msg[offset++];
-        
-        uint32_t payload_len;
-        if (sr) {
-            if (offset >= ndef_len) break;
-            payload_len = ndef_msg[offset++];
-        } else {
-            if (offset + 4 > ndef_len) break;
-            payload_len = (ndef_msg[offset] << 24) | (ndef_msg[offset+1] << 16) |
-                          (ndef_msg[offset+2] << 8) | ndef_msg[offset+3];
-            offset += 4;
-        }
-        
-        if (offset + type_len + payload_len > ndef_len) break;
-        
-        const uint8_t *type = &ndef_msg[offset];
-        offset += type_len;
-        
-        const uint8_t *payload = &ndef_msg[offset];
-        offset += payload_len;
-        
-        // Handle Text record (TNF=1, Type="T")
-        if (tnf == 0x01 && type_len == 1 && type[0] == 'T' && payload_len > 0) {
-            uint8_t status = payload[0];
-            uint8_t lang_len = status & 0x3F;
-            
-            if (payload_len > 1 + lang_len) {
-                const char *text = (const char *)&payload[1 + lang_len];
-                size_t text_len = payload_len - 1 - lang_len;
-                
-                printf("\n");
-                printf("========================================\n");
-                printf("  NFC TEXT RECEIVED:\n");
-                printf("  \"%.*s\"\n", (int)text_len, text);
-                printf("========================================\n");
-                printf("\n");
-                
-                ESP_LOGI(TAG, "Text record: \"%.*s\"", (int)text_len, text);
-            }
-        }
-        // Handle URI record (TNF=1, Type="U")
-        else if (tnf == 0x01 && type_len == 1 && type[0] == 'U' && payload_len > 0) {
-            uint8_t prefix = payload[0];
-            const char *uri = (const char *)&payload[1];
-            size_t uri_len = payload_len - 1;
-            
-            const char *prefix_str = "";
-            switch (prefix) {
-                case 0x01: prefix_str = "http://www."; break;
-                case 0x02: prefix_str = "https://www."; break;
-                case 0x03: prefix_str = "http://"; break;
-                case 0x04: prefix_str = "https://"; break;
-            }
-            
-            printf("\n");
-            printf("========================================\n");
-            printf("  NFC URL RECEIVED:\n");
-            printf("  %s%.*s\n", prefix_str, (int)uri_len, uri);
-            printf("========================================\n");
-            printf("\n");
-            
-            ESP_LOGI(TAG, "URL record: %s%.*s", prefix_str, (int)uri_len, uri);
-        }
-        
-        if (me) break;  // Message End flag set
-    }
 }
+
+#define NDEF_FILE_BUF_SIZE 8192
 
 esp_err_t pn532_emulate_tag_loop(pn532_handle_t *handle, const uint8_t *ndef_message, size_t ndef_len)
 {
@@ -524,37 +439,39 @@ esp_err_t pn532_emulate_tag_loop(pn532_handle_t *handle, const uint8_t *ndef_mes
         return ESP_ERR_INVALID_ARG;
     }
 
-    // Wait for reader
     uint8_t atr_res[64];
     size_t atr_len = sizeof(atr_res);
     esp_err_t ret = tg_init_as_target(handle, atr_res, &atr_len);
     if (ret != ESP_OK) return ret;
 
-    // Small delay to let RF field stabilize before processing commands
     vTaskDelay(pdMS_TO_TICKS(5));
-    
     ESP_LOGI(TAG, "Reader detected, emulating tag");
 
-    // Build NDEF file with length prefix (writable buffer)
-    static uint8_t ndef_file[259];
+    static uint8_t ndef_file[NDEF_FILE_BUF_SIZE];
     ndef_file[0] = (ndef_len >> 8) & 0xFF;
     ndef_file[1] = ndef_len & 0xFF;
     memcpy(&ndef_file[2], ndef_message, ndef_len);
     size_t ndef_file_len = ndef_len + 2;
-    
+
+    static uint8_t write_buf[NDEF_FILE_BUF_SIZE];
+    memset(write_buf, 0, sizeof(write_buf));
+    int32_t expected_ndef_length = -1;
     bool write_occurred = false;
+    bool write_processed = false;
 
     tag_state_t state = TAG_STATE_IDLE;
 
-    // Main APDU processing loop
     while (true) {
         uint8_t capdu[256];
         size_t capdu_len = sizeof(capdu);
 
         ret = tg_get_data(handle, capdu, &capdu_len);
         if (ret != ESP_OK) {
+            if (write_occurred && !write_processed) {
+                process_written_ndef(write_buf, expected_ndef_length > 0 ? expected_ndef_length + 2 : NDEF_FILE_BUF_SIZE);
+            }
             in_release(handle);
-            return ESP_OK;  // Normal end - reader disconnected
+            return ESP_OK;
         }
 
         if (capdu_len < 4) continue;
@@ -568,7 +485,7 @@ esp_err_t pn532_emulate_tag_loop(pn532_handle_t *handle, const uint8_t *ndef_mes
         uint8_t rapdu[256];
         size_t rapdu_len = 0;
 
-        if (ins == 0xA4) {  // SELECT
+        if (ins == 0xA4) {
             if (p1 == 0x04 && lc == 7 && data && memcmp(data, ndef_aid, 7) == 0) {
                 state = TAG_STATE_APP_SELECTED;
                 build_rapdu(rapdu, &rapdu_len, NULL, 0, 0x90, 0x00);
@@ -585,13 +502,13 @@ esp_err_t pn532_emulate_tag_loop(pn532_handle_t *handle, const uint8_t *ndef_mes
             } else {
                 build_rapdu(rapdu, &rapdu_len, NULL, 0, 0x6A, 0x82);
             }
-        } else if (ins == 0xB0) {  // READ BINARY
+        } else if (ins == 0xB0) {
             uint16_t offset = (p1 << 8) | p2;
             uint8_t le = (capdu_len > 4) ? capdu[capdu_len - 1] : 0;
             if (le == 0) le = 255;
 
             if (state == TAG_STATE_CC_SELECTED) {
-                size_t avail = (offset < sizeof(capability_container)) ? 
+                size_t avail = (offset < sizeof(capability_container)) ?
                                sizeof(capability_container) - offset : 0;
                 size_t read_len = (avail < le) ? avail : le;
                 if (read_len > 0) {
@@ -610,55 +527,61 @@ esp_err_t pn532_emulate_tag_loop(pn532_handle_t *handle, const uint8_t *ndef_mes
             } else {
                 build_rapdu(rapdu, &rapdu_len, NULL, 0, 0x69, 0x86);
             }
-        } else if (ins == 0xD6) {  // UPDATE BINARY (Write)
+        } else if (ins == 0xD6) {
             uint16_t offset = (p1 << 8) | p2;
-            
+
             if (state == TAG_STATE_NDEF_SELECTED && lc > 0 && data) {
-                // Check bounds
-                if (offset + lc <= sizeof(ndef_file)) {
-                    // Write data to NDEF file
-                    memcpy(&ndef_file[offset], data, lc);
-                    
-                    // Update file length if needed
-                    if (offset + lc > ndef_file_len) {
-                        ndef_file_len = offset + lc;
-                    }
-                    
+                if (offset + lc <= sizeof(write_buf)) {
+                    memcpy(&write_buf[offset], data, lc);
                     write_occurred = true;
-                    
-                    // Check if this is a length update (offset 0, 2 bytes, non-zero length)
-                    // The phone typically writes data first with length=0, then updates length
-                    if (offset == 0 && lc == 2) {
-                        uint16_t new_ndef_len = (data[0] << 8) | data[1];
-                        if (new_ndef_len > 0 && new_ndef_len + 2 <= ndef_file_len) {
-                            ESP_LOGI(TAG, "NDEF write complete (length=%d)", new_ndef_len);
-                            process_written_ndef(ndef_file, ndef_file_len);
+
+                    if (offset == 0 && lc >= 2) {
+                        uint16_t new_len = (data[0] << 8) | data[1];
+                        if (new_len == 0) {
+                            expected_ndef_length = 0;
+                        } else {
+                            expected_ndef_length = new_len;
+                            bool has_body = false;
+                            size_t check_end = (new_len + 2 <= sizeof(write_buf)) ? new_len + 2 : sizeof(write_buf);
+                            for (size_t i = 2; i < check_end; i++) {
+                                if (write_buf[i] != 0) { has_body = true; break; }
+                            }
+                            if (has_body || (offset + lc >= new_len + 2)) {
+                                ESP_LOGI(TAG, "NDEF write complete (length=%d)", new_len);
+                                process_written_ndef(write_buf, new_len + 2);
+                                write_processed = true;
+                            }
+                        }
+                    } else if (expected_ndef_length > 0) {
+                        if ((int32_t)(offset + lc) >= expected_ndef_length + 2) {
+                            ESP_LOGI(TAG, "NDEF write complete (length=%d)", expected_ndef_length);
+                            process_written_ndef(write_buf, expected_ndef_length + 2);
+                            write_processed = true;
                         }
                     }
-                    
-                    build_rapdu(rapdu, &rapdu_len, NULL, 0, 0x90, 0x00);  // Success
+
+                    build_rapdu(rapdu, &rapdu_len, NULL, 0, 0x90, 0x00);
                 } else {
                     ESP_LOGW(TAG, "Write out of bounds: offset=%d, len=%d", offset, lc);
-                    build_rapdu(rapdu, &rapdu_len, NULL, 0, 0x6A, 0x82);  // File not found
+                    build_rapdu(rapdu, &rapdu_len, NULL, 0, 0x6A, 0x82);
                 }
             } else {
-                build_rapdu(rapdu, &rapdu_len, NULL, 0, 0x69, 0x86);  // Command not allowed
+                build_rapdu(rapdu, &rapdu_len, NULL, 0, 0x69, 0x86);
             }
         } else {
-            // Unknown command - return "not supported"
             build_rapdu(rapdu, &rapdu_len, NULL, 0, 0x6D, 0x00);
         }
 
         ret = tg_set_data(handle, rapdu, rapdu_len);
         if (ret != ESP_OK) {
-            // Reader disconnected - process any written data
-            if (write_occurred) {
-                ESP_LOGI(TAG, "Write complete, processing NDEF data");
-                process_written_ndef(ndef_file, ndef_file_len);
+            if (write_occurred && !write_processed) {
+                process_written_ndef(write_buf, expected_ndef_length > 0 ? expected_ndef_length + 2 : NDEF_FILE_BUF_SIZE);
             }
             in_release(handle);
             return ESP_OK;
         }
+
+        vTaskDelay(1);
     }
 }
 
@@ -676,25 +599,37 @@ esp_err_t ndef_create_text_record(const ndef_text_record_t *record,
     size_t lang_len = strlen(record->language_code);
     size_t text_len = strlen(record->text);
     size_t payload_len = 1 + lang_len + text_len;
-    size_t ndef_len = 4 + payload_len;
+    bool short_record = (payload_len <= 255);
+    size_t header_size = short_record ? 4 : 7;
+    size_t ndef_len = header_size + payload_len;
 
     if (ndef_len > buffer_size) {
         return ESP_ERR_INVALID_SIZE;
     }
 
     size_t idx = 0;
-    buffer[idx++] = 0xD1;  // MB=1, ME=1, SR=1, TNF=1 (Well-Known)
-    buffer[idx++] = 0x01;  // Type length = 1
-    buffer[idx++] = payload_len;
-    buffer[idx++] = 'T';   // Type = Text
-    buffer[idx++] = (uint8_t)(lang_len & 0x3F);  // Status byte
+    if (short_record) {
+        buffer[idx++] = 0xD1;  // MB=1, ME=1, SR=1, TNF=1
+        buffer[idx++] = 0x01;
+        buffer[idx++] = (uint8_t)payload_len;
+    } else {
+        buffer[idx++] = 0xC1;  // MB=1, ME=1, SR=0, TNF=1
+        buffer[idx++] = 0x01;
+        buffer[idx++] = (payload_len >> 24) & 0xFF;
+        buffer[idx++] = (payload_len >> 16) & 0xFF;
+        buffer[idx++] = (payload_len >> 8) & 0xFF;
+        buffer[idx++] = payload_len & 0xFF;
+    }
+    buffer[idx++] = 'T';
+    buffer[idx++] = (uint8_t)(lang_len & 0x3F);
     memcpy(&buffer[idx], record->language_code, lang_len);
     idx += lang_len;
     memcpy(&buffer[idx], record->text, text_len);
     idx += text_len;
 
     *message_len = idx;
-    ESP_LOGI(TAG, "NDEF Text: '%s' (%zu bytes)", record->text, *message_len);
+    ESP_LOGI(TAG, "NDEF Text record (%zu bytes, %s)", *message_len,
+             short_record ? "short" : "long");
     return ESP_OK;
 }
 

@@ -14,11 +14,12 @@
 #include "wallet.hpp"
 #include "console.h"
 #include "display.h"
+#include "nfc.hpp"
 
 #define TAG "nucula"
 
-static secp256k1_context *g_ctx = nullptr;
-static cashu::Wallet *g_wallets[MAX_MINTS] = {};
+secp256k1_context *g_ctx = nullptr;
+cashu::Wallet *g_wallets[MAX_MINTS] = {};
 
 // -------------------------------------------------------------------------
 // Helpers
@@ -52,7 +53,30 @@ static int wallet_count()
 // Display
 // -------------------------------------------------------------------------
 
-static void display_refresh()
+void display_nfc_status(const char *line1, const char *line2)
+{
+    display_clear();
+    int y = 0;
+    display_text_inv(0, y, " nucula         nfc ", 1);
+    y += 14;
+
+    if (line1 && line1[0]) {
+        int x = (LCD_W - display_text_width(line1, 2)) / 2;
+        if (x < 0) x = 0;
+        display_text(x, y, line1, 2);
+    }
+    y += 20;
+
+    if (line2 && line2[0]) {
+        int x = (LCD_W - display_text_width(line2, 2)) / 2;
+        if (x < 0) x = 0;
+        display_text(x, y, line2, 2);
+    }
+
+    display_update();
+}
+
+void display_refresh()
 {
     display_clear();
     int y = 0;
@@ -118,6 +142,7 @@ static void cmd_status(const char *arg)
 {
     (void)arg;
     console_printf("wifi:    %s\r\n", wifi_is_connected() ? "connected" : "disconnected");
+    console_printf("nfc:     %s\r\n", nfc_status_str());
     console_printf("heap:    %lu bytes free\r\n",
                    (unsigned long)esp_get_free_heap_size());
 
@@ -330,6 +355,36 @@ static void cmd_mint(const char *arg)
     nucula_console_write("usage: mint [list|add <url>|remove <index|url>]\r\n");
 }
 
+static void cmd_nfc(const char *arg)
+{
+    if (!arg || strlen(arg) == 0) {
+        console_printf("nfc: %s\r\n", nfc_status_str());
+        return;
+    }
+    if (strncmp(arg, "request ", 8) == 0) {
+        int amount = atoi(arg + 8);
+        if (amount <= 0) {
+            nucula_console_write("usage: nfc request <amount>\r\n");
+            return;
+        }
+        if (nfc_state() == NfcState::off) {
+            nucula_console_write("error: PN532 not initialized\r\n");
+            return;
+        }
+        console_printf("requesting %d sat via NFC...\r\n", amount);
+        if (!nfc_request_start(amount, nullptr))
+            nucula_console_write("error: failed to start\r\n");
+        return;
+    }
+    if (strcmp(arg, "stop") == 0) {
+        nfc_request_stop();
+        nucula_console_write("nfc stopped\r\n");
+        display_refresh();
+        return;
+    }
+    nucula_console_write("usage: nfc [request <amount>|stop]\r\n");
+}
+
 static void cmd_reboot(const char *arg)
 {
     (void)arg;
@@ -377,6 +432,9 @@ extern "C" void app_main(void)
         }
     }
 
+    if (!nfc_init())
+        ESP_LOGW(TAG, "PN532 init failed, NFC disabled");
+
     display_refresh();
 
     console_init(NULL);
@@ -384,6 +442,7 @@ extern "C" void app_main(void)
     console_register_cmd("balance", cmd_balance,  "show wallet balance");
     console_register_cmd("receive", cmd_receive,  "receive a cashuA token");
     console_register_cmd("mint",    cmd_mint,     "mint [list|add <url>|remove <idx>]");
+    console_register_cmd("nfc",     cmd_nfc,      "nfc [request <amount>|stop]");
     console_register_cmd("reboot",  cmd_reboot,   "restart the device");
     console_start();
 }
