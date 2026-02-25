@@ -2,30 +2,40 @@
 
 #include <cstring>
 #include <esp_log.h>
-#include <esp_lcd_panel_io.h>
-#include <esp_lcd_panel_ops.h>
-#include <esp_lcd_panel_vendor.h>
-#include <driver/spi_master.h>
-#include <driver/gpio.h>
-#include <driver/ledc.h>
-#include <esp_heap_caps.h>
+#include <driver/i2c.h>
 
 #define TAG "display"
 
-#define PIN_MOSI  GPIO_NUM_6
-#define PIN_SCLK  GPIO_NUM_7
-#define PIN_CS    GPIO_NUM_14
-#define PIN_DC    GPIO_NUM_15
-#define PIN_RST   GPIO_NUM_21
-#define PIN_BL    GPIO_NUM_22
-#define LCD_SPI   SPI2_HOST
+// SSD1306 I2C configuration -- left header on XIAO ESP32-C6
+#define SSD1306_ADDR    0x3C
+#define PIN_SDA         GPIO_NUM_22  // D4
+#define PIN_SCL         GPIO_NUM_23  // D5
+#define I2C_PORT        I2C_NUM_0
+#define I2C_FREQ_HZ     400000
 
-static esp_lcd_panel_handle_t s_panel = nullptr;
+// SSD1306 command constants
+#define SSD1306_CMD          0x00
+#define SSD1306_DATA         0x40
+#define SSD1306_SET_CONTRAST 0x81
+#define SSD1306_DISPLAY_OFF  0xAE
+#define SSD1306_DISPLAY_ON   0xAF
+#define SSD1306_SET_MUX      0xA8
+#define SSD1306_SET_OFFSET   0xD3
+#define SSD1306_SET_START    0x40
+#define SSD1306_SET_REMAP    0xA0
+#define SSD1306_COM_SCAN_DEC 0xC8
+#define SSD1306_SET_COMPINS  0xDA
+#define SSD1306_SET_CLOCK    0xD5
+#define SSD1306_SET_PRECHARGE 0xD9
+#define SSD1306_SET_VCOM     0xDB
+#define SSD1306_CHARGE_PUMP  0x8D
+#define SSD1306_ENTIRE_ON    0xA4
+#define SSD1306_NORMAL       0xA6
+#define SSD1306_MEM_ADDR     0x20
+#define SSD1306_COL_ADDR     0x21
+#define SSD1306_PAGE_ADDR    0x22
 
-// -------------------------------------------------------------------------
-// 5x7 bitmap font (ASCII 32-126, 5 bytes per char, column-major, LSB=top)
-// Standard embedded font, public domain.
-// -------------------------------------------------------------------------
+// 5x7 bitmap font (ASCII 32-126, column-major, LSB=top)
 static const uint8_t font5x7[][5] = {
     {0x00,0x00,0x00,0x00,0x00}, // 32 space
     {0x00,0x00,0x5F,0x00,0x00}, // 33 !
@@ -128,132 +138,147 @@ static const uint8_t font5x7[][5] = {
 #define FONT_H 8
 #define FONT_ADVANCE 6
 
+// Framebuffer: 128x64 pixels = 1024 bytes (8 pages of 128 bytes)
+static uint8_t s_fb[LCD_W * LCD_H / 8];
+
 // -------------------------------------------------------------------------
-// LCD panel init
+// I2C helpers
+// -------------------------------------------------------------------------
+
+static esp_err_t ssd1306_cmd(uint8_t cmd)
+{
+    uint8_t buf[2] = {SSD1306_CMD, cmd};
+    return i2c_master_write_to_device(I2C_PORT, SSD1306_ADDR, buf, 2, pdMS_TO_TICKS(50));
+}
+
+static esp_err_t ssd1306_cmd2(uint8_t cmd, uint8_t arg)
+{
+    uint8_t buf[3] = {SSD1306_CMD, cmd, arg};
+    return i2c_master_write_to_device(I2C_PORT, SSD1306_ADDR, buf, 3, pdMS_TO_TICKS(50));
+}
+
+// -------------------------------------------------------------------------
+// Init
 // -------------------------------------------------------------------------
 
 void display_init(void)
 {
-    // Force-reset backlight pin to clear any latched hold from previous firmware
-    gpio_reset_pin(PIN_BL);
-    gpio_set_direction(PIN_BL, GPIO_MODE_OUTPUT);
-    gpio_set_level(PIN_BL, 1);
-    ESP_LOGI(TAG, "backlight GPIO%d set HIGH", PIN_BL);
+    i2c_config_t conf = {};
+    conf.mode = I2C_MODE_MASTER;
+    conf.sda_io_num = PIN_SDA;
+    conf.scl_io_num = PIN_SCL;
+    conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
+    conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
+    conf.master.clk_speed = I2C_FREQ_HZ;
 
-    spi_bus_config_t bus_cfg = {};
-    bus_cfg.mosi_io_num = PIN_MOSI;
-    bus_cfg.miso_io_num = -1;
-    bus_cfg.sclk_io_num = PIN_SCLK;
-    bus_cfg.quadwp_io_num = -1;
-    bus_cfg.quadhd_io_num = -1;
-    bus_cfg.max_transfer_sz = LCD_W * 80 * sizeof(uint16_t);
+    ESP_ERROR_CHECK(i2c_param_config(I2C_PORT, &conf));
+    i2c_driver_delete(I2C_PORT);
+    ESP_ERROR_CHECK(i2c_driver_install(I2C_PORT, I2C_MODE_MASTER, 0, 0, 0));
 
-    ESP_ERROR_CHECK(spi_bus_initialize(LCD_SPI, &bus_cfg, SPI_DMA_CH_AUTO));
+    // SSD1306 initialization sequence for 128x64
+    ssd1306_cmd(SSD1306_DISPLAY_OFF);
+    ssd1306_cmd2(SSD1306_SET_CLOCK, 0x80);
+    ssd1306_cmd2(SSD1306_SET_MUX, 63);
+    ssd1306_cmd2(SSD1306_SET_OFFSET, 0);
+    ssd1306_cmd(SSD1306_SET_START | 0x00);
+    ssd1306_cmd2(SSD1306_CHARGE_PUMP, 0x14);
+    ssd1306_cmd2(SSD1306_MEM_ADDR, 0x00); // Horizontal addressing
+    ssd1306_cmd(SSD1306_SET_REMAP | 0x01); // Column remap
+    ssd1306_cmd(SSD1306_COM_SCAN_DEC);
+    ssd1306_cmd2(SSD1306_SET_COMPINS, 0x12);
+    ssd1306_cmd2(SSD1306_SET_CONTRAST, 0xCF);
+    ssd1306_cmd2(SSD1306_SET_PRECHARGE, 0xF1);
+    ssd1306_cmd2(SSD1306_SET_VCOM, 0x40);
+    ssd1306_cmd(SSD1306_ENTIRE_ON);
+    ssd1306_cmd(SSD1306_NORMAL);
+    ssd1306_cmd(SSD1306_DISPLAY_ON);
 
-    esp_lcd_panel_io_spi_config_t io_cfg = {};
-    io_cfg.dc_gpio_num = PIN_DC;
-    io_cfg.cs_gpio_num = PIN_CS;
-    io_cfg.pclk_hz = 40 * 1000 * 1000;
-    io_cfg.lcd_cmd_bits = 8;
-    io_cfg.lcd_param_bits = 8;
-    io_cfg.spi_mode = 0;
-    io_cfg.trans_queue_depth = 10;
+    memset(s_fb, 0, sizeof(s_fb));
+    display_update();
 
-    esp_lcd_panel_io_handle_t io_handle;
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_SPI,
-                                              &io_cfg, &io_handle));
-
-    esp_lcd_panel_dev_config_t panel_cfg = {};
-    panel_cfg.reset_gpio_num = PIN_RST;
-    panel_cfg.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR;
-    panel_cfg.bits_per_pixel = 16;
-
-    ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io_handle, &panel_cfg, &s_panel));
-    ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
-    ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
-    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, true));
-    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(s_panel, true));
-    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, true, false));
-    ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, 0, 34));
-    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
-
-    gpio_set_level(PIN_BL, 1);
-    ESP_LOGI(TAG, "display initialized (%dx%d ST7789)", LCD_W, LCD_H);
+    ESP_LOGI(TAG, "SSD1306 initialized (%dx%d I2C @ 0x%02X)", LCD_W, LCD_H, SSD1306_ADDR);
 }
 
 // -------------------------------------------------------------------------
-// Drawing primitives
+// Framebuffer operations
 // -------------------------------------------------------------------------
 
-void display_fill_rect(int x, int y, int w, int h, uint16_t color)
+void display_clear(void)
 {
-    if (w <= 0 || h <= 0) return;
-    int x2 = x + w;
-    int y2 = y + h;
-    if (x < 0) x = 0;
-    if (y < 0) y = 0;
-    if (x2 > LCD_W) x2 = LCD_W;
-    if (y2 > LCD_H) y2 = LCD_H;
-    w = x2 - x;
-    h = y2 - y;
-    if (w <= 0 || h <= 0) return;
+    memset(s_fb, 0, sizeof(s_fb));
+}
 
-    uint16_t *line = (uint16_t *)heap_caps_malloc(w * sizeof(uint16_t),
-                                                   MALLOC_CAP_DMA);
-    if (!line) return;
-    uint16_t c_sw = (color >> 8) | (color << 8);
+void display_pixel(int x, int y, bool on)
+{
+    if (x < 0 || x >= LCD_W || y < 0 || y >= LCD_H) return;
+    int page = y / 8;
+    int bit = y % 8;
+    if (on)
+        s_fb[page * LCD_W + x] |= (1 << bit);
+    else
+        s_fb[page * LCD_W + x] &= ~(1 << bit);
+}
+
+void display_hline(int x, int y, int w)
+{
     for (int i = 0; i < w; i++)
-        line[i] = c_sw;
-
-    for (int row = y; row < y2; row++)
-        esp_lcd_panel_draw_bitmap(s_panel, x, row, x2, row + 1, line);
-
-    free(line);
+        display_pixel(x + i, y, true);
 }
 
-void display_clear(uint16_t color)
+void display_update(void)
 {
-    display_fill_rect(0, 0, LCD_W, LCD_H, color);
+    // Set column and page address to cover full display
+    ssd1306_cmd2(SSD1306_COL_ADDR, 0);
+    ssd1306_cmd(127);
+    ssd1306_cmd2(SSD1306_PAGE_ADDR, 0);
+    ssd1306_cmd(7);
+
+    // Send framebuffer in chunks (I2C has a max transaction size)
+    for (int page = 0; page < 8; page++) {
+        uint8_t buf[LCD_W + 1];
+        buf[0] = SSD1306_DATA;
+        memcpy(&buf[1], &s_fb[page * LCD_W], LCD_W);
+        i2c_master_write_to_device(I2C_PORT, SSD1306_ADDR, buf, sizeof(buf),
+                                    pdMS_TO_TICKS(50));
+    }
 }
 
-static void draw_char(int x, int y, char ch, uint16_t fg, uint16_t bg, int scale)
+// -------------------------------------------------------------------------
+// Text rendering into framebuffer
+// -------------------------------------------------------------------------
+
+static void draw_char_fb(int x, int y, char ch, bool inverted, int scale)
 {
     if (ch < 32 || ch > 126) ch = '?';
     const uint8_t *glyph = font5x7[ch - 32];
 
-    int cw = FONT_ADVANCE * scale;
-    int ch_h = FONT_H * scale;
-    if (x + cw > LCD_W || y + ch_h > LCD_H) return;
-
-    uint16_t *buf = (uint16_t *)heap_caps_malloc(cw * ch_h * sizeof(uint16_t),
-                                                  MALLOC_CAP_DMA);
-    if (!buf) return;
-
-    uint16_t fg_sw = (fg >> 8) | (fg << 8);
-    uint16_t bg_sw = (bg >> 8) | (bg << 8);
-
-    for (int row = 0; row < FONT_H; row++) {
-        for (int col = 0; col < FONT_ADVANCE; col++) {
-            bool on = false;
-            if (col < FONT_W)
-                on = glyph[col] & (1 << row);
-            uint16_t c = on ? fg_sw : bg_sw;
+    for (int col = 0; col < FONT_ADVANCE; col++) {
+        uint8_t bits = (col < FONT_W) ? glyph[col] : 0x00;
+        for (int row = 0; row < FONT_H; row++) {
+            bool on = (bits >> row) & 1;
+            if (inverted) on = !on;
             for (int sy = 0; sy < scale; sy++)
                 for (int sx = 0; sx < scale; sx++)
-                    buf[(row * scale + sy) * cw + col * scale + sx] = c;
+                    display_pixel(x + col * scale + sx, y + row * scale + sy, on);
         }
     }
-
-    esp_lcd_panel_draw_bitmap(s_panel, x, y, x + cw, y + ch_h, buf);
-    free(buf);
 }
 
-void display_text(int x, int y, const char *text, uint16_t fg, uint16_t bg,
-                  int scale)
+void display_text(int x, int y, const char *text, int scale)
 {
     while (*text) {
         if (x + FONT_ADVANCE * scale > LCD_W) break;
-        draw_char(x, y, *text, fg, bg, scale);
+        draw_char_fb(x, y, *text, false, scale);
+        x += FONT_ADVANCE * scale;
+        text++;
+    }
+}
+
+void display_text_inv(int x, int y, const char *text, int scale)
+{
+    while (*text) {
+        if (x + FONT_ADVANCE * scale > LCD_W) break;
+        draw_char_fb(x, y, *text, true, scale);
         x += FONT_ADVANCE * scale;
         text++;
     }

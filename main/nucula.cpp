@@ -54,16 +54,12 @@ static int wallet_count()
 
 static void display_refresh()
 {
-    int y = 4;
-    display_clear(COLOR_BLACK);
+    display_clear();
+    int y = 0;
 
-    // Title
-    const char *title = "nucula";
-    int tx = (LCD_W - display_text_width(title, 2)) / 2;
-    display_text(tx, y, title, COLOR_AMBER, COLOR_BLACK, 2);
-    y += 20;
-    display_fill_rect(4, y, LCD_W - 8, 1, COLOR_DGRAY);
-    y += 8;
+    // Title bar (inverted)
+    display_text_inv(0, y, " nucula             ", 1);
+    y += 10;
 
     // Balance
     int total_balance = 0;
@@ -74,62 +70,44 @@ static void display_refresh()
             total_balance += p.amount;
         total_proofs += (int)g_wallets[i]->proofs().size();
     }
-    char buf[32];
+    char buf[22];
     snprintf(buf, sizeof(buf), "%d", total_balance);
-    int bx = (LCD_W - display_text_width(buf, 4)) / 2;
-    display_text(bx, y, buf, COLOR_WHITE, COLOR_BLACK, 4);
-    y += 36;
+    int bx = (LCD_W - display_text_width(buf, 2)) / 2;
+    display_text(bx, y, buf, 2);
+    y += 18;
 
-    int ux = (LCD_W - display_text_width("sat", 2)) / 2;
-    display_text(ux, y, "sat", COLOR_LGRAY, COLOR_BLACK, 2);
-    y += 24;
+    snprintf(buf, sizeof(buf), "sat  %d proofs", total_proofs);
+    int sx = (LCD_W - display_text_width(buf, 1)) / 2;
+    display_text(sx, y, buf, 1);
+    y += 10;
+    display_hline(0, y, LCD_W);
+    y += 2;
 
-    snprintf(buf, sizeof(buf), "%d proofs", total_proofs);
-    int px = (LCD_W - display_text_width(buf, 1)) / 2;
-    display_text(px, y, buf, COLOR_LGRAY, COLOR_BLACK, 1);
-    y += 16;
-
-    display_fill_rect(4, y, LCD_W - 8, 1, COLOR_DGRAY);
-    y += 8;
-
-    // Mints
-    int count = wallet_count();
-    snprintf(buf, sizeof(buf), "mints: %d/%d", count, MAX_MINTS);
-    display_text(4, y, buf, COLOR_LGRAY, COLOR_BLACK, 1);
-    y += 12;
-
+    // Mints (compact)
     for (int i = 0; i < MAX_MINTS; i++) {
-        if (!g_wallets[i]) continue;
+        if (!g_wallets[i] || y > 52) continue;
         const char *url = g_wallets[i]->mint_url().c_str();
         if (strncmp(url, "https://", 8) == 0) url += 8;
         else if (strncmp(url, "http://", 7) == 0) url += 7;
 
-        char line[30];
-        snprintf(line, sizeof(line), "[%d] %.24s", i, url);
-        display_text(4, y, line, COLOR_CYAN, COLOR_BLACK, 1);
-        y += 10;
-
         int bal = 0;
         for (const auto &p : g_wallets[i]->proofs())
             bal += p.amount;
-        snprintf(line, sizeof(line), "    %d sat", bal);
-        display_text(4, y, line, COLOR_LGRAY, COLOR_BLACK, 1);
-        y += 12;
+
+        char line[22];
+        snprintf(line, sizeof(line), "%.14s %d", url, bal);
+        display_text(0, y, line, 1);
+        y += 9;
     }
 
-    display_fill_rect(4, y, LCD_W - 8, 1, COLOR_DGRAY);
-    y += 8;
+    // Status bar at bottom
+    char status[32];
+    snprintf(status, sizeof(status), "wifi:%-3s heap:%luk",
+             wifi_is_connected() ? "ok" : "no",
+             (unsigned long)(esp_get_free_heap_size() / 1024));
+    display_text(0, 56, status, 1);
 
-    // Status
-    snprintf(buf, sizeof(buf), "wifi: %s",
-             wifi_is_connected() ? "connected" : "offline");
-    display_text(4, y, buf, wifi_is_connected() ? COLOR_GREEN : COLOR_AMBER,
-                 COLOR_BLACK, 1);
-    y += 12;
-
-    snprintf(buf, sizeof(buf), "heap: %lu",
-             (unsigned long)esp_get_free_heap_size());
-    display_text(4, y, buf, COLOR_LGRAY, COLOR_BLACK, 1);
+    display_update();
 }
 
 // -------------------------------------------------------------------------
