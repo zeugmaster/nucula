@@ -31,6 +31,13 @@ esp_err_t http_get(const char *url, http_response_t *resp);
 esp_err_t http_post_json(const char *url, const char *json_body, http_response_t *resp);
 
 /**
+ * Like http_post_json but with a custom timeout in milliseconds.
+ * Use for long-running operations (e.g. Lightning payments).
+ */
+esp_err_t http_post_json_timeout(const char *url, const char *json_body,
+                                 http_response_t *resp, int timeout_ms);
+
+/**
  * Free a response body allocated by http_get or http_post_json.
  */
 void http_response_free(http_response_t *resp);

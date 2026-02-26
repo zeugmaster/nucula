@@ -47,6 +47,20 @@ public:
 
     bool receive(const Token& token, std::vector<Proof>& proofs_out);
 
+    // NUT-04: Mint tokens (bolt11)
+    bool request_mint_quote(int amount, MintQuote& quote_out);
+    bool check_mint_quote(const std::string& quote_id, MintQuote& quote_out);
+    bool mint_tokens(const std::string& quote_id, int amount);
+
+    // NUT-05: Melt tokens (bolt11)
+    bool request_melt_quote(const std::string& bolt11, MeltQuote& quote_out);
+    bool check_melt_quote(const std::string& quote_id, MeltQuote& quote_out);
+    bool melt_tokens(const MeltQuote& quote, int& change_amount);
+
+    int balance() const;
+    bool select_proofs(int amount_needed, std::vector<Proof>& selected,
+                       std::vector<Proof>& remaining);
+
     const std::string& mint_url() const { return mint_url_; }
     const std::vector<Keyset>& keysets() const { return keysets_; }
     const std::vector<Proof>& proofs() const { return proofs_; }

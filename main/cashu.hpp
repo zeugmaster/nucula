@@ -66,10 +66,11 @@ struct SwapResponse {
     std::vector<BlindSignature> signatures;
 };
 
-// NUT-04: Mint quote (Bolt11)
+// NUT-04: Mint quote (Bolt11/NUT-23)
 struct MintQuote {
     std::string quote;
     std::string request;
+    int amount;
     std::string state;
     int64_t expiry;
 };

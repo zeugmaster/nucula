@@ -14,6 +14,7 @@
 #define TAG "wallet"
 
 static const char* NVS_NS = "wallet";
+static const int MAX_KEYSETS = 10;
 
 static void slot_key(char* buf, size_t sz, const char* base, int slot)
 {
@@ -70,8 +71,16 @@ bool Wallet::erase_nvs()
     nvs_erase_key(handle, key);
     slot_key(key, sizeof(key), "proofs", nvs_slot_);
     nvs_erase_key(handle, key);
+    // Legacy single-blob keyset entry
     slot_key(key, sizeof(key), "keys", nvs_slot_);
     nvs_erase_key(handle, key);
+    // Individual keyset entries
+    snprintf(key, sizeof(key), "kn_%d", nvs_slot_);
+    nvs_erase_key(handle, key);
+    for (int i = 0; i < MAX_KEYSETS; i++) {
+        snprintf(key, sizeof(key), "k_%d_%d", nvs_slot_, i);
+        nvs_erase_key(handle, key);
+    }
     nvs_commit(handle);
     nvs_close(handle);
     ESP_LOGI(TAG, "erased NVS slot %d", nvs_slot_);
@@ -138,8 +147,6 @@ bool Wallet::load_proofs()
 
 bool Wallet::save_keysets()
 {
-    std::string blob = keysets_to_json(keysets_);
-
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
@@ -147,19 +154,52 @@ bool Wallet::save_keysets()
         return false;
     }
 
-    char key[16];
-    slot_key(key, sizeof(key), "keys", nvs_slot_);
-    err = nvs_set_blob(handle, key, blob.data(), blob.size());
-    if (err == ESP_OK)
-        err = nvs_commit(handle);
-    nvs_close(handle);
+    // Remove legacy single-blob entry if present
+    char old_key[16];
+    slot_key(old_key, sizeof(old_key), "keys", nvs_slot_);
+    nvs_erase_key(handle, old_key);
 
+    char cnt_key[16];
+    snprintf(cnt_key, sizeof(cnt_key), "kn_%d", nvs_slot_);
+    uint8_t count = (uint8_t)keysets_.size();
+    if (count > MAX_KEYSETS) count = MAX_KEYSETS;
+
+    err = nvs_set_u8(handle, cnt_key, count);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "save_keysets failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "save keyset count failed: %s", esp_err_to_name(err));
+        nvs_close(handle);
         return false;
     }
-    ESP_LOGI(TAG, "[%d] saved %d keysets (%d bytes)",
-             nvs_slot_, (int)keysets_.size(), (int)blob.size());
+
+    size_t total_bytes = 0;
+    for (int i = 0; i < count; i++) {
+        char ks_key[16];
+        snprintf(ks_key, sizeof(ks_key), "k_%d_%d", nvs_slot_, i);
+        std::string blob = serialize(keysets_[i]);
+        err = nvs_set_blob(handle, ks_key, blob.data(), blob.size());
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "save keyset %d failed: %s", i, esp_err_to_name(err));
+            nvs_close(handle);
+            return false;
+        }
+        total_bytes += blob.size();
+    }
+
+    for (int i = count; i < MAX_KEYSETS; i++) {
+        char ks_key[16];
+        snprintf(ks_key, sizeof(ks_key), "k_%d_%d", nvs_slot_, i);
+        nvs_erase_key(handle, ks_key);
+    }
+
+    err = nvs_commit(handle);
+    nvs_close(handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "save_keysets commit failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    ESP_LOGI(TAG, "[%d] saved %d keysets (%d bytes total)",
+             nvs_slot_, count, (int)total_bytes);
     return true;
 }
 
@@ -170,6 +210,39 @@ bool Wallet::load_keysets_nvs()
     if (err != ESP_OK)
         return false;
 
+    // Try individual-entry format first
+    char cnt_key[16];
+    snprintf(cnt_key, sizeof(cnt_key), "kn_%d", nvs_slot_);
+    uint8_t count = 0;
+    err = nvs_get_u8(handle, cnt_key, &count);
+
+    if (err == ESP_OK && count > 0) {
+        std::vector<Keyset> loaded;
+        for (int i = 0; i < count && i < MAX_KEYSETS; i++) {
+            char ks_key[16];
+            snprintf(ks_key, sizeof(ks_key), "k_%d_%d", nvs_slot_, i);
+            size_t required = 0;
+            if (nvs_get_blob(handle, ks_key, nullptr, &required) != ESP_OK
+                || required == 0)
+                continue;
+            std::string blob(required, '\0');
+            if (nvs_get_blob(handle, ks_key, blob.data(), &required) != ESP_OK)
+                continue;
+            Keyset ks{};
+            if (deserialize(blob.c_str(), ks))
+                loaded.push_back(std::move(ks));
+        }
+        nvs_close(handle);
+        if (!loaded.empty()) {
+            keysets_ = std::move(loaded);
+            ESP_LOGI(TAG, "[%d] loaded %d keysets from NVS",
+                     nvs_slot_, (int)keysets_.size());
+            return true;
+        }
+        return false;
+    }
+
+    // Fall back to legacy single-blob format
     char key[16];
     slot_key(key, sizeof(key), "keys", nvs_slot_);
     size_t required = 0;
@@ -190,7 +263,8 @@ bool Wallet::load_keysets_nvs()
         return false;
 
     keysets_ = std::move(loaded);
-    ESP_LOGI(TAG, "[%d] loaded %d keysets from NVS", nvs_slot_, (int)keysets_.size());
+    ESP_LOGI(TAG, "[%d] loaded %d keysets from NVS (legacy)",
+             nvs_slot_, (int)keysets_.size());
     return true;
 }
 
@@ -261,7 +335,18 @@ bool Wallet::load_keysets()
         return false;
     }
 
-    // Step 2: for each keyset, GET /v1/keys/{id} to fetch the actual public keys
+    if ((int)infos.size() > MAX_KEYSETS) {
+        ESP_LOGW(TAG, "mint has %d keysets, capping at %d",
+                 (int)infos.size(), MAX_KEYSETS);
+        // Keep active keysets first, then fill remaining slots
+        std::stable_sort(infos.begin(), infos.end(),
+                         [](const KeysetInfo& a, const KeysetInfo& b) {
+                             return a.active > b.active;
+                         });
+        infos.resize(MAX_KEYSETS);
+    }
+
+    // Step 2: fetch full keys for each keyset
     std::vector<Keyset> result;
     for (const auto& info : infos) {
         std::string keys_url = mint_url_ + "/v1/keys/" + info.id;
@@ -288,7 +373,6 @@ bool Wallet::load_keysets()
             continue;
         }
 
-        // Merge: take the keys from /v1/keys/{id}, metadata from /v1/keysets
         Keyset ks;
         ks.id = info.id;
         ks.unit = info.unit;
@@ -636,6 +720,379 @@ bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
 
     ESP_LOGI(TAG, "received %d sat (%d proofs)", total, (int)proofs_out.size());
     save_proofs();
+    return true;
+}
+
+// -------------------------------------------------------------------------
+// Balance
+// -------------------------------------------------------------------------
+
+int Wallet::balance() const
+{
+    int sum = 0;
+    for (const auto& p : proofs_)
+        sum += p.amount;
+    return sum;
+}
+
+// -------------------------------------------------------------------------
+// Proof selection (greedy, largest first)
+// -------------------------------------------------------------------------
+
+bool Wallet::select_proofs(int amount_needed,
+                           std::vector<Proof>& selected,
+                           std::vector<Proof>& remaining)
+{
+    selected.clear();
+    remaining.clear();
+
+    std::vector<size_t> indices(proofs_.size());
+    for (size_t i = 0; i < indices.size(); i++)
+        indices[i] = i;
+
+    std::sort(indices.begin(), indices.end(), [&](size_t a, size_t b) {
+        return proofs_[a].amount > proofs_[b].amount;
+    });
+
+    int sum = 0;
+    bool enough = false;
+    for (size_t idx : indices) {
+        if (!enough) {
+            selected.push_back(proofs_[idx]);
+            sum += proofs_[idx].amount;
+            int fee = calculate_fee(selected);
+            if (sum >= amount_needed + fee)
+                enough = true;
+        } else {
+            remaining.push_back(proofs_[idx]);
+        }
+    }
+
+    if (!enough) {
+        ESP_LOGE(TAG, "select_proofs: insufficient balance (%d < %d)",
+                 sum, amount_needed);
+        selected.clear();
+        remaining.clear();
+        return false;
+    }
+    return true;
+}
+
+// -------------------------------------------------------------------------
+// NUT-04: Mint tokens (bolt11)
+// -------------------------------------------------------------------------
+
+bool Wallet::request_mint_quote(int amount, MintQuote& quote_out)
+{
+    cJSON* body = cJSON_CreateObject();
+    cJSON_AddNumberToObject(body, "amount", amount);
+    cJSON_AddStringToObject(body, "unit", "sat");
+    char* body_str = cJSON_PrintUnformatted(body);
+    cJSON_Delete(body);
+
+    std::string url = mint_url_ + "/v1/mint/quote/bolt11";
+    http_response_t resp = {};
+    esp_err_t err = http_post_json(url.c_str(), body_str, &resp);
+    cJSON_free(body_str);
+
+    if (err != ESP_OK || !resp.body) {
+        ESP_LOGE(TAG, "mint quote POST failed: %s", esp_err_to_name(err));
+        http_response_free(&resp);
+        return false;
+    }
+    if (resp.status != 200) {
+        ESP_LOGE(TAG, "mint quote: mint returned %d: %.*s",
+                 resp.status, (int)resp.body_len, resp.body);
+        http_response_free(&resp);
+        return false;
+    }
+
+    bool ok = deserialize(resp.body, quote_out);
+    http_response_free(&resp);
+    if (!ok) {
+        ESP_LOGE(TAG, "mint quote: failed to parse response");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "mint quote: id=%s amount=%d state=%s",
+             quote_out.quote.c_str(), quote_out.amount, quote_out.state.c_str());
+    return true;
+}
+
+bool Wallet::check_mint_quote(const std::string& quote_id, MintQuote& quote_out)
+{
+    std::string url = mint_url_ + "/v1/mint/quote/bolt11/" + quote_id;
+    http_response_t resp = {};
+    esp_err_t err = http_get(url.c_str(), &resp);
+
+    if (err != ESP_OK || !resp.body) {
+        ESP_LOGD(TAG, "check mint quote GET failed: %s", esp_err_to_name(err));
+        http_response_free(&resp);
+        return false;
+    }
+    if (resp.status != 200) {
+        ESP_LOGD(TAG, "check mint quote: mint returned %d", resp.status);
+        http_response_free(&resp);
+        return false;
+    }
+
+    bool ok = deserialize(resp.body, quote_out);
+    http_response_free(&resp);
+    if (!ok) {
+        ESP_LOGD(TAG, "check mint quote: failed to parse response");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "mint quote %s: state=%s amount=%d",
+             quote_id.c_str(), quote_out.state.c_str(), quote_out.amount);
+    return true;
+}
+
+bool Wallet::mint_tokens(const std::string& quote_id, int amount)
+{
+    const Keyset* ks = active_keyset();
+    if (!ks) {
+        ESP_LOGE(TAG, "mint_tokens: no active keyset");
+        return false;
+    }
+
+    auto amounts = split_amount(amount);
+    BlindingData blinding;
+    if (!generate_outputs(amounts, ks->id, blinding))
+        return false;
+
+    MintRequest req{quote_id, blinding.outputs};
+    std::string body = serialize(req);
+
+    std::string url = mint_url_ + "/v1/mint/bolt11";
+    http_response_t resp = {};
+    esp_err_t err = http_post_json(url.c_str(), body.c_str(), &resp);
+    if (err != ESP_OK || !resp.body) {
+        ESP_LOGE(TAG, "mint POST failed: %s", esp_err_to_name(err));
+        http_response_free(&resp);
+        return false;
+    }
+    if (resp.status != 200) {
+        ESP_LOGE(TAG, "mint: mint returned %d: %.*s",
+                 resp.status, (int)resp.body_len, resp.body);
+        http_response_free(&resp);
+        return false;
+    }
+
+    MintResponse mint_resp;
+    bool parsed = deserialize(resp.body, mint_resp);
+    http_response_free(&resp);
+    if (!parsed) {
+        ESP_LOGE(TAG, "mint: failed to parse response");
+        return false;
+    }
+
+    std::vector<Proof> new_proofs;
+    if (!unblind_signatures(mint_resp.signatures, blinding, *ks, new_proofs))
+        return false;
+
+    for (auto& p : new_proofs) {
+        p.dleq = std::nullopt;
+        p.witness = std::nullopt;
+    }
+
+    for (const auto& p : new_proofs)
+        proofs_.push_back(p);
+
+    int total = 0;
+    for (const auto& p : new_proofs)
+        total += p.amount;
+
+    ESP_LOGI(TAG, "minted %d sat (%d proofs)", total, (int)new_proofs.size());
+    save_proofs();
+    return true;
+}
+
+// -------------------------------------------------------------------------
+// NUT-05: Melt tokens (bolt11)
+// -------------------------------------------------------------------------
+
+bool Wallet::request_melt_quote(const std::string& bolt11, MeltQuote& quote_out)
+{
+    cJSON* body = cJSON_CreateObject();
+    cJSON_AddStringToObject(body, "request", bolt11.c_str());
+    cJSON_AddStringToObject(body, "unit", "sat");
+    char* body_str = cJSON_PrintUnformatted(body);
+    cJSON_Delete(body);
+
+    std::string url = mint_url_ + "/v1/melt/quote/bolt11";
+    http_response_t resp = {};
+    esp_err_t err = http_post_json(url.c_str(), body_str, &resp);
+    cJSON_free(body_str);
+
+    if (err != ESP_OK || !resp.body) {
+        ESP_LOGE(TAG, "melt quote POST failed: %s", esp_err_to_name(err));
+        http_response_free(&resp);
+        return false;
+    }
+    if (resp.status != 200) {
+        ESP_LOGE(TAG, "melt quote: mint returned %d: %.*s",
+                 resp.status, (int)resp.body_len, resp.body);
+        http_response_free(&resp);
+        return false;
+    }
+
+    bool ok = deserialize(resp.body, quote_out);
+    http_response_free(&resp);
+    if (!ok) {
+        ESP_LOGE(TAG, "melt quote: failed to parse response");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "melt quote: id=%s amount=%d fee_reserve=%d state=%s",
+             quote_out.quote.c_str(), quote_out.amount,
+             quote_out.fee_reserve, quote_out.state.c_str());
+    return true;
+}
+
+bool Wallet::check_melt_quote(const std::string& quote_id, MeltQuote& quote_out)
+{
+    std::string url = mint_url_ + "/v1/melt/quote/bolt11/" + quote_id;
+    http_response_t resp = {};
+    esp_err_t err = http_get(url.c_str(), &resp);
+
+    if (err != ESP_OK || !resp.body) {
+        ESP_LOGE(TAG, "check melt quote GET failed: %s", esp_err_to_name(err));
+        http_response_free(&resp);
+        return false;
+    }
+    if (resp.status != 200) {
+        ESP_LOGE(TAG, "check melt quote: mint returned %d: %.*s",
+                 resp.status, (int)resp.body_len, resp.body);
+        http_response_free(&resp);
+        return false;
+    }
+
+    bool ok = deserialize(resp.body, quote_out);
+    http_response_free(&resp);
+    if (!ok) {
+        ESP_LOGE(TAG, "check melt quote: failed to parse response");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "melt quote %s: state=%s", quote_id.c_str(), quote_out.state.c_str());
+    return true;
+}
+
+bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
+{
+    change_amount = 0;
+
+    const Keyset* ks = active_keyset();
+    if (!ks) {
+        ESP_LOGE(TAG, "melt: no active keyset");
+        return false;
+    }
+
+    int needed = quote.amount + quote.fee_reserve;
+    std::vector<Proof> selected, leftover;
+    if (!select_proofs(needed, selected, leftover))
+        return false;
+
+    int input_sum = 0;
+    for (const auto& p : selected)
+        input_sum += p.amount;
+    int input_fee = calculate_fee(selected);
+
+    // Max possible change: if actual LN fee is 0, we get back fee_reserve + excess
+    int max_change = input_sum - quote.amount - input_fee;
+    if (max_change < 0) max_change = 0;
+
+    // Generate blank outputs for change (amount=0, mint assigns values)
+    int n_blank = 0;
+    if (max_change > 0) {
+        int tmp = max_change;
+        while (tmp > 0) {
+            n_blank++;
+            tmp >>= 1;
+        }
+    }
+
+    BlindingData change_blinding;
+    if (n_blank > 0) {
+        std::vector<int> blank_amounts(n_blank, 0);
+        if (!generate_outputs(blank_amounts, ks->id, change_blinding))
+            return false;
+    }
+
+    // Strip DLEQ from inputs
+    std::vector<Proof> stripped;
+    for (const auto& p : selected)
+        stripped.push_back(Proof{p.id, p.amount, p.secret, p.C, std::nullopt, p.witness});
+
+    MeltRequest req;
+    req.quote = quote.quote;
+    req.inputs = stripped;
+    if (n_blank > 0)
+        req.outputs = change_blinding.outputs;
+
+    std::string body = serialize(req);
+
+    std::string url = mint_url_ + "/v1/melt/bolt11";
+    http_response_t resp = {};
+    esp_err_t err = http_post_json_timeout(url.c_str(), body.c_str(), &resp, 120000);
+    if (err != ESP_OK || !resp.body) {
+        ESP_LOGE(TAG, "melt POST failed: %s", esp_err_to_name(err));
+        http_response_free(&resp);
+        return false;
+    }
+    if (resp.status != 200) {
+        ESP_LOGE(TAG, "melt: mint returned %d: %.*s",
+                 resp.status, (int)resp.body_len, resp.body);
+        http_response_free(&resp);
+        return false;
+    }
+
+    MeltQuote melt_resp;
+    bool parsed = deserialize(resp.body, melt_resp);
+    http_response_free(&resp);
+    if (!parsed) {
+        ESP_LOGE(TAG, "melt: failed to parse response");
+        return false;
+    }
+
+    if (melt_resp.state != "PAID" && melt_resp.state != "PENDING") {
+        ESP_LOGE(TAG, "melt: unexpected state: %s", melt_resp.state.c_str());
+        return false;
+    }
+
+    // Remove spent proofs
+    proofs_ = leftover;
+
+    // Unblind change if returned. The mint may return fewer signatures
+    // than blank outputs we sent (only enough to cover actual change).
+    if (melt_resp.change && !melt_resp.change->empty() && n_blank > 0) {
+        BlindingData truncated = change_blinding;
+        size_t sig_count = melt_resp.change->size();
+        if (sig_count < truncated.outputs.size()) {
+            truncated.outputs.resize(sig_count);
+            truncated.secrets.resize(sig_count);
+            truncated.blinding_factors.resize(sig_count);
+        }
+        std::vector<Proof> change_proofs;
+        if (unblind_signatures(*melt_resp.change, truncated, *ks, change_proofs)) {
+            for (auto& p : change_proofs) {
+                p.dleq = std::nullopt;
+                p.witness = std::nullopt;
+                change_amount += p.amount;
+                proofs_.push_back(p);
+            }
+            ESP_LOGI(TAG, "melt: received %d sat change (%d proofs)",
+                     change_amount, (int)change_proofs.size());
+        } else {
+            ESP_LOGW(TAG, "melt: failed to unblind change signatures");
+        }
+    }
+
+    save_proofs();
+
+    ESP_LOGI(TAG, "melt: state=%s input=%d change=%d",
+             melt_resp.state.c_str(), input_sum, change_amount);
     return true;
 }
 

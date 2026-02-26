@@ -41,9 +41,9 @@ static esp_err_t on_event(esp_http_client_event_t *evt)
     return ESP_OK;
 }
 
-static esp_err_t perform(const char *url, esp_http_client_method_t method,
-                         const char *post_data, int post_len,
-                         http_response_t *resp)
+static esp_err_t perform_with_timeout(const char *url, esp_http_client_method_t method,
+                                      const char *post_data, int post_len,
+                                      http_response_t *resp, int timeout_ms)
 {
     response_buf_t rb = {0};
 
@@ -51,7 +51,7 @@ static esp_err_t perform(const char *url, esp_http_client_method_t method,
         .url = url,
         .event_handler = on_event,
         .user_data = &rb,
-        .timeout_ms = 10000,
+        .timeout_ms = timeout_ms,
         .crt_bundle_attach = esp_crt_bundle_attach,
     };
 
@@ -90,14 +90,23 @@ static esp_err_t perform(const char *url, esp_http_client_method_t method,
 
 esp_err_t http_get(const char *url, http_response_t *resp)
 {
-    return perform(url, HTTP_METHOD_GET, NULL, 0, resp);
+    return perform_with_timeout(url, HTTP_METHOD_GET, NULL, 0, resp, 10000);
 }
 
 esp_err_t http_post_json(const char *url, const char *json_body,
                          http_response_t *resp)
 {
-    return perform(url, HTTP_METHOD_POST, json_body,
-                   json_body ? (int)strlen(json_body) : 0, resp);
+    return perform_with_timeout(url, HTTP_METHOD_POST, json_body,
+                                json_body ? (int)strlen(json_body) : 0,
+                                resp, 10000);
+}
+
+esp_err_t http_post_json_timeout(const char *url, const char *json_body,
+                                 http_response_t *resp, int timeout_ms)
+{
+    return perform_with_timeout(url, HTTP_METHOD_POST, json_body,
+                                json_body ? (int)strlen(json_body) : 0,
+                                resp, timeout_ms);
 }
 
 void http_response_free(http_response_t *resp)

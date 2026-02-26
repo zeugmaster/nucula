@@ -250,6 +250,7 @@ cJSON* to_json(const MintQuote& v) {
     cJSON* j = cJSON_CreateObject();
     cJSON_AddStringToObject(j, "quote", v.quote.c_str());
     cJSON_AddStringToObject(j, "request", v.request.c_str());
+    cJSON_AddNumberToObject(j, "amount", v.amount);
     cJSON_AddStringToObject(j, "state", v.state.c_str());
     cJSON_AddNumberToObject(j, "expiry", (double)v.expiry);
     return j;
@@ -263,6 +264,8 @@ bool from_json(const cJSON* j, MintQuote& out) {
     out.quote = quote;
     out.request = request;
     out.state = state;
+    if (!get_int(j, "amount", out.amount))
+        out.amount = 0;
     if (!get_int64(j, "expiry", out.expiry))
         out.expiry = 0;
     return true;

@@ -385,6 +385,230 @@ static void cmd_nfc(const char *arg)
     nucula_console_write("usage: nfc [request <amount>|stop]\r\n");
 }
 
+static cashu::Wallet *resolve_wallet(const char *idx_str)
+{
+    int count = wallet_count();
+    if (count == 0) {
+        nucula_console_write("error: no mints configured\r\n");
+        return nullptr;
+    }
+    if (idx_str && *idx_str) {
+        int slot = atoi(idx_str);
+        if (slot >= 0 && slot < MAX_MINTS && g_wallets[slot])
+            return g_wallets[slot];
+        nucula_console_write("error: invalid mint index\r\n");
+        return nullptr;
+    }
+    if (count == 1) {
+        for (int i = 0; i < MAX_MINTS; i++)
+            if (g_wallets[i]) return g_wallets[i];
+    }
+    nucula_console_write("error: multiple mints, specify index\r\n");
+    for (int i = 0; i < MAX_MINTS; i++) {
+        if (!g_wallets[i]) continue;
+        console_printf("  [%d] %s\r\n", i, g_wallets[i]->mint_url().c_str());
+    }
+    return nullptr;
+}
+
+static void cmd_invoice(const char *arg)
+{
+    if (!arg || strlen(arg) == 0) {
+        nucula_console_write("usage: invoice <amount> [mint_index]\r\n");
+        return;
+    }
+    if (!wifi_is_connected()) {
+        nucula_console_write("error: not connected to wifi\r\n");
+        return;
+    }
+
+    int amount = atoi(arg);
+    if (amount <= 0) {
+        nucula_console_write("error: amount must be positive\r\n");
+        return;
+    }
+
+    const char *idx_str = nullptr;
+    const char *space = strchr(arg, ' ');
+    if (space) {
+        idx_str = space + 1;
+        while (*idx_str == ' ') idx_str++;
+        if (*idx_str == '\0') idx_str = nullptr;
+    }
+
+    cashu::Wallet *w = resolve_wallet(idx_str);
+    if (!w) return;
+
+    if (w->keysets().empty() || !w->active_keyset()) {
+        nucula_console_write("loading keysets...\r\n");
+        if (!w->load_keysets()) {
+            nucula_console_write("error: failed to load keysets\r\n");
+            return;
+        }
+    }
+
+    nucula_console_write("requesting mint quote...\r\n");
+    cashu::MintQuote quote;
+    if (!w->request_mint_quote(amount, quote)) {
+        nucula_console_write("error: failed to get mint quote\r\n");
+        return;
+    }
+
+    nucula_console_write("pay this invoice:\r\n");
+    nucula_console_write(quote.request.c_str());
+    nucula_console_write("\r\n");
+    console_printf("quote: %s\r\n", quote.quote.c_str());
+    console_printf("amount: %d sat\r\n", quote.amount);
+    nucula_console_write("then run: claim <quote_id>\r\n");
+}
+
+static void cmd_claim(const char *arg)
+{
+    if (!arg || strlen(arg) == 0) {
+        nucula_console_write("usage: claim <quote_id> [mint_index]\r\n");
+        return;
+    }
+    if (!wifi_is_connected()) {
+        nucula_console_write("error: not connected to wifi\r\n");
+        return;
+    }
+
+    // Split quote_id and optional mint index
+    std::string quote_id;
+    const char *space = strchr(arg, ' ');
+    const char *idx_str = nullptr;
+    if (space) {
+        quote_id = std::string(arg, space - arg);
+        idx_str = space + 1;
+        while (*idx_str == ' ') idx_str++;
+        if (*idx_str == '\0') idx_str = nullptr;
+    } else {
+        quote_id = arg;
+    }
+
+    cashu::Wallet *w = nullptr;
+    cashu::MintQuote quote;
+
+    if (idx_str) {
+        w = resolve_wallet(idx_str);
+        if (!w) return;
+        if (!w->check_mint_quote(quote_id, quote)) {
+            nucula_console_write("error: quote not found on this mint\r\n");
+            return;
+        }
+    } else {
+        for (int i = 0; i < MAX_MINTS; i++) {
+            if (!g_wallets[i]) continue;
+            if (g_wallets[i]->check_mint_quote(quote_id, quote)) {
+                w = g_wallets[i];
+                break;
+            }
+        }
+    }
+
+    if (!w) {
+        nucula_console_write("error: quote not found on any mint\r\n");
+        return;
+    }
+
+    if (quote.state == "UNPAID") {
+        nucula_console_write("invoice not paid yet\r\n");
+        return;
+    }
+    if (quote.state == "ISSUED") {
+        nucula_console_write("tokens already claimed\r\n");
+        return;
+    }
+    if (quote.state != "PAID") {
+        console_printf("unexpected state: %s\r\n", quote.state.c_str());
+        return;
+    }
+
+    if (w->keysets().empty() || !w->active_keyset()) {
+        nucula_console_write("loading keysets...\r\n");
+        if (!w->load_keysets()) {
+            nucula_console_write("error: failed to load keysets\r\n");
+            return;
+        }
+    }
+
+    nucula_console_write("minting tokens...\r\n");
+    if (!w->mint_tokens(quote.quote, quote.amount)) {
+        nucula_console_write("error: minting failed\r\n");
+        return;
+    }
+
+    console_printf("minted %d sat\r\n", quote.amount);
+    display_refresh();
+}
+
+static void cmd_melt(const char *arg)
+{
+    if (!arg || strlen(arg) == 0) {
+        nucula_console_write("usage: melt <bolt11_invoice> [mint_index]\r\n");
+        return;
+    }
+    if (!wifi_is_connected()) {
+        nucula_console_write("error: not connected to wifi\r\n");
+        return;
+    }
+
+    // Split bolt11 and optional mint index
+    std::string bolt11;
+    const char *idx_str = nullptr;
+    const char *space = strchr(arg, ' ');
+    if (space) {
+        bolt11 = std::string(arg, space - arg);
+        idx_str = space + 1;
+        while (*idx_str == ' ') idx_str++;
+        if (*idx_str == '\0') idx_str = nullptr;
+    } else {
+        bolt11 = arg;
+    }
+
+    cashu::Wallet *w = resolve_wallet(idx_str);
+    if (!w) return;
+
+    if (w->keysets().empty() || !w->active_keyset()) {
+        nucula_console_write("loading keysets...\r\n");
+        if (!w->load_keysets()) {
+            nucula_console_write("error: failed to load keysets\r\n");
+            return;
+        }
+    }
+
+    nucula_console_write("requesting melt quote...\r\n");
+    cashu::MeltQuote quote;
+    if (!w->request_melt_quote(bolt11, quote)) {
+        nucula_console_write("error: failed to get melt quote\r\n");
+        return;
+    }
+
+    int wallet_bal = w->balance();
+    int total_needed = quote.amount + quote.fee_reserve;
+    console_printf("amount:      %d sat\r\n", quote.amount);
+    console_printf("fee_reserve: %d sat\r\n", quote.fee_reserve);
+    console_printf("balance:     %d sat\r\n", wallet_bal);
+
+    if (wallet_bal < total_needed) {
+        console_printf("error: insufficient balance (%d < %d)\r\n",
+                       wallet_bal, total_needed);
+        return;
+    }
+
+    nucula_console_write("paying invoice...\r\n");
+    int change_amount = 0;
+    if (!w->melt_tokens(quote, change_amount)) {
+        nucula_console_write("error: melt failed\r\n");
+        return;
+    }
+
+    console_printf("paid %d sat\r\n", quote.amount);
+    if (change_amount > 0)
+        console_printf("change: %d sat\r\n", change_amount);
+    display_refresh();
+}
+
 static void cmd_stickup(const char *arg)
 {
     (void)arg;
@@ -481,6 +705,9 @@ extern "C" void app_main(void)
     console_register_cmd("receive", cmd_receive,  "receive a cashuA token");
     console_register_cmd("mint",    cmd_mint,     "mint [list|add <url>|remove <idx>]");
     console_register_cmd("nfc",     cmd_nfc,      "nfc [request <amount>|stop]");
+    console_register_cmd("invoice", cmd_invoice,  "invoice <amount> [mint_idx]");
+    console_register_cmd("claim",   cmd_claim,    "claim <quote_id> [mint_idx]");
+    console_register_cmd("melt",    cmd_melt,     "melt <bolt11> [mint_idx]");
     console_register_cmd("stickup", cmd_stickup,  "drain wallet into v4 tokens");
     console_register_cmd("reboot",  cmd_reboot,   "restart the device");
     console_start();
