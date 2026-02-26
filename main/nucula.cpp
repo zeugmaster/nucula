@@ -385,6 +385,44 @@ static void cmd_nfc(const char *arg)
     nucula_console_write("usage: nfc [request <amount>|stop]\r\n");
 }
 
+static void cmd_stickup(const char *arg)
+{
+    (void)arg;
+
+    bool any = false;
+    for (int i = 0; i < MAX_MINTS; i++) {
+        auto *w = g_wallets[i];
+        if (!w || w->proofs().empty()) continue;
+
+        int balance = 0;
+        for (const auto &p : w->proofs())
+            balance += p.amount;
+
+        any = true;
+        console_printf("[%d] %s: %d sat in %d proofs\r\n",
+                       i, w->mint_url().c_str(),
+                       balance, (int)w->proofs().size());
+
+        cashu::Token token;
+        token.mint = w->mint_url();
+        token.unit = "sat";
+        token.proofs = w->proofs();
+
+        std::string serialized = cashu::serialize_token_v4(token);
+
+        nucula_console_write(serialized.c_str());
+        nucula_console_write("\r\n");
+
+        w->clear_proofs();
+        console_printf("[%d] drained\r\n", i);
+    }
+
+    if (!any)
+        nucula_console_write("nothing to drain\r\n");
+    else
+        display_refresh();
+}
+
 static void cmd_reboot(const char *arg)
 {
     (void)arg;
@@ -443,6 +481,7 @@ extern "C" void app_main(void)
     console_register_cmd("receive", cmd_receive,  "receive a cashuA token");
     console_register_cmd("mint",    cmd_mint,     "mint [list|add <url>|remove <idx>]");
     console_register_cmd("nfc",     cmd_nfc,      "nfc [request <amount>|stop]");
+    console_register_cmd("stickup", cmd_stickup,  "drain wallet into v4 tokens");
     console_register_cmd("reboot",  cmd_reboot,   "restart the device");
     console_start();
 }

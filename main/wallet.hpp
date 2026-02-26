@@ -51,6 +51,7 @@ public:
     const std::vector<Keyset>& keysets() const { return keysets_; }
     const std::vector<Proof>& proofs() const { return proofs_; }
     int nvs_slot() const { return nvs_slot_; }
+    bool clear_proofs();
 
 private:
     std::string mint_url_;

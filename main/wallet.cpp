@@ -639,4 +639,14 @@ bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
     return true;
 }
 
+// -------------------------------------------------------------------------
+// Clear all proofs (for drain)
+// -------------------------------------------------------------------------
+
+bool Wallet::clear_proofs()
+{
+    proofs_.clear();
+    return save_proofs();
+}
+
 } // namespace cashu

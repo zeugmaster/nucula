@@ -280,9 +280,10 @@ std::string serialize_token_v4(const Token &token)
     for (const auto &p : token.proofs)
         by_keyset[p.id].push_back(&p);
 
-    uint8_t buf[4096];
+    size_t buf_size = 512 + token.proofs.size() * 200;
+    uint8_t *buf = new uint8_t[buf_size];
     CborEncoder enc;
-    cbor_encoder_init(&enc, buf, sizeof(buf), 0);
+    cbor_encoder_init(&enc, buf, buf_size, 0);
 
     int map_items = 3 + (token.memo ? 1 : 0);
     CborEncoder map_enc;
@@ -389,6 +390,7 @@ std::string serialize_token_v4(const Token &token)
 
     size_t cbor_len = cbor_encoder_get_buffer_size(&enc, buf);
     std::string encoded = base64url_encode(buf, cbor_len);
+    delete[] buf;
     return std::string("cashuB") + encoded;
 }
 
