@@ -304,22 +304,37 @@ bool nfc_init()
         .clk_speed_hz = NFC_SPI_FREQ,
     };
 
-    esp_err_t err = pn532_init_spi(&s_pn532, &spi_cfg);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "PN532 SPI init failed: %s", esp_err_to_name(err));
-        s_state.store(NfcState::off);
-        return false;
+    // Try init + firmware version up to 3 times (PN532 sometimes needs
+    // extra wakeup cycles depending on boot timing)
+    pn532_firmware_version_t fw;
+    bool found = false;
+
+    for (int attempt = 0; attempt < 3 && !found; attempt++) {
+        if (attempt > 0) {
+            ESP_LOGW(TAG, "retrying PN532 init (attempt %d)...", attempt + 1);
+            pn532_spi_deinit(&s_pn532);
+            vTaskDelay(pdMS_TO_TICKS(300));
+        }
+
+        esp_err_t err = pn532_init_spi(&s_pn532, &spi_cfg);
+        if (err != ESP_OK) continue;
+
+        for (int r = 0; r < 3; r++) {
+            if (r > 0) vTaskDelay(pdMS_TO_TICKS(200));
+            if (pn532_get_firmware_version(&s_pn532, &fw) == ESP_OK) {
+                found = true;
+                break;
+            }
+        }
     }
 
-    pn532_firmware_version_t fw;
-    err = pn532_get_firmware_version(&s_pn532, &fw);
-    if (err != ESP_OK) {
+    if (!found) {
         ESP_LOGE(TAG, "PN532 not responding");
         s_state.store(NfcState::off);
         return false;
     }
 
-    err = pn532_sam_configuration(&s_pn532, PN532_SAM_NORMAL_MODE, 0x14, false);
+    esp_err_t err = pn532_sam_configuration(&s_pn532, PN532_SAM_NORMAL_MODE, 0x14, false);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "SAM config failed");
         s_state.store(NfcState::off);
