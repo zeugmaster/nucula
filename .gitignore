@@ -1,8 +1,16 @@
 # Build output
 build/
 
-# ESP-IDF config backups
+# ESP-IDF generated config (sdkconfig.defaults is tracked instead)
+sdkconfig
 sdkconfig.old
+
+# ESP-IDF managed components (auto-downloaded)
+managed_components/
+dependencies.lock
+
+# WiFi credentials (copy wifi_config.example.h to wifi_config.h)
+main/wifi_config.h
 
 # Clangd cache
 .cache/
@@ -10,6 +18,6 @@ sdkconfig.old
 # macOS
 .DS_Store
 
-# IDE (optional - remove these lines if you want to share IDE settings)
-# .vscode/
-# .idea/
+# IDE
+.vscode/
+.idea/

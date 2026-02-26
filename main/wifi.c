@@ -1,4 +1,5 @@
 #include "wifi.h"
+#include "wifi_config.h"
 
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -9,8 +10,6 @@
 #include "esp_netif.h"
 #include "nvs_flash.h"
 
-#define WIFI_SSID     "Delos Inc. "
-#define WIFI_PASS     "beauty_in_this_world!"
 #define MAX_RETRIES   5
 
 #define CONNECTED_BIT BIT0
