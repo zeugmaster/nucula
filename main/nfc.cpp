@@ -1,4 +1,5 @@
 #include "nfc.hpp"
+#include "ndef.hpp"
 #include "cashu.hpp"
 #include "cashu_json.hpp"
 #include "cashu_cbor.hpp"
@@ -14,20 +15,13 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
-#include "pn532.h"
+#include "nci.h"
 
 #define TAG "nfc"
 
-// Hardware SPI pins -- same as proven esp-nfc project (XIAO ESP32-C6 right header)
-#define NFC_SPI_SCK    19
-#define NFC_SPI_MISO   20
-#define NFC_SPI_MOSI   18
-#define NFC_SPI_SS     17
-#define NFC_SPI_FREQ   1000000
-
 #define PAYMENT_TIMEOUT_MS 120000
 
-static pn532_handle_t s_pn532;
+static nci_context_t s_nci;
 static bool s_hw_init = false;
 static std::atomic<NfcState> s_state{NfcState::off};
 static std::atomic<bool> s_stop_flag{false};
@@ -39,78 +33,7 @@ extern void display_refresh();
 extern void display_nfc_status(const char *line1, const char *line2);
 
 // -------------------------------------------------------------------------
-// NDEF parsing + cashu token extraction
-// -------------------------------------------------------------------------
-
-static std::string extract_text_from_ndef(const uint8_t *data, size_t len)
-{
-    size_t offset = 0;
-    while (offset < len) {
-        uint8_t header = data[offset++];
-        if (offset >= len) break;
-        bool sr = (header & 0x10) != 0;
-        uint8_t tnf = header & 0x07;
-        uint8_t type_len = data[offset++];
-
-        uint32_t payload_len;
-        if (sr) {
-            if (offset >= len) break;
-            payload_len = data[offset++];
-        } else {
-            if (offset + 4 > len) break;
-            payload_len = (data[offset] << 24) | (data[offset+1] << 16) |
-                          (data[offset+2] << 8) | data[offset+3];
-            offset += 4;
-        }
-        if (offset + type_len + payload_len > len) break;
-        const uint8_t *type = &data[offset];
-        offset += type_len;
-        const uint8_t *payload = &data[offset];
-        offset += payload_len;
-
-        if (tnf == 0x01 && type_len == 1 && type[0] == 'T' && payload_len > 0) {
-            uint8_t lang_len = payload[0] & 0x3F;
-            if (payload_len > (uint32_t)(1 + lang_len))
-                return std::string((const char *)&payload[1 + lang_len],
-                                   payload_len - 1 - lang_len);
-        }
-        if (tnf == 0x01 && type_len == 1 && type[0] == 'U' && payload_len > 0) {
-            static const char *pfx[] = {"","http://www.","https://www.","http://","https://"};
-            uint8_t id = payload[0];
-            const char *p = (id < 5) ? pfx[id] : "";
-            return std::string(p) + std::string((const char *)&payload[1], payload_len - 1);
-        }
-        if (header & 0x40) break;
-    }
-    return "";
-}
-
-static std::string extract_cashu_token(const std::string &text)
-{
-    if (text.compare(0, 6, "cashuA") == 0 || text.compare(0, 6, "cashuB") == 0)
-        return text;
-    size_t pos = text.find("#token=cashu");
-    if (pos != std::string::npos) return text.substr(pos + 7);
-    pos = text.find("token=cashu");
-    if (pos != std::string::npos) {
-        size_t end = text.find_first_of("&#", pos + 6);
-        return text.substr(pos + 6, end == std::string::npos ? end : end - pos - 6);
-    }
-    for (const char *pfx : {"cashuA", "cashuB"}) {
-        pos = text.find(pfx);
-        if (pos != std::string::npos) {
-            size_t end = pos;
-            while (end < text.size() && text[end] != ' ' && text[end] != '\t' &&
-                   text[end] != '\n' && text[end] != '"' && text[end] != '<' &&
-                   text[end] != '>' && text[end] != '&' && text[end] != '#') end++;
-            return text.substr(pos, end - pos);
-        }
-    }
-    return "";
-}
-
-// -------------------------------------------------------------------------
-// Token redemption
+// Token redemption (unchanged from PN532 version)
 // -------------------------------------------------------------------------
 
 static cashu::Wallet *find_wallet_for(const char *mint_url)
@@ -119,13 +42,6 @@ static cashu::Wallet *find_wallet_for(const char *mint_url)
         if (g_wallets[i] && g_wallets[i]->mint_url() == mint_url)
             return g_wallets[i];
     return nullptr;
-}
-
-static int find_free_slot()
-{
-    for (int i = 0; i < MAX_MINTS; i++)
-        if (!g_wallets[i]) return i;
-    return -1;
 }
 
 static bool redeem_token(const std::string &token_str)
@@ -143,7 +59,7 @@ static bool redeem_token(const std::string &token_str)
         decoded = cashu::deserialize_token_v3(token_str.c_str(), token);
 
     if (!decoded) {
-        ESP_LOGE(TAG, "failed to decode token");
+        ESP_LOGE(TAG, "token decode failed");
         return false;
     }
 
@@ -154,7 +70,8 @@ static bool redeem_token(const std::string &token_str)
 
     cashu::Wallet *w = find_wallet_for(token.mint.c_str());
     if (!w) {
-        int slot = find_free_slot();
+        int slot = -1;
+        for (int i = 0; i < MAX_MINTS; i++) if (!g_wallets[i]) { slot = i; break; }
         if (slot < 0) { ESP_LOGE(TAG, "no free mint slots"); return false; }
         w = new cashu::Wallet(token.mint, g_ctx, slot);
         g_wallets[slot] = w;
@@ -176,23 +93,23 @@ static bool redeem_token(const std::string &token_str)
 }
 
 // -------------------------------------------------------------------------
-// Write callback from pn532_emulate_tag_loop
+// NDEF write callback
 // -------------------------------------------------------------------------
 
 static volatile bool s_token_received = false;
-static std::string s_received_token;
+static std::string   s_received_token;
 
 static void on_ndef_written(const uint8_t *data, size_t len)
 {
     ESP_LOGI(TAG, "NDEF written (%d bytes)", (int)len);
 
-    std::string text = extract_text_from_ndef(data, len);
-    if (text.empty()) {
-        ESP_LOGW(TAG, "no text content in NDEF");
+    std::string text;
+    if (!ndef_parse_message(data, len, text)) {
+        ESP_LOGW(TAG, "NDEF parse failed");
         return;
     }
 
-    std::string token = extract_cashu_token(text);
+    std::string token = ndef_extract_cashu_token(text);
     if (token.empty()) {
         ESP_LOGW(TAG, "no cashu token in: %.60s", text.c_str());
         return;
@@ -201,6 +118,39 @@ static void on_ndef_written(const uint8_t *data, size_t len)
     ESP_LOGI(TAG, "cashu token (%d chars)", (int)token.size());
     s_received_token = std::move(token);
     s_token_received = true;
+}
+
+// -------------------------------------------------------------------------
+// NCI helpers
+// -------------------------------------------------------------------------
+
+// Stop and restart RF discovery (called after reader deactivates)
+static void restart_discovery()
+{
+    const uint8_t stop[] = {0x21, 0x06, 0x01, 0x00};
+    nci_write(&s_nci, stop, sizeof(stop));
+    // Drain responses
+    for (int i = 0; i < 10; i++) {
+        if (nci_wait_for_irq(200)) {
+            nci_read(&s_nci, s_nci.rx_buf, &s_nci.rx_len);
+            if (s_nci.rx_buf[0] == 0x41 && s_nci.rx_buf[1] == 0x06) break;
+        } else break;
+    }
+    nci_write(&s_nci, s_nci.discovery_cmd, s_nci.discovery_cmd_len);
+    if (nci_wait_for_irq(200))
+        nci_read(&s_nci, s_nci.rx_buf, &s_nci.rx_len);
+}
+
+// Send APDU response wrapped in NCI DATA packet
+static void send_nci_response(const uint8_t *apdu, size_t apdu_len)
+{
+    static uint8_t frame[NCI_MAX_FRAME_SIZE];
+    frame[0] = 0x00;
+    frame[1] = (apdu_len >> 8) & 0xFF;
+    frame[2] = apdu_len & 0xFF;
+    if (apdu_len > 0)
+        memcpy(&frame[3], apdu, apdu_len);
+    nci_write(&s_nci, frame, 3 + apdu_len);
 }
 
 // -------------------------------------------------------------------------
@@ -216,10 +166,10 @@ static void nfc_task(void *arg)
 {
     auto *params = static_cast<NfcRequestParams *>(arg);
 
-    // Build payment request
+    // Build payment request and load into NDEF layer
     cashu::PaymentRequest req;
-    req.amount = params->amount;
-    req.unit = std::string("sat");
+    req.amount     = params->amount;
+    req.unit       = std::string("sat");
     req.single_use = true;
     if (!params->mint_url.empty())
         req.mints = std::vector<std::string>{params->mint_url};
@@ -227,15 +177,8 @@ static void nfc_task(void *arg)
     std::string creq = cashu::serialize_payment_request(req);
     ESP_LOGI(TAG, "creq: %s", creq.c_str());
 
-    // Build NDEF text record
-    ndef_text_record_t text_rec = {
-        .language_code = "en",
-        .text = creq.c_str(),
-    };
-    static uint8_t ndef_msg[4096];
-    size_t ndef_len = 0;
-    if (ndef_create_text_record(&text_rec, ndef_msg, sizeof(ndef_msg), &ndef_len) != ESP_OK) {
-        ESP_LOGE(TAG, "NDEF record creation failed");
+    if (!ndef_set_message(creq.c_str())) {
+        ESP_LOGE(TAG, "NDEF message too large");
         s_state.store(NfcState::error);
         display_nfc_status("nfc error", "ndef too large");
         delete params;
@@ -244,47 +187,97 @@ static void nfc_task(void *arg)
         return;
     }
 
-    pn532_set_write_callback(on_ndef_written);
+    ndef_set_receive_callback(on_ndef_written);
+
     int64_t start = esp_timer_get_time();
     char amt_str[16];
     snprintf(amt_str, sizeof(amt_str), "%d sat", params->amount);
 
+    s_state.store(NfcState::waiting);
+    display_nfc_status("tap to pay", amt_str);
+
     while (!s_stop_flag.load()) {
+        // Timeout check
         if ((esp_timer_get_time() - start) > (int64_t)PAYMENT_TIMEOUT_MS * 1000) {
-            ESP_LOGW(TAG, "timeout");
+            ESP_LOGW(TAG, "payment timeout");
             s_state.store(NfcState::error);
             display_nfc_status("nfc timeout", "");
             break;
         }
 
-        s_state.store(NfcState::waiting);
-        s_token_received = false;
-        display_nfc_status("tap to pay", amt_str);
+        // Poll IRQ with 100 ms window so we can also check stop flag / timeout
+        if (!nci_wait_for_irq(100)) continue;
 
-        esp_err_t ret = pn532_emulate_tag_loop(&s_pn532, ndef_msg, ndef_len);
+        s_nci.rx_len = 0;
+        if (nci_read(&s_nci, s_nci.rx_buf, &s_nci.rx_len) != ESP_OK || s_nci.rx_len == 0)
+            continue;
 
-        if (ret == ESP_ERR_TIMEOUT) continue;
-        if (ret == ESP_OK) s_state.store(NfcState::active);
+        uint8_t mt  = s_nci.rx_buf[0];
+        uint8_t oid = s_nci.rx_buf[1];
 
-        if (s_token_received) {
-            s_state.store(NfcState::redeeming);
-            display_nfc_status("redeeming...", amt_str);
+        // Credits NTF — flow control, ignore
+        if (mt == 0x60 && oid == 0x06) continue;
 
-            if (redeem_token(s_received_token)) {
-                s_state.store(NfcState::success);
-                display_nfc_status("paid!", amt_str);
-                display_refresh();
-            } else {
-                s_state.store(NfcState::error);
-                display_nfc_status("redeem failed", "");
-            }
-            break;
+        // RF_INTF_ACTIVATED_NTF — reader detected
+        if (mt == 0x61 && oid == 0x05) {
+            ESP_LOGI(TAG, "reader detected");
+            s_state.store(NfcState::active);
+            ndef_reset_receive();
+            continue;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(50));
+        // RF_DEACTIVATE_NTF — reader removed
+        if (mt == 0x61 && oid == 0x06) {
+            uint8_t dtype = s_nci.rx_len > 3 ? s_nci.rx_buf[3] : 0xFF;
+            ESP_LOGI(TAG, "reader removed (type=%d)", dtype);
+            if (dtype != 3) restart_discovery();
+            ndef_reset_receive();
+            if (!s_token_received) {
+                s_state.store(NfcState::waiting);
+                display_nfc_status("tap to pay", amt_str);
+            }
+            continue;
+        }
+
+        // DATA packet — APDU from reader
+        if (mt == 0x00 && oid == 0x00) {
+            uint8_t apdu_len = s_nci.rx_buf[2];
+            static uint8_t rsp_buf[NCI_MAX_FRAME_SIZE];
+            size_t rsp_len = 0;
+
+            ndef_handle_apdu(&s_nci.rx_buf[3], apdu_len, rsp_buf, &rsp_len);
+            send_nci_response(rsp_buf, rsp_len);
+            vTaskDelay(pdMS_TO_TICKS(1)); // brief yield after write
+
+            // Check if a token arrived via the callback
+            if (s_token_received) {
+                s_state.store(NfcState::redeeming);
+                display_nfc_status("redeeming...", amt_str);
+
+                if (redeem_token(s_received_token)) {
+                    s_state.store(NfcState::success);
+                    display_nfc_status("paid!", amt_str);
+                    display_refresh();
+                } else {
+                    s_state.store(NfcState::error);
+                    display_nfc_status("redeem failed", "");
+                }
+                break;
+            }
+            continue;
+        }
+
+        // Discovery RSP / NTF after restart — ignore
+        if ((mt == 0x41 && oid == 0x03) ||
+            (mt == 0x61 && oid == 0x03) ||
+            (mt == 0x60 && oid == 0x07) ||
+            (mt == 0x60 && oid == 0x08)) continue;
+
+        ESP_LOGD(TAG, "unhandled NCI: %02X %02X", mt, oid);
     }
 
-    pn532_set_write_callback(nullptr);
+    ndef_set_receive_callback(nullptr);
+    ndef_clear_message();
     delete params;
     s_task_handle = nullptr;
     vTaskDelete(nullptr);
@@ -296,57 +289,23 @@ static void nfc_task(void *arg)
 
 bool nfc_init()
 {
-    pn532_spi_config_t spi_cfg = {
-        .sck_gpio = NFC_SPI_SCK,
-        .miso_gpio = NFC_SPI_MISO,
-        .mosi_gpio = NFC_SPI_MOSI,
-        .ss_gpio = NFC_SPI_SS,
-        .clk_speed_hz = NFC_SPI_FREQ,
-    };
+    memset(&s_nci, 0, sizeof(s_nci));
 
-    // Give the PN532 time to boot after a cold power-on before
-    // attempting SPI communication.
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    pn532_firmware_version_t fw;
-    bool found = false;
-
-    for (int attempt = 0; attempt < 5 && !found; attempt++) {
-        if (attempt > 0) {
-            ESP_LOGW(TAG, "retrying PN532 init (attempt %d)...", attempt + 1);
-            pn532_spi_deinit(&s_pn532);
-            vTaskDelay(pdMS_TO_TICKS(500));
+    int retries = 3;
+    while (retries-- > 0) {
+        if (nci_setup_cardemu(&s_nci) == ESP_OK) {
+            s_hw_init = true;
+            s_state.store(NfcState::idle);
+            ESP_LOGI(TAG, "PN7160 ready");
+            return true;
         }
-
-        esp_err_t err = pn532_init_spi(&s_pn532, &spi_cfg);
-        if (err != ESP_OK) continue;
-
-        for (int r = 0; r < 3; r++) {
-            if (r > 0) vTaskDelay(pdMS_TO_TICKS(200));
-            if (pn532_get_firmware_version(&s_pn532, &fw) == ESP_OK) {
-                found = true;
-                break;
-            }
-        }
+        ESP_LOGW(TAG, "NCI setup failed, retrying... (%d left)", retries);
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
-    if (!found) {
-        ESP_LOGE(TAG, "PN532 not responding");
-        s_state.store(NfcState::off);
-        return false;
-    }
-
-    esp_err_t err = pn532_sam_configuration(&s_pn532, PN532_SAM_NORMAL_MODE, 0x14, false);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "SAM config failed");
-        s_state.store(NfcState::off);
-        return false;
-    }
-
-    s_hw_init = true;
-    s_state.store(NfcState::idle);
-    ESP_LOGI(TAG, "PN532 ready");
-    return true;
+    ESP_LOGE(TAG, "PN7160 not responding");
+    s_state.store(NfcState::off);
+    return false;
 }
 
 bool nfc_request_start(int amount, const char *mint_url)
@@ -359,6 +318,7 @@ bool nfc_request_start(int amount, const char *mint_url)
     if (mint_url) p->mint_url = mint_url;
 
     s_stop_flag.store(false);
+    s_token_received = false;
     if (xTaskCreate(nfc_task, "nfc", 16384, p, 5, &s_task_handle) != pdPASS) {
         delete p;
         return false;
@@ -390,4 +350,9 @@ const char *nfc_status_str()
         case NfcState::error:     return "error";
     }
     return "?";
+}
+
+i2c_master_bus_handle_t nfc_get_i2c_bus()
+{
+    return s_nci.i2c_bus;
 }

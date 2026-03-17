@@ -15,6 +15,7 @@
 #include "console.h"
 #include "display.h"
 #include "nfc.hpp"
+#include "keypad.h"
 
 #define TAG "nucula"
 
@@ -656,6 +657,34 @@ static void cmd_reboot(const char *arg)
 }
 
 // -------------------------------------------------------------------------
+// Keypad
+// -------------------------------------------------------------------------
+
+static void cmd_keypad(const char *arg)
+{
+    if (!arg || strcmp(arg, "scan") != 0) {
+        nucula_console_write("usage: keypad scan\r\n");
+        nucula_console_write("  scan: probe each PCF8574 pin (P0-P6) and report which\r\n");
+        nucula_console_write("        other pins go low. Press keys while scanning.\r\n");
+        return;
+    }
+
+    nucula_console_write("keypad scan — press keys, each fires once per press (~30s)\r\n\r\n");
+
+    for (int iter = 0; iter < 300; iter++) { // ~30 s at 100ms per iter
+        // Use the edge-detected call so each physical press appears once
+        char key = keypad_get_key();
+        if (key) {
+            char line[32];
+            snprintf(line, sizeof(line), "key: '%c'\r\n", key);
+            nucula_console_write(line);
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    nucula_console_write("scan done\r\n");
+}
+
+// -------------------------------------------------------------------------
 // Main
 // -------------------------------------------------------------------------
 
@@ -695,7 +724,18 @@ extern "C" void app_main(void)
     }
 
     if (!nfc_init())
-        ESP_LOGW(TAG, "PN532 init failed, NFC disabled");
+        ESP_LOGW(TAG, "PN7160 init failed, NFC disabled");
+
+    // Keypad shares the I2C bus created by nfc_init()
+    i2c_master_bus_handle_t i2c_bus = nfc_get_i2c_bus();
+    if (i2c_bus) {
+        if (keypad_init(i2c_bus) == ESP_OK)
+            keypad_start_task();
+        else
+            ESP_LOGW(TAG, "keypad init failed");
+    } else {
+        ESP_LOGW(TAG, "no I2C bus for keypad (NFC init failed?)");
+    }
 
     display_refresh();
 
@@ -709,6 +749,7 @@ extern "C" void app_main(void)
     console_register_cmd("claim",   cmd_claim,    "claim <quote_id> [mint_idx]");
     console_register_cmd("melt",    cmd_melt,     "melt <bolt11> [mint_idx]");
     console_register_cmd("stickup", cmd_stickup,  "drain wallet into v4 tokens");
+    console_register_cmd("keypad",  cmd_keypad,   "keypad scan — probe PCF8574 wiring");
     console_register_cmd("reboot",  cmd_reboot,   "restart the device");
     console_start();
 }
