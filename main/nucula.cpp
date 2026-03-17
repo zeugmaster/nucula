@@ -2,6 +2,7 @@
 #include <cstring>
 #include <esp_log.h>
 #include <esp_system.h>
+#include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include "secp256k1.h"
@@ -671,15 +672,15 @@ static void cmd_keypad(const char *arg)
 
     nucula_console_write("keypad scan — press keys, each fires once per press (~30s)\r\n\r\n");
 
-    for (int iter = 0; iter < 300; iter++) { // ~30 s at 100ms per iter
-        // Use the edge-detected call so each physical press appears once
-        char key = keypad_get_key();
+    int64_t deadline = esp_timer_get_time() + 30LL * 1000000;
+    while (esp_timer_get_time() < deadline) {
+        // Pull from the queue the background task fills — 200ms window per iteration
+        char key = keypad_wait_event(200);
         if (key) {
             char line[32];
             snprintf(line, sizeof(line), "key: '%c'\r\n", key);
             nucula_console_write(line);
         }
-        vTaskDelay(pdMS_TO_TICKS(100));
     }
     nucula_console_write("scan done\r\n");
 }
