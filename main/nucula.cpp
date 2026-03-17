@@ -175,7 +175,7 @@ static void cmd_balance(const char *arg)
     (void)arg;
     int total = 0;
     bool any = false;
-    for (int i = 0; i < MAX_MINTS; i++) {
+    for (int i = 0; i < MAX_MINTS; i++) { 
         auto *w = g_wallets[i];
         if (!w || w->proofs().empty()) continue;
         any = true;

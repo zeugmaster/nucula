@@ -304,16 +304,18 @@ bool nfc_init()
         .clk_speed_hz = NFC_SPI_FREQ,
     };
 
-    // Try init + firmware version up to 3 times (PN532 sometimes needs
-    // extra wakeup cycles depending on boot timing)
+    // Give the PN532 time to boot after a cold power-on before
+    // attempting SPI communication.
+    vTaskDelay(pdMS_TO_TICKS(500));
+
     pn532_firmware_version_t fw;
     bool found = false;
 
-    for (int attempt = 0; attempt < 3 && !found; attempt++) {
+    for (int attempt = 0; attempt < 5 && !found; attempt++) {
         if (attempt > 0) {
             ESP_LOGW(TAG, "retrying PN532 init (attempt %d)...", attempt + 1);
             pn532_spi_deinit(&s_pn532);
-            vTaskDelay(pdMS_TO_TICKS(300));
+            vTaskDelay(pdMS_TO_TICKS(500));
         }
 
         esp_err_t err = pn532_init_spi(&s_pn532, &spi_cfg);

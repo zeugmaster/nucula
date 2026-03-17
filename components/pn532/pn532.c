@@ -227,6 +227,9 @@ esp_err_t pn532_send_command(pn532_handle_t *handle, uint8_t cmd,
         ret = pn532_spi_write_command(handle, handle->command_buffer, frame_len);
         if (ret != ESP_OK) return ret;
 
+        // Quick wait then read ACK - don't wait too long
+        pn532_spi_wait_ready(handle, 50);
+        
         ret = pn532_spi_read_ack(handle);
         if (ret != ESP_OK) {
             ESP_LOGD(TAG, "No ACK for cmd 0x%02X", cmd);
@@ -422,9 +425,91 @@ static void process_written_ndef(const uint8_t *ndef_file, size_t file_len)
     
     const uint8_t *ndef_msg = &ndef_file[2];
     ESP_LOGI(TAG, "Received NDEF message (%d bytes)", ndef_len);
-
+    
+    // Call callback if set
     if (ndef_write_callback) {
         ndef_write_callback(ndef_msg, ndef_len);
+    }
+    
+    // Parse NDEF records
+    size_t offset = 0;
+    int record_num = 0;
+    
+    while (offset < ndef_len) {
+        record_num++;
+        uint8_t header = ndef_msg[offset++];
+        
+        bool me = (header & 0x40) != 0;  // Message End
+        bool sr = (header & 0x10) != 0;  // Short Record
+        uint8_t tnf = header & 0x07;     // Type Name Format
+        (void)record_num;  // May be used for debug
+        
+        if (offset >= ndef_len) break;
+        uint8_t type_len = ndef_msg[offset++];
+        
+        uint32_t payload_len;
+        if (sr) {
+            if (offset >= ndef_len) break;
+            payload_len = ndef_msg[offset++];
+        } else {
+            if (offset + 4 > ndef_len) break;
+            payload_len = (ndef_msg[offset] << 24) | (ndef_msg[offset+1] << 16) |
+                          (ndef_msg[offset+2] << 8) | ndef_msg[offset+3];
+            offset += 4;
+        }
+        
+        if (offset + type_len + payload_len > ndef_len) break;
+        
+        const uint8_t *type = &ndef_msg[offset];
+        offset += type_len;
+        
+        const uint8_t *payload = &ndef_msg[offset];
+        offset += payload_len;
+        
+        // Handle Text record (TNF=1, Type="T")
+        if (tnf == 0x01 && type_len == 1 && type[0] == 'T' && payload_len > 0) {
+            uint8_t status = payload[0];
+            uint8_t lang_len = status & 0x3F;
+            
+            if (payload_len > 1 + lang_len) {
+                const char *text = (const char *)&payload[1 + lang_len];
+                size_t text_len = payload_len - 1 - lang_len;
+                
+                printf("\n");
+                printf("========================================\n");
+                printf("  NFC TEXT RECEIVED:\n");
+                printf("  \"%.*s\"\n", (int)text_len, text);
+                printf("========================================\n");
+                printf("\n");
+                
+                ESP_LOGI(TAG, "Text record: \"%.*s\"", (int)text_len, text);
+            }
+        }
+        // Handle URI record (TNF=1, Type="U")
+        else if (tnf == 0x01 && type_len == 1 && type[0] == 'U' && payload_len > 0) {
+            uint8_t prefix = payload[0];
+            const char *uri = (const char *)&payload[1];
+            size_t uri_len = payload_len - 1;
+            
+            const char *prefix_str = "";
+            switch (prefix) {
+                case 0x01: prefix_str = "http://www."; break;
+                case 0x02: prefix_str = "https://www."; break;
+                case 0x03: prefix_str = "http://"; break;
+                case 0x04: prefix_str = "https://"; break;
+            }
+            
+            printf("\n");
+            printf("========================================\n");
+            printf("  NFC URL RECEIVED:\n");
+            printf("  %s%.*s\n", prefix_str, (int)uri_len, uri);
+            printf("========================================\n");
+            printf("\n");
+            
+            ESP_LOGI(TAG, "URL record: %s%.*s", prefix_str, (int)uri_len, uri);
+        }
+        
+        if (me) break;  // Message End flag set
     }
 }
 
@@ -577,8 +662,6 @@ esp_err_t pn532_emulate_tag_loop(pn532_handle_t *handle, const uint8_t *ndef_mes
             in_release(handle);
             return ESP_OK;
         }
-
-        vTaskDelay(1);
     }
 }
 
