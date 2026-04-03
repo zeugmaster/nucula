@@ -16,6 +16,10 @@
 static const char* NVS_NS = "wallet";
 static const int MAX_KEYSETS = 10;
 
+// Static seed storage
+unsigned char cashu::Wallet::s_seed[64] = {};
+bool cashu::Wallet::s_seed_loaded = false;
+
 static void slot_key(char* buf, size_t sz, const char* base, int slot)
 {
     snprintf(buf, sz, "%s_%d", base, slot);
@@ -60,6 +64,135 @@ std::string Wallet::load_mint_url_for_slot(int slot)
     nvs_close(handle);
     return url;
 }
+
+// -------------------------------------------------------------------------
+// NUT-13: Seed management
+// -------------------------------------------------------------------------
+
+bool Wallet::load_seed()
+{
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NS, NVS_READONLY, &handle) != ESP_OK)
+        return false;
+    size_t len = 64;
+    esp_err_t err = nvs_get_blob(handle, "seed", s_seed, &len);
+    nvs_close(handle);
+    if (err == ESP_OK && len == 64) {
+        s_seed_loaded = true;
+        ESP_LOGI(TAG, "deterministic seed loaded");
+        return true;
+    }
+    s_seed_loaded = false;
+    return false;
+}
+
+bool Wallet::save_seed(const unsigned char seed[64], const char* mnemonic)
+{
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &handle) != ESP_OK)
+        return false;
+
+    esp_err_t err = nvs_set_blob(handle, "seed", seed, 64);
+    if (err == ESP_OK && mnemonic)
+        err = nvs_set_str(handle, "mnemonic", mnemonic);
+    if (err == ESP_OK)
+        err = nvs_commit(handle);
+    nvs_close(handle);
+
+    if (err == ESP_OK) {
+        memcpy(s_seed, seed, 64);
+        s_seed_loaded = true;
+        ESP_LOGI(TAG, "seed saved to NVS");
+        return true;
+    }
+    ESP_LOGE(TAG, "save_seed failed: %s", esp_err_to_name(err));
+    return false;
+}
+
+bool Wallet::seed_exists()
+{
+    if (s_seed_loaded)
+        return true;
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NS, NVS_READONLY, &handle) != ESP_OK)
+        return false;
+    size_t len = 0;
+    esp_err_t err = nvs_get_blob(handle, "seed", NULL, &len);
+    nvs_close(handle);
+    return err == ESP_OK && len == 64;
+}
+
+bool Wallet::load_mnemonic(std::string& out)
+{
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NS, NVS_READONLY, &handle) != ESP_OK)
+        return false;
+    size_t len = 0;
+    if (nvs_get_str(handle, "mnemonic", NULL, &len) != ESP_OK || len == 0) {
+        nvs_close(handle);
+        return false;
+    }
+    out.resize(len - 1);
+    esp_err_t err = nvs_get_str(handle, "mnemonic", out.data(), &len);
+    nvs_close(handle);
+    return err == ESP_OK;
+}
+
+bool Wallet::erase_seed()
+{
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &handle) != ESP_OK)
+        return false;
+    nvs_erase_key(handle, "seed");
+    nvs_erase_key(handle, "mnemonic");
+    nvs_commit(handle);
+    nvs_close(handle);
+    memset(s_seed, 0, 64);
+    s_seed_loaded = false;
+    ESP_LOGI(TAG, "seed erased");
+    return true;
+}
+
+// -------------------------------------------------------------------------
+// NUT-13: Per-keyset counter management
+// -------------------------------------------------------------------------
+
+static void counter_key(char* buf, size_t sz, const std::string& keyset_id)
+{
+    /* NVS key max 15 chars: "c_" + first 13 hex chars of keyset_id */
+    snprintf(buf, sz, "c_%.13s", keyset_id.c_str());
+}
+
+uint32_t Wallet::load_counter(const std::string& keyset_id)
+{
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NS, NVS_READONLY, &handle) != ESP_OK)
+        return 0;
+    char key[16];
+    counter_key(key, sizeof(key), keyset_id);
+    uint32_t val = 0;
+    nvs_get_u32(handle, key, &val);
+    nvs_close(handle);
+    return val;
+}
+
+bool Wallet::save_counter(const std::string& keyset_id, uint32_t counter)
+{
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &handle) != ESP_OK)
+        return false;
+    char key[16];
+    counter_key(key, sizeof(key), keyset_id);
+    esp_err_t err = nvs_set_u32(handle, key, counter);
+    if (err == ESP_OK)
+        err = nvs_commit(handle);
+    nvs_close(handle);
+    return err == ESP_OK;
+}
+
+// -------------------------------------------------------------------------
+// NVS persistence (existing)
+// -------------------------------------------------------------------------
 
 bool Wallet::erase_nvs()
 {
@@ -455,11 +588,36 @@ bool Wallet::generate_outputs(const std::vector<int>& amounts,
     out.secrets.clear();
     out.blinding_factors.clear();
 
-    for (int amt : amounts) {
+    uint32_t counter = 0;
+    bool deterministic = s_seed_loaded;
+    if (deterministic) {
+        counter = load_counter(keyset_id);
+        ESP_LOGI(TAG, "deterministic outputs: keyset=%.16s... counter=%lu n=%d",
+                 keyset_id.c_str(), (unsigned long)counter, (int)amounts.size());
+    }
+
+    for (size_t i = 0; i < amounts.size(); i++) {
+        int amt = amounts[i];
         unsigned char secret_bytes[32];
         unsigned char r_bytes[32];
-        esp_fill_random(secret_bytes, 32);
-        esp_fill_random(r_bytes, 32);
+
+        if (deterministic) {
+            if (!cashu_derive_secret(s_seed, 64, keyset_id.c_str(),
+                                     counter + (uint32_t)i, secret_bytes)) {
+                ESP_LOGE(TAG, "derive_secret failed at counter %lu",
+                         (unsigned long)(counter + i));
+                return false;
+            }
+            if (!cashu_derive_r(s_seed, 64, keyset_id.c_str(),
+                                counter + (uint32_t)i, r_bytes)) {
+                ESP_LOGE(TAG, "derive_r failed at counter %lu",
+                         (unsigned long)(counter + i));
+                return false;
+            }
+        } else {
+            esp_fill_random(secret_bytes, 32);
+            esp_fill_random(r_bytes, 32);
+        }
 
         char secret_hex[65];
         bytes_to_hex(secret_bytes, 32, secret_hex);
@@ -484,6 +642,10 @@ bool Wallet::generate_outputs(const std::vector<int>& amounts,
         out.outputs.push_back(BlindedMessage{amt, std::string(B_hex), keyset_id});
         out.secrets.push_back(secret);
         out.blinding_factors.push_back(std::string(r_hex));
+    }
+
+    if (deterministic) {
+        save_counter(keyset_id, counter + (uint32_t)amounts.size());
     }
 
     return true;

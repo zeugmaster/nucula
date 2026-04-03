@@ -1,5 +1,6 @@
 #include "crypto_test.h"
 #include "crypto.h"
+#include "bip39.h"
 #include "hex.h"
 #include <stdio.h>
 #include <string.h>
@@ -212,6 +213,74 @@ static int test_dleq(const secp256k1_context *ctx)
     return 1;
 }
 
+static int test_nut13_v2(void)
+{
+    /* NUT-13 V2 test vectors (HMAC-SHA256 derivation) */
+    static const char *mnemonic =
+        "half depart obvious quality work element tank gorilla view sugar picture humble";
+    static const char *keyset_id =
+        "015ba18a8adcd02e715a58358eb618da4a4b3791151a4bee5e968bb88406ccf76a";
+
+    static const char *expected_secrets[5] = {
+        "db5561a07a6e6490f8dadeef5be4e92f7cebaecf2f245356b5b2a4ec40687298",
+        "b70e7b10683da3bf1cdf0411206f8180c463faa16014663f39f2529b2fda922e",
+        "78a7ac32ccecc6b83311c6081b89d84bb4128f5a0d0c5e1af081f301c7a513f5",
+        "094a2b6c63bfa7970bc09cda0e1cfc9cd3d7c619b8e98fabcfc60aea9e4963e5",
+        "5e89fc5d30d0bf307ddf0a3ac34aa7a8ee3702169dafa3d3fe1d0cae70ecd5ef"
+    };
+    static const char *expected_rs[5] = {
+        "6d26181a3695e32e9f88b80f039ba1ae2ab5a200ad4ce9dbc72c6d3769f2b035",
+        "bde4354cee75545bea1a2eee035a34f2d524cee2bb01613823636e998386952e",
+        "f40cc1218f085b395c8e1e5aaa25dccc851be3c6c7526a0f4e57108f12d6dac4",
+        "099ed70fc2f7ac769bc20b2a75cb662e80779827b7cc358981318643030577d0",
+        "5550337312d223ba62e3f75cfe2ab70477b046d98e3e71804eade3956c7b98cf"
+    };
+
+    /* Derive seed from mnemonic via BIP39 */
+    unsigned char seed[64];
+    if (!bip39_to_seed(mnemonic, seed)) {
+        ESP_LOGE(TAG, "NUT-13 V2: bip39_to_seed failed");
+        return 0;
+    }
+
+    for (int i = 0; i < 5; i++) {
+        unsigned char secret[32], r[32];
+        char secret_hex[65], r_hex[65];
+
+        if (!cashu_derive_secret(seed, 64, keyset_id, (uint32_t)i, secret)) {
+            ESP_LOGE(TAG, "NUT-13 V2: derive_secret failed at counter %d", i);
+            return 0;
+        }
+        if (!cashu_derive_r(seed, 64, keyset_id, (uint32_t)i, r)) {
+            ESP_LOGE(TAG, "NUT-13 V2: derive_r failed at counter %d", i);
+            return 0;
+        }
+
+        bytes_to_hex(secret, 32, secret_hex);
+        bytes_to_hex(r, 32, r_hex);
+
+        if (strcmp(secret_hex, expected_secrets[i]) != 0) {
+            ESP_LOGE(TAG, "NUT-13 V2 secret[%d]: MISMATCH\n  got:    %s\n  expect: %s",
+                     i, secret_hex, expected_secrets[i]);
+            return 0;
+        }
+        if (strcmp(r_hex, expected_rs[i]) != 0) {
+            ESP_LOGE(TAG, "NUT-13 V2 r[%d]: MISMATCH\n  got:    %s\n  expect: %s",
+                     i, r_hex, expected_rs[i]);
+            return 0;
+        }
+        ESP_LOGI(TAG, "NUT-13 V2 counter=%d: OK", i);
+    }
+
+    /* Also verify bip39_validate works on this mnemonic */
+    if (!bip39_validate(mnemonic)) {
+        ESP_LOGE(TAG, "NUT-13 V2: bip39_validate failed on test mnemonic");
+        return 0;
+    }
+    ESP_LOGI(TAG, "NUT-13 V2: all test vectors passed");
+    return 1;
+}
+
 int crypto_run_tests(const secp256k1_context *ctx)
 {
     ESP_LOGI(TAG, "running crypto test vectors");
@@ -221,6 +290,7 @@ int crypto_run_tests(const secp256k1_context *ctx)
     pass &= test_blind_message(ctx);
     pass &= test_unblind(ctx);
     pass &= test_dleq(ctx);
+    pass &= test_nut13_v2();
 
     if (pass)
         ESP_LOGI(TAG, "all crypto tests passed");

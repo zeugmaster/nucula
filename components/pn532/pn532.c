@@ -636,7 +636,7 @@ esp_err_t pn532_emulate_tag_loop(pn532_handle_t *handle, const uint8_t *ndef_mes
                         }
                     } else if (expected_ndef_length > 0) {
                         if ((int32_t)(offset + lc) >= expected_ndef_length + 2) {
-                            ESP_LOGI(TAG, "NDEF write complete (length=%d)", expected_ndef_length);
+                            ESP_LOGI(TAG, "NDEF write complete (length=%ld)", (long)expected_ndef_length);
                             process_written_ndef(write_buf, expected_ndef_length + 2);
                             write_processed = true;
                         }

@@ -135,6 +135,40 @@ int cashu_pubkey_parse(const secp256k1_context *ctx,
                        secp256k1_pubkey *out,
                        const unsigned char input[33]);
 
+/**
+ * NUT-13: Derive a deterministic secret using HMAC-SHA256 KDF.
+ *
+ * message = "Cashu_KDF_HMAC_SHA256" || hex_decode(keyset_id) || counter_be64 || 0x00
+ * secret  = HMAC-SHA256(seed, message)
+ *
+ * @param seed        wallet seed bytes (typically 64 bytes from BIP39)
+ * @param seed_len    length of seed
+ * @param keyset_id   hex-encoded keyset ID (e.g. "01...")
+ * @param counter     per-keyset counter value
+ * @param secret_out  32-byte output buffer
+ * @return 1 on success, 0 on failure
+ */
+int cashu_derive_secret(const unsigned char *seed, size_t seed_len,
+                        const char *keyset_id, uint32_t counter,
+                        unsigned char secret_out[32]);
+
+/**
+ * NUT-13: Derive a deterministic blinding factor using HMAC-SHA256 KDF.
+ *
+ * message = "Cashu_KDF_HMAC_SHA256" || hex_decode(keyset_id) || counter_be64 || 0x01
+ * r       = OS2IP(HMAC-SHA256(seed, message)) mod N
+ *
+ * @param seed        wallet seed bytes (typically 64 bytes from BIP39)
+ * @param seed_len    length of seed
+ * @param keyset_id   hex-encoded keyset ID (e.g. "01...")
+ * @param counter     per-keyset counter value
+ * @param r_out       32-byte output buffer (reduced mod secp256k1 order)
+ * @return 1 on success, 0 on failure (including r == 0)
+ */
+int cashu_derive_r(const unsigned char *seed, size_t seed_len,
+                   const char *keyset_id, uint32_t counter,
+                   unsigned char r_out[32]);
+
 #ifdef __cplusplus
 }
 #endif

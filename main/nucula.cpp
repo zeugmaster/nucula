@@ -17,6 +17,7 @@
 #include "display.h"
 #include "nfc.hpp"
 #include "keypad.h"
+#include "bip39.h"
 
 #define TAG "nucula"
 
@@ -826,6 +827,103 @@ static void cmd_stickup(const char *arg)
         display_refresh();
 }
 
+// -------------------------------------------------------------------------
+// Seed management (NUT-13)
+// -------------------------------------------------------------------------
+
+static void erase_all_wallets()
+{
+    for (int i = 0; i < MAX_MINTS; i++) {
+        if (g_wallets[i]) {
+            g_wallets[i]->erase_nvs();
+            delete g_wallets[i];
+            g_wallets[i] = nullptr;
+        }
+    }
+}
+
+static void cmd_seed(const char *arg)
+{
+    if (!arg || strlen(arg) == 0 || strcmp(arg, "show") == 0) {
+        std::string mnemonic;
+        if (cashu::Wallet::load_mnemonic(mnemonic)) {
+            nucula_console_write("WARNING: keep your seed phrase secret!\r\n");
+            nucula_console_write(mnemonic.c_str());
+            nucula_console_write("\r\n");
+        } else {
+            nucula_console_write("no seed configured\r\n");
+        }
+        return;
+    }
+
+    if (strcmp(arg, "generate") == 0) {
+        char mnemonic[256];
+        if (!bip39_generate(mnemonic, sizeof(mnemonic))) {
+            nucula_console_write("ERROR: mnemonic generation failed\r\n");
+            return;
+        }
+
+        unsigned char seed[64];
+        if (!bip39_to_seed(mnemonic, seed)) {
+            nucula_console_write("ERROR: seed derivation failed\r\n");
+            return;
+        }
+
+        erase_all_wallets();
+        cashu::Wallet::erase_seed();
+
+        if (!cashu::Wallet::save_seed(seed, mnemonic)) {
+            nucula_console_write("ERROR: failed to save seed\r\n");
+            return;
+        }
+
+        nucula_console_write("seed generated. write down your seed phrase:\r\n\r\n");
+        nucula_console_write(mnemonic);
+        nucula_console_write("\r\n\r\nall wallet data erased. add mints with 'mint add <url>'\r\n");
+        display_refresh();
+        return;
+    }
+
+    if (strncmp(arg, "restore ", 8) == 0) {
+        const char *words = arg + 8;
+        while (*words == ' ') words++;
+
+        if (!bip39_validate(words)) {
+            nucula_console_write("ERROR: invalid mnemonic (bad checksum or unknown words)\r\n");
+            return;
+        }
+
+        unsigned char seed[64];
+        if (!bip39_to_seed(words, seed)) {
+            nucula_console_write("ERROR: seed derivation failed\r\n");
+            return;
+        }
+
+        erase_all_wallets();
+        cashu::Wallet::erase_seed();
+
+        if (!cashu::Wallet::save_seed(seed, words)) {
+            nucula_console_write("ERROR: failed to save seed\r\n");
+            return;
+        }
+
+        nucula_console_write("seed restored. all wallet data erased.\r\n");
+        nucula_console_write("add mints with 'mint add <url>' to begin recovery\r\n");
+        display_refresh();
+        return;
+    }
+
+    if (strcmp(arg, "wipe") == 0) {
+        erase_all_wallets();
+        cashu::Wallet::erase_seed();
+        nucula_console_write("seed and all wallet data erased\r\n");
+        display_refresh();
+        return;
+    }
+
+    nucula_console_write("usage: seed [show|generate|restore <12 words>|wipe]\r\n");
+}
+
 static void cmd_reboot(const char *arg)
 {
     (void)arg;
@@ -883,6 +981,8 @@ extern "C" void app_main(void)
 
     crypto_run_tests(g_ctx);
 
+    cashu::Wallet::load_seed();
+
     for (int i = 0; i < MAX_MINTS; i++) {
         std::string url = cashu::Wallet::load_mint_url_for_slot(i);
         if (url.empty()) continue;
@@ -929,6 +1029,7 @@ extern "C" void app_main(void)
     console_register_cmd("claim",   cmd_claim,    "claim <quote_id> [mint_idx]");
     console_register_cmd("melt",    cmd_melt,     "melt <bolt11> [mint_idx]");
     console_register_cmd("stickup", cmd_stickup,  "drain wallet into v4 tokens");
+    console_register_cmd("seed",    cmd_seed,     "seed [show|generate|restore|wipe]");
     console_register_cmd("keypad",  cmd_keypad,   "keypad scan — probe PCF8574 wiring");
     console_register_cmd("reboot",  cmd_reboot,   "restart the device");
     console_start();

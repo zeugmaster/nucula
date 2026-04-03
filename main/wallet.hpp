@@ -25,6 +25,18 @@ public:
 
     static std::string load_mint_url_for_slot(int slot);
 
+    // NUT-13: Deterministic seed management (global, shared across wallets)
+    static bool load_seed();
+    static bool save_seed(const unsigned char seed[64], const char* mnemonic);
+    static bool seed_exists();
+    static bool load_mnemonic(std::string& out);
+    static bool erase_seed();
+    static bool has_seed() { return s_seed_loaded; }
+
+    // Per-keyset counter management
+    static uint32_t load_counter(const std::string& keyset_id);
+    static bool save_counter(const std::string& keyset_id, uint32_t counter);
+
     struct BlindingData {
         std::vector<BlindedMessage> outputs;
         std::vector<std::string> secrets;
@@ -79,6 +91,9 @@ private:
     bool save_keysets();
     bool load_keysets_nvs();
     void merge_keysets(const std::vector<Keyset>& fresh);
+
+    static unsigned char s_seed[64];
+    static bool s_seed_loaded;
 };
 
 } // namespace cashu

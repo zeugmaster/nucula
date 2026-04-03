@@ -1,19 +1,11 @@
 #include "crypto.h"
+#include "hex.h"
 #include <string.h>
 #include <mbedtls/sha256.h>
+#include <mbedtls/md.h>
 
 static const char DOMAIN_SEPARATOR[] = "Secp256k1_HashToCurve_Cashu_";
 #define DOMAIN_SEPARATOR_LEN 28
-
-static void bytes_to_hex(const unsigned char *bytes, size_t len, char *hex)
-{
-    static const char lut[] = "0123456789abcdef";
-    for (size_t i = 0; i < len; i++) {
-        hex[i * 2]     = lut[(bytes[i] >> 4) & 0x0f];
-        hex[i * 2 + 1] = lut[bytes[i] & 0x0f];
-    }
-    hex[len * 2] = '\0';
-}
 
 /*
  * hash_e for DLEQ verification (NUT-12).
@@ -229,6 +221,118 @@ int cashu_verify_dleq_unblinded(const secp256k1_context *ctx,
     }
 
     return cashu_verify_dleq(ctx, A, &B_, &C_, e, s);
+}
+
+/* secp256k1 group order N (big-endian) */
+static const unsigned char SECP256K1_N[32] = {
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFE,
+    0xBA,0xAE,0xDC,0xE6,0xAF,0x48,0xA0,0x3B,
+    0xBF,0xD2,0x5E,0x8C,0xD0,0x36,0x41,0x41
+};
+
+/* Compare two 32-byte big-endian values. Returns <0, 0, or >0. */
+static int cmp256(const unsigned char a[32], const unsigned char b[32])
+{
+    return memcmp(a, b, 32);
+}
+
+/* Subtract b from a (both 32-byte big-endian), result in out. a must be >= b. */
+static void sub256(const unsigned char a[32], const unsigned char b[32],
+                   unsigned char out[32])
+{
+    int borrow = 0;
+    for (int i = 31; i >= 0; i--) {
+        int diff = (int)a[i] - (int)b[i] - borrow;
+        if (diff < 0) {
+            diff += 256;
+            borrow = 1;
+        } else {
+            borrow = 0;
+        }
+        out[i] = (unsigned char)diff;
+    }
+}
+
+/*
+ * Build the NUT-13 HMAC-SHA256 KDF message and compute the digest.
+ *
+ * message = "Cashu_KDF_HMAC_SHA256" || keyset_id_bytes || counter_be64 || type_byte
+ */
+static int nut13_hmac(const unsigned char *seed, size_t seed_len,
+                      const char *keyset_id, uint32_t counter,
+                      unsigned char type_byte, unsigned char digest[32])
+{
+    /* Decode keyset_id from hex to bytes */
+    size_t id_hex_len = strlen(keyset_id);
+    if (id_hex_len == 0 || id_hex_len % 2 != 0)
+        return 0;
+    size_t id_byte_len = id_hex_len / 2;
+
+    /* Stack-allocate message buffer:
+     * 20 (domain) + max 33 (keyset id) + 8 (counter) + 1 (type) = 62 max */
+    unsigned char msg[128];
+    size_t pos = 0;
+
+    static const char domain[] = "Cashu_KDF_HMAC_SHA256";
+    size_t domain_len = 21; /* strlen("Cashu_KDF_HMAC_SHA256") */
+    memcpy(msg + pos, domain, domain_len);
+    pos += domain_len;
+
+    if (pos + id_byte_len > sizeof(msg))
+        return 0;
+    if (!hex_to_bytes(keyset_id, msg + pos, id_byte_len))
+        return 0;
+    pos += id_byte_len;
+
+    /* counter as big-endian uint64 */
+    msg[pos++] = 0;
+    msg[pos++] = 0;
+    msg[pos++] = 0;
+    msg[pos++] = 0;
+    msg[pos++] = (counter >> 24) & 0xFF;
+    msg[pos++] = (counter >> 16) & 0xFF;
+    msg[pos++] = (counter >> 8) & 0xFF;
+    msg[pos++] = counter & 0xFF;
+
+    /* derivation type */
+    msg[pos++] = type_byte;
+
+    /* HMAC-SHA256 */
+    const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    if (!md_info)
+        return 0;
+
+    return mbedtls_md_hmac(md_info, seed, seed_len, msg, pos, digest) == 0 ? 1 : 0;
+}
+
+int cashu_derive_secret(const unsigned char *seed, size_t seed_len,
+                        const char *keyset_id, uint32_t counter,
+                        unsigned char secret_out[32])
+{
+    return nut13_hmac(seed, seed_len, keyset_id, counter, 0x00, secret_out);
+}
+
+int cashu_derive_r(const unsigned char *seed, size_t seed_len,
+                   const char *keyset_id, uint32_t counter,
+                   unsigned char r_out[32])
+{
+    unsigned char digest[32];
+    if (!nut13_hmac(seed, seed_len, keyset_id, counter, 0x01, digest))
+        return 0;
+
+    /* Reduce mod N */
+    if (cmp256(digest, SECP256K1_N) >= 0)
+        sub256(digest, SECP256K1_N, r_out);
+    else
+        memcpy(r_out, digest, 32);
+
+    /* Reject r == 0 */
+    unsigned char zero[32] = {0};
+    if (memcmp(r_out, zero, 32) == 0)
+        return 0;
+
+    return 1;
 }
 
 int cashu_pubkey_serialize(const secp256k1_context *ctx,
