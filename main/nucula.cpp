@@ -56,18 +56,12 @@ static int wallet_count()
 // Display
 // -------------------------------------------------------------------------
 
-// Corner radius is ~10px — use this inset for any text near the top or bottom edges.
-#define CORNER_INSET 12
-
-// Draw the common title bar used on all screens.
-// White background, "nucula" left, right_label right-aligned.
-// Both labels use the corner inset so they aren't clipped by rounded corners.
 static void draw_title_bar(const char *right_label)
 {
-    display_fill_rect(0, 0, LCD_W, 10, COLOR_WHITE);
-    display_text_color(CORNER_INSET, 1, "nucula", COLOR_BLACK, COLOR_WHITE, 1);
+    display_fill_rect(0, 0, LCD_W, 9, COLOR_WHITE);
+    display_text_color(1, 1, "nucula", COLOR_BLACK, COLOR_WHITE, 1);
     if (right_label && right_label[0]) {
-        int rx = LCD_W - display_text_width(right_label, 1) - CORNER_INSET;
+        int rx = LCD_W - display_text_width(right_label, 1) - 1;
         display_text_color(rx, 1, right_label, COLOR_BLACK, COLOR_WHITE, 1);
     }
 }
@@ -77,18 +71,18 @@ void display_nfc_status(const char *line1, const char *line2)
     display_clear();
     draw_title_bar("nfc");
 
-    // line1 — large, white, centered (scale 3)
+    // line1 — large, centered (scale 2)
     if (line1 && line1[0]) {
-        int x = (LCD_W - display_text_width(line1, 3)) / 2;
+        int x = (LCD_W - display_text_width(line1, 2)) / 2;
         if (x < 0) x = 0;
-        display_text_color(x, 42, line1, COLOR_WHITE, COLOR_BLACK, 3);
+        display_text_color(x, 20, line1, COLOR_WHITE, COLOR_BLACK, 2);
     }
 
-    // line2 — medium, cyan, centered (scale 2)
+    // line2 — small, centered (scale 1)
     if (line2 && line2[0]) {
-        int x = (LCD_W - display_text_width(line2, 2)) / 2;
+        int x = (LCD_W - display_text_width(line2, 1)) / 2;
         if (x < 0) x = 0;
-        display_text_color(x, 96, line2, COLOR_CYAN, COLOR_BLACK, 2);
+        display_text_color(x, 40, line2, COLOR_WHITE, COLOR_BLACK, 1);
     }
 
     display_update();
@@ -96,18 +90,14 @@ void display_nfc_status(const char *line1, const char *line2)
 
 void display_refresh()
 {
-    // Layout (172px total):
-    //   y=  0..9   title bar (scale 1, corner inset)
-    //   y= 12..47  balance panel (scale 4, 32px, dark bg)
-    //   y= 52..67  "sat"   (scale 2, amber)
-    //   y= 70..85  "X proofs" (scale 2, gray)
-    //   y= 88      separator
-    //   y= 92..107 mint 0  (scale 2)
-    //   y=110..125 mint 1  (scale 2)
-    //   y=128..143 mint 2  (scale 2)
-    //   y=150      separator
-    //   y=153..160 status  (scale 1, corner inset)
-    //   y=162..171 empty — corner dead zone
+    // Layout (64px total, 128px wide):
+    //   y= 0.. 8  title bar (scale 1)
+    //   y=10..25  balance (scale 2, centered)
+    //   y=27..34  "sat" (scale 1, centered)
+    //   y=36      separator
+    //   y=38..45  mint line 0 (scale 1)
+    //   y=46..53  mint line 1 (scale 1)
+    //   y=56..63  status: proof count + heap (scale 1)
 
     display_clear();
 
@@ -124,30 +114,26 @@ void display_refresh()
         total_proofs += (int)g_wallets[i]->proofs().size();
     }
 
-    // ---- Balance (scale 4, dark background panel) ----
-    display_fill_rect(0, 12, LCD_W, 36, COLOR_DGRAY);
+    // ---- Balance (scale 2, centered) ----
     char buf[22];
     snprintf(buf, sizeof(buf), "%d", total_balance);
-    int scale = 4;
-    if (display_text_width(buf, scale) > LCD_W - 8) scale = 3;
+    int scale = 2;
+    if (display_text_width(buf, scale) > LCD_W - 4) scale = 1;
     int bx = (LCD_W - display_text_width(buf, scale)) / 2;
-    if (bx < 4) bx = 4;
-    int by = 12 + (36 - 8 * scale) / 2; // vertically center in panel
-    display_text_color(bx, by, buf, COLOR_WHITE, COLOR_DGRAY, scale);
+    if (bx < 0) bx = 0;
+    display_text(bx, 10, buf, scale);
 
-    // ---- "sat" label (amber, scale 2) ----
-    int sat_x = (LCD_W - display_text_width("sat", 2)) / 2;
-    display_text_color(sat_x, 52, "sat", COLOR_AMBER, COLOR_BLACK, 2);
+    // ---- "sat" label (scale 1, centered) ----
+    int sat_x = (LCD_W - display_text_width("sat", 1)) / 2;
+    display_text(sat_x, 27, "sat", 1);
 
-    // ---- Proof count (gray, scale 2) ----
-    snprintf(buf, sizeof(buf), "%d proofs", total_proofs);
-    int px = (LCD_W - display_text_width(buf, 2)) / 2;
-    display_text_color(px, 70, buf, COLOR_LGRAY, COLOR_BLACK, 2);
+    // ---- Separator ----
+    display_hline(0, 36, LCD_W);
 
-    // ---- Mint list (scale 2: 12px per char, 16px tall, 18px row stride) ----
-    display_hline(0, 88, LCD_W);
-    int y = 92;
-    for (int i = 0; i < MAX_MINTS; i++) {
+    // ---- Mint list (scale 1, up to 2 lines) ----
+    int y = 38;
+    int shown = 0;
+    for (int i = 0; i < MAX_MINTS && shown < 2; i++) {
         if (!g_wallets[i]) continue;
         const char *url = g_wallets[i]->mint_url().c_str();
         if (strncmp(url, "https://", 8) == 0) url += 8;
@@ -158,23 +144,22 @@ void display_refresh()
             bal += p.amount;
 
         char amount[14];
-        snprintf(amount, sizeof(amount), "%d sat", bal);
-        int ax = LCD_W - display_text_width(amount, 2) - 4;
+        snprintf(amount, sizeof(amount), "%d", bal);
+        int ax = LCD_W - display_text_width(amount, 1) - 1;
 
-        // URL truncated to the space left of the amount column (12px per char at scale=2)
-        int url_chars = (ax - 4 - 4) / 12;
-        char line[54];
+        int url_chars = (ax - 2) / 6;
+        char line[32];
         snprintf(line, sizeof(line), "%.*s", url_chars, url);
-        display_text_color(4, y, line, COLOR_LGRAY, COLOR_BLACK, 2);
-        display_text_color(ax, y, amount, COLOR_WHITE, COLOR_BLACK, 2);
-        y += 18;
+        display_text(1, y, line, 1);
+        display_text(ax, y, amount, 1);
+        y += 8;
+        shown++;
     }
 
-    // ---- Status bar (scale 1, corner inset so text clears the rounded corners) ----
-    display_hline(0, 150, LCD_W);
-    snprintf(buf, sizeof(buf), "heap:%luk",
-             (unsigned long)(esp_get_free_heap_size() / 1024));
-    display_text_color(CORNER_INSET, 153, buf, COLOR_DGRAY, COLOR_BLACK, 1);
+    // ---- Status bar (scale 1) ----
+    snprintf(buf, sizeof(buf), "%dp heap:%luk",
+             total_proofs, (unsigned long)(esp_get_free_heap_size() / 1024));
+    display_text(1, 56, buf, 1);
 
     display_update();
 }
@@ -187,33 +172,24 @@ void display_refresh()
 static void show_amount_entry(const char *digits)
 {
     display_clear();
+    draw_title_bar("amount");
 
-    // Title bar
-    display_fill_rect(0, 0, LCD_W, 10, COLOR_WHITE);
-    display_text_color(CORNER_INSET, 1, "nucula", COLOR_BLACK, COLOR_WHITE, 1);
-    const char *tag = "enter sat";
-    display_text_color(LCD_W - display_text_width(tag, 1) - CORNER_INSET, 1,
-                       tag, COLOR_BLACK, COLOR_WHITE, 1);
-
-    // Amount (dark panel, auto-scale down for long numbers)
+    // Amount (scale 2, centered)
     const char *show = (digits && digits[0]) ? digits : "0";
-    display_fill_rect(0, 12, LCD_W, 36, COLOR_DGRAY);
-    int scale = 4;
-    if (display_text_width(show, scale) > LCD_W - 8) scale = 3;
+    int scale = 2;
+    if (display_text_width(show, scale) > LCD_W - 4) scale = 1;
     int ax = (LCD_W - display_text_width(show, scale)) / 2;
-    int ay = 12 + (36 - 8 * scale) / 2;
-    display_text_color(ax, ay, show, COLOR_WHITE, COLOR_DGRAY, scale);
+    display_text(ax, 14, show, scale);
 
     // "sat" label
-    display_text_color((LCD_W - display_text_width("sat", 2)) / 2, 52,
-                       "sat", COLOR_AMBER, COLOR_BLACK, 2);
+    int sat_x = (LCD_W - display_text_width("sat", 1)) / 2;
+    display_text(sat_x, 32, "sat", 1);
 
-    // Hints at bottom (corner-inset safe)
-    display_text_color(CORNER_INSET, LCD_H - 25,
-                       "* cancel", COLOR_LGRAY, COLOR_BLACK, 2);
-    const char *confirm_hint = "# confirm";
-    display_text_color(LCD_W - display_text_width(confirm_hint, 2) - CORNER_INSET,
-                       LCD_H - 25, confirm_hint, COLOR_GREEN, COLOR_BLACK, 2);
+    // Hints at bottom
+    display_text(1, 56, "* cancel", 1);
+    const char *confirm_hint = "# ok";
+    display_text(LCD_W - display_text_width(confirm_hint, 1) - 1, 56,
+                 confirm_hint, 1);
 
     display_update();
 }
@@ -237,9 +213,11 @@ static void keypad_ui_task(void *arg)
         switch (ui) {
 
         case UiState::IDLE:
-            if (key == '#' && wallet_count() > 0) {
+            if (key >= '1' && key <= '9' && wallet_count() > 0) {
                 amount_len = 0;
-                amount_buf[0] = '\0';
+                amount_buf[0] = key;
+                amount_buf[1] = '\0';
+                amount_len = 1;
                 ui = UiState::ENTERING_AMOUNT;
                 show_amount_entry(amount_buf);
             }
@@ -968,8 +946,6 @@ extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "nucula cashu wallet");
 
-    display_init();
-
     if (wifi_init() != ESP_OK)
         ESP_LOGE(TAG, "wifi failed, continuing offline");
 
@@ -1001,11 +977,14 @@ extern "C" void app_main(void)
         }
     }
 
+    // NFC creates the shared I2C bus; display and keypad join it
     if (!nfc_init())
         ESP_LOGW(TAG, "PN7160 init failed, NFC disabled");
 
-    // Keypad shares the I2C bus created by nfc_init()
     i2c_master_bus_handle_t i2c_bus = nfc_get_i2c_bus();
+
+    display_init(i2c_bus);
+
     if (i2c_bus) {
         if (keypad_init(i2c_bus) == ESP_OK) {
             keypad_start_task();

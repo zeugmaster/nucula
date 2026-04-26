@@ -5,12 +5,12 @@
 #include "driver/i2c_master.h"
 #include "driver/gpio.h"
 
-// PN7160 pin definitions (Waveshare ESP32-C6, shared I2C bus)
-#define PN7160_SDA_PIN   GPIO_NUM_0
-#define PN7160_SCL_PIN   GPIO_NUM_1
-#define PN7160_IRQ_PIN   GPIO_NUM_2
-#define PN7160_VEN_PIN   GPIO_NUM_3
-#define PN7160_DWL_PIN   GPIO_NUM_4
+// PN7160 pin definitions (XIAO ESP32-C6, shared I2C bus)
+#define PN7160_SDA_PIN   GPIO_NUM_22   // D4
+#define PN7160_SCL_PIN   GPIO_NUM_23   // D5
+#define PN7160_IRQ_PIN   GPIO_NUM_0    // D0
+#define PN7160_VEN_PIN   GPIO_NUM_1    // D1
+#define PN7160_DWL_PIN   GPIO_NUM_2    // D2
 
 // PN7160 I2C address (both addr pins NC = default)
 #define PN7160_I2C_ADDR  0x28

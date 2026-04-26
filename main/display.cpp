@@ -2,58 +2,31 @@
 
 #include <cstring>
 #include <esp_log.h>
-#include <esp_lcd_panel_io.h>
-#include <esp_lcd_panel_ops.h>
-#include <esp_lcd_panel_vendor.h>
-#include <driver/spi_master.h>
 #include <driver/gpio.h>
-#include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
-#include <freertos/semphr.h>
+#include <freertos/task.h>
 
 #define TAG "display"
 
-#define PIN_MOSI  GPIO_NUM_6
-#define PIN_SCLK  GPIO_NUM_7
-#define PIN_CS    GPIO_NUM_14
-#define PIN_DC    GPIO_NUM_15
-#define PIN_RST   GPIO_NUM_21
-#define PIN_BL    GPIO_NUM_22
-#define LCD_SPI   SPI2_HOST
+// SSD1309 I2C address (SA0 low = 0x3C, SA0 high = 0x3D)
+#define SSD1309_ADDR  0x3C
+#define SSD1309_CMD   0x00   // control byte: following bytes are commands
+#define SSD1309_DATA  0x40   // control byte: following bytes are GDDRAM data
 
-static esp_lcd_panel_handle_t s_panel   = nullptr;
-static SemaphoreHandle_t      s_dma_sem = nullptr;
+// Optional hardware reset pin (D3 on XIAO). Set to -1 if not wired.
+#define PIN_RST  GPIO_NUM_21
 
-// Framebuffer: allocated once at init in DMA-capable SRAM.
-// All drawing goes here; display_update() pushes it to the panel in one shot,
-// eliminating the visible top-to-bottom redraw artifact.
-static uint16_t *s_fb = nullptr;
+static i2c_master_dev_handle_t s_dev = nullptr;
 
-// -------------------------------------------------------------------------
-// DMA helpers (used only for the framebuffer push in display_update)
-// -------------------------------------------------------------------------
+// Page-format framebuffer: 8 pages × 128 columns = 1024 bytes.
+// Each byte holds 8 vertical pixels; bit 0 = topmost in the page.
+static uint8_t s_fb[LCD_H / 8 * LCD_W];
 
-static bool IRAM_ATTR lcd_trans_done(esp_lcd_panel_io_handle_t io,
-                                      esp_lcd_panel_io_event_data_t *edata,
-                                      void *ctx)
-{
-    BaseType_t hp = pdFALSE;
-    xSemaphoreGiveFromISR(s_dma_sem, &hp);
-    return hp == pdTRUE;
-}
-
-// Push one rectangle from the framebuffer synchronously.
-static void fb_push_rect(int x, int y, int x2, int y2)
-{
-    xSemaphoreTake(s_dma_sem, portMAX_DELAY);          // wait for prev transfer
-    esp_lcd_panel_draw_bitmap(s_panel, x, y, x2, y2,
-                              s_fb + y * LCD_W + x);   // DMA directly from framebuffer
-    // ISR will give sem when done; the NEXT call or the final wait will catch it
-}
+// Transmit buffer: one control byte + framebuffer (static to avoid stack use)
+static uint8_t s_tx[1 + sizeof(s_fb)];
 
 // -------------------------------------------------------------------------
-// 5x7 bitmap font (ASCII 32-126, 5 bytes per char, column-major, LSB=top)
-// Standard embedded font, public domain.
+// 5×7 bitmap font (ASCII 32-126, 5 bytes per char, column-major, LSB=top)
 // -------------------------------------------------------------------------
 static const uint8_t font5x7[][5] = {
     {0x00,0x00,0x00,0x00,0x00}, // 32 space
@@ -158,85 +131,126 @@ static const uint8_t font5x7[][5] = {
 #define FONT_ADVANCE 6
 
 // -------------------------------------------------------------------------
-// LCD panel init
+// SSD1309 I2C helpers
 // -------------------------------------------------------------------------
 
-void display_init(void)
+static void ssd1309_send_cmds(const uint8_t *cmds, size_t len)
 {
-    s_dma_sem = xSemaphoreCreateBinary();
-    xSemaphoreGive(s_dma_sem); // start idle
-
-    // Allocate framebuffer early (heap is emptiest at boot).
-    // DMA-capable so display_update() can push it directly without copying.
-    s_fb = (uint16_t *)heap_caps_malloc(LCD_W * LCD_H * sizeof(uint16_t),
-                                         MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    if (s_fb) {
-        memset(s_fb, 0, LCD_W * LCD_H * sizeof(uint16_t));
-        ESP_LOGI(TAG, "framebuffer allocated (%d bytes)", LCD_W * LCD_H * 2);
-    } else {
-        ESP_LOGW(TAG, "framebuffer OOM — display disabled");
-        return;
+    // Prepend command control byte
+    uint8_t buf[32];
+    buf[0] = SSD1309_CMD;
+    size_t chunk;
+    while (len > 0) {
+        chunk = (len > sizeof(buf) - 1) ? sizeof(buf) - 1 : len;
+        memcpy(buf + 1, cmds, chunk);
+        i2c_master_transmit(s_dev, buf, chunk + 1, 100);
+        cmds += chunk;
+        len  -= chunk;
     }
-
-    // Force-reset backlight pin to clear any latched hold from previous firmware
-    gpio_reset_pin(PIN_BL);
-    gpio_set_direction(PIN_BL, GPIO_MODE_OUTPUT);
-    gpio_set_level(PIN_BL, 1);
-
-    spi_bus_config_t bus_cfg = {};
-    bus_cfg.mosi_io_num     = PIN_MOSI;
-    bus_cfg.miso_io_num     = -1;
-    bus_cfg.sclk_io_num     = PIN_SCLK;
-    bus_cfg.quadwp_io_num   = -1;
-    bus_cfg.quadhd_io_num   = -1;
-    // Large enough for the full framebuffer in a single DMA transaction
-    bus_cfg.max_transfer_sz = LCD_W * LCD_H * sizeof(uint16_t);
-
-    ESP_ERROR_CHECK(spi_bus_initialize(LCD_SPI, &bus_cfg, SPI_DMA_CH_AUTO));
-
-    esp_lcd_panel_io_spi_config_t io_cfg = {};
-    io_cfg.dc_gpio_num         = PIN_DC;
-    io_cfg.cs_gpio_num         = PIN_CS;
-    io_cfg.pclk_hz             = 40 * 1000 * 1000;
-    io_cfg.lcd_cmd_bits        = 8;
-    io_cfg.lcd_param_bits      = 8;
-    io_cfg.spi_mode            = 0;
-    io_cfg.trans_queue_depth   = 1;
-    io_cfg.on_color_trans_done = lcd_trans_done;
-    io_cfg.user_ctx            = nullptr;
-
-    esp_lcd_panel_io_handle_t io_handle;
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_SPI,
-                                              &io_cfg, &io_handle));
-
-    esp_lcd_panel_dev_config_t panel_cfg = {};
-    panel_cfg.reset_gpio_num  = PIN_RST;
-    panel_cfg.rgb_ele_order   = LCD_RGB_ELEMENT_ORDER_BGR;
-    panel_cfg.bits_per_pixel  = 16;
-
-    ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io_handle, &panel_cfg, &s_panel));
-    ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
-    ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
-    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, true));
-    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(s_panel, true));
-    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, true, false));
-    ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, 0, 34));
-    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
-
-    gpio_set_level(PIN_BL, 1);
-    ESP_LOGI(TAG, "display initialized (%dx%d ST7789)", LCD_W, LCD_H);
 }
 
 // -------------------------------------------------------------------------
-// Framebuffer drawing primitives (pure CPU writes to RAM — no DMA)
+// Init
 // -------------------------------------------------------------------------
 
-// Swap bytes for RGB565 little-endian over SPI
-static inline uint16_t swap16(uint16_t c) { return (c >> 8) | (c << 8); }
+void display_init(i2c_master_bus_handle_t bus)
+{
+    if (!bus) {
+        ESP_LOGW(TAG, "no I2C bus, display disabled");
+        return;
+    }
+
+    // Optional hardware reset
+    if ((int)PIN_RST >= 0) {
+        gpio_reset_pin(PIN_RST);
+        gpio_set_direction(PIN_RST, GPIO_MODE_OUTPUT);
+        gpio_set_level(PIN_RST, 0);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        gpio_set_level(PIN_RST, 1);
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    // Add SSD1309 as device on the shared I2C bus
+    i2c_device_config_t dev_cfg = {};
+    dev_cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+    dev_cfg.device_address  = SSD1309_ADDR;
+    dev_cfg.scl_speed_hz    = 400000;
+
+    esp_err_t err = i2c_master_bus_add_device(bus, &dev_cfg, &s_dev);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "SSD1309 add failed: %s", esp_err_to_name(err));
+        s_dev = nullptr;
+        return;
+    }
+
+    // SSD1309 initialisation (compatible with SSD1306 modules too)
+    static const uint8_t init[] = {
+        0xAE,              // display off
+        0xD5, 0x80,        // clock divide ratio
+        0xA8, 0x3F,        // multiplex 64
+        0xD3, 0x00,        // display offset 0
+        0x40,              // start line 0
+        0x8D, 0x14,        // charge pump enable
+        0x20, 0x00,        // horizontal addressing mode
+        0xA1,              // segment remap (mirror X)
+        0xC8,              // COM scan reversed (mirror Y)
+        0xDA, 0x12,        // COM pins: alternative, no LR remap
+        0x81, 0xCF,        // contrast
+        0xD9, 0xF1,        // pre-charge period
+        0xDB, 0x40,        // VCOMH deselect level
+        0xA4,              // output follows RAM
+        0xA6,              // normal display (not inverted)
+        0xAF,              // display on
+    };
+    ssd1309_send_cmds(init, sizeof(init));
+
+    memset(s_fb, 0, sizeof(s_fb));
+    display_update();
+
+    ESP_LOGI(TAG, "SSD1309 initialized (%dx%d I2C 0x%02X)", LCD_W, LCD_H, SSD1309_ADDR);
+}
+
+// -------------------------------------------------------------------------
+// Framebuffer → display transfer
+// -------------------------------------------------------------------------
+
+void display_update(void)
+{
+    if (!s_dev) return;
+
+    // Set draw window to full screen
+    static const uint8_t window[] = {
+        0x21, 0x00, 0x7F,   // column range 0–127
+        0x22, 0x00, 0x07,   // page range 0–7
+    };
+    ssd1309_send_cmds(window, sizeof(window));
+
+    // Push framebuffer
+    s_tx[0] = SSD1309_DATA;
+    memcpy(s_tx + 1, s_fb, sizeof(s_fb));
+    i2c_master_transmit(s_dev, s_tx, sizeof(s_tx), 200);
+}
+
+void display_clear(void)
+{
+    memset(s_fb, 0, sizeof(s_fb));
+}
+
+// -------------------------------------------------------------------------
+// Drawing primitives
+// -------------------------------------------------------------------------
+
+void display_pixel(int x, int y, bool on)
+{
+    if (x < 0 || x >= LCD_W || y < 0 || y >= LCD_H) return;
+    if (on)
+        s_fb[(y >> 3) * LCD_W + x] |=  (1 << (y & 7));
+    else
+        s_fb[(y >> 3) * LCD_W + x] &= ~(1 << (y & 7));
+}
 
 void display_fill_rect(int x, int y, int w, int h, uint16_t color)
 {
-    if (!s_fb) return;
     int x2 = x + w, y2 = y + h;
     if (x < 0) x = 0;
     if (y < 0) y = 0;
@@ -244,45 +258,36 @@ void display_fill_rect(int x, int y, int w, int h, uint16_t color)
     if (y2 > LCD_H) y2 = LCD_H;
     if (x2 <= x || y2 <= y) return;
 
-    uint16_t c = swap16(color);
+    bool on = (color != 0);
     for (int row = y; row < y2; row++) {
-        uint16_t *p = s_fb + row * LCD_W + x;
-        for (int col = 0; col < x2 - x; col++)
-            p[col] = c;
+        uint8_t mask = 1 << (row & 7);
+        int page_off = (row >> 3) * LCD_W;
+        if (on) {
+            for (int col = x; col < x2; col++)
+                s_fb[page_off + col] |= mask;
+        } else {
+            uint8_t nmask = ~mask;
+            for (int col = x; col < x2; col++)
+                s_fb[page_off + col] &= nmask;
+        }
     }
 }
 
-void display_clear(void)
+void display_hline(int x, int y, int w)
 {
-    if (!s_fb) return;
-    memset(s_fb, 0, LCD_W * LCD_H * sizeof(uint16_t)); // COLOR_BLACK = 0x0000
-}
-
-// Push the complete framebuffer to the panel in one DMA transaction.
-// The screen is updated atomically — no visible sweep.
-void display_update(void)
-{
-    if (!s_fb || !s_panel) return;
-
-    // Full-frame push: one draw_bitmap call for the entire 320×172 buffer.
-    // Semaphore starts idle (given). Take it to arm the transfer, ISR gives
-    // it back when done, then we take again to confirm completion.
-    xSemaphoreTake(s_dma_sem, portMAX_DELAY);
-    esp_lcd_panel_draw_bitmap(s_panel, 0, 0, LCD_W, LCD_H, s_fb);
-    xSemaphoreTake(s_dma_sem, portMAX_DELAY); // wait for transfer to finish
-    xSemaphoreGive(s_dma_sem);                // restore idle
+    display_fill_rect(x, y, w, 1, COLOR_WHITE);
 }
 
 // -------------------------------------------------------------------------
-// Text rendering (writes directly into the framebuffer)
+// Text rendering
 // -------------------------------------------------------------------------
 
-void display_text_color(int x, int y, const char *text, uint16_t fg, uint16_t bg, int scale)
+void display_text_color(int x, int y, const char *text,
+                        uint16_t fg, uint16_t bg, int scale)
 {
-    if (!s_fb || !text || !*text) return;
-
-    uint16_t fg_sw = swap16(fg);
-    uint16_t bg_sw = swap16(bg);
+    if (!text || !*text) return;
+    bool fg_on = (fg != 0);
+    bool bg_on = (bg != 0);
 
     for (; *text; text++, x += FONT_ADVANCE * scale) {
         if (x + FONT_ADVANCE * scale > LCD_W) break;
@@ -296,11 +301,11 @@ void display_text_color(int x, int y, const char *text, uint16_t fg, uint16_t bg
             if (py >= LCD_H) break;
             for (int col = 0; col < FONT_ADVANCE; col++) {
                 bool on = (col < FONT_W) && (glyph[col] & (1 << row));
-                uint16_t c = on ? fg_sw : bg_sw;
+                bool pixel = on ? fg_on : bg_on;
                 int px = x + col * scale;
                 for (int sy = 0; sy < scale && py + sy < LCD_H; sy++)
                     for (int sx = 0; sx < scale && px + sx < LCD_W; sx++)
-                        s_fb[(py + sy) * LCD_W + (px + sx)] = c;
+                        display_pixel(px + sx, py + sy, pixel);
             }
         }
     }
@@ -319,14 +324,4 @@ void display_text_inv(int x, int y, const char *text, int scale)
 int display_text_width(const char *text, int scale)
 {
     return (int)strlen(text) * FONT_ADVANCE * scale;
-}
-
-void display_hline(int x, int y, int w)
-{
-    display_fill_rect(x, y, w, 1, COLOR_WHITE);
-}
-
-void display_pixel(int x, int y, bool on)
-{
-    display_fill_rect(x, y, 1, 1, on ? COLOR_WHITE : COLOR_BLACK);
 }
