@@ -169,6 +169,25 @@ int cashu_derive_r(const unsigned char *seed, size_t seed_len,
                    const char *keyset_id, uint32_t counter,
                    unsigned char r_out[32]);
 
+/**
+ * NUT-11: BIP-340 Schnorr-sign SHA256(secret_bytes) with a P2PK private key.
+ *
+ * Used to construct the witness signature on `Proof.secret` when spending a
+ * P2PK-locked input with sigflag SIG_INPUTS.
+ *
+ * @param ctx         secp256k1 context (sign-capable)
+ * @param priv        32-byte private key
+ * @param secret_bytes message to sign (typically the unescaped Proof.secret)
+ * @param secret_len  length of message
+ * @param sig64_out   64-byte output buffer for the BIP-340 signature
+ * @return 1 on success, 0 on failure
+ */
+int cashu_schnorr_sign_secret(const secp256k1_context *ctx,
+                              const unsigned char priv[32],
+                              const unsigned char *secret_bytes,
+                              size_t secret_len,
+                              unsigned char sig64_out[64]);
+
 #ifdef __cplusplus
 }
 #endif

@@ -44,13 +44,31 @@ static cashu::Wallet *find_wallet_for(const char *mint_url)
     return nullptr;
 }
 
-static bool redeem_token(const std::string &token_str)
+// Returns the wallet that owns the token's mint, creating a new slot if
+// needed. NULL if no slot is free.
+static cashu::Wallet *wallet_for_token(const cashu::Token &token)
 {
-    if (!wifi_is_connected()) {
-        ESP_LOGE(TAG, "WiFi not connected");
-        return false;
+    cashu::Wallet *w = find_wallet_for(token.mint.c_str());
+    if (w) return w;
+    int slot = -1;
+    for (int i = 0; i < MAX_MINTS; i++) if (!g_wallets[i]) { slot = i; break; }
+    if (slot < 0) {
+        ESP_LOGE(TAG, "no free mint slots");
+        return nullptr;
     }
+    w = new cashu::Wallet(token.mint, g_ctx, slot);
+    g_wallets[slot] = w;
+    w->save_mint_url();
+    ESP_LOGI(TAG, "added mint [%d]: %s", slot, token.mint.c_str());
+    return w;
+}
 
+// Returns:
+//   1  on online success (swapped immediately)
+//   0  on offline success (stashed for later drain)
+//  -1  on failure
+static int redeem_or_stash_token(const std::string &token_str)
+{
     cashu::Token token;
     bool decoded = false;
     if (token_str.compare(0, 6, "cashuB") == 0)
@@ -60,7 +78,7 @@ static bool redeem_token(const std::string &token_str)
 
     if (!decoded) {
         ESP_LOGE(TAG, "token decode failed");
-        return false;
+        return -1;
     }
 
     int input_total = 0;
@@ -68,28 +86,29 @@ static bool redeem_token(const std::string &token_str)
     ESP_LOGI(TAG, "token: %d sat, %d proofs from %s",
              input_total, (int)token.proofs.size(), token.mint.c_str());
 
-    cashu::Wallet *w = find_wallet_for(token.mint.c_str());
-    if (!w) {
-        int slot = -1;
-        for (int i = 0; i < MAX_MINTS; i++) if (!g_wallets[i]) { slot = i; break; }
-        if (slot < 0) { ESP_LOGE(TAG, "no free mint slots"); return false; }
-        w = new cashu::Wallet(token.mint, g_ctx, slot);
-        g_wallets[slot] = w;
-        w->save_mint_url();
-        ESP_LOGI(TAG, "added mint [%d]: %s", slot, token.mint.c_str());
+    cashu::Wallet *w = wallet_for_token(token);
+    if (!w) return -1;
+
+    if (!wifi_is_connected()) {
+        if (!w->stash_pending_token(token_str)) {
+            ESP_LOGE(TAG, "pending: stash failed");
+            return -1;
+        }
+        ESP_LOGI(TAG, "offline: stashed %d sat for later drain", input_total);
+        return 0;
     }
 
     if (w->keysets().empty() || !w->active_keyset()) {
-        if (!w->load_keysets()) { ESP_LOGE(TAG, "keyset load failed"); return false; }
+        if (!w->load_keysets()) { ESP_LOGE(TAG, "keyset load failed"); return -1; }
     }
 
     std::vector<cashu::Proof> received;
-    if (!w->receive(token, received)) { ESP_LOGE(TAG, "swap failed"); return false; }
+    if (!w->receive(token, received)) { ESP_LOGE(TAG, "swap failed"); return -1; }
 
     int total = 0;
     for (const auto &p : received) total += p.amount;
     ESP_LOGI(TAG, "redeemed %d sat (%d proofs)", total, (int)received.size());
-    return true;
+    return 1;
 }
 
 // -------------------------------------------------------------------------
@@ -174,6 +193,18 @@ static void nfc_task(void *arg)
     if (!params->mint_url.empty())
         req.mints = std::vector<std::string>{params->mint_url};
 
+    // Offline-receive: ask the sender to lock the proofs to our P2PK pubkey
+    // so we can swap them once WiFi returns. Online we skip the lock for
+    // privacy (single static key would link receives).
+    if (!wifi_is_connected() && cashu::Wallet::ensure_p2pk_keypair(g_ctx)) {
+        cashu::NUT10Option opt;
+        opt.kind = "P2PK";
+        opt.data = cashu::Wallet::p2pk_pubkey_hex();
+        req.nut10 = std::move(opt);
+        ESP_LOGI(TAG, "offline: requesting P2PK lock to %s",
+                 cashu::Wallet::p2pk_pubkey_hex());
+    }
+
     std::string creq = cashu::serialize_payment_request(req);
     ESP_LOGI(TAG, "creq: %s", creq.c_str());
 
@@ -254,9 +285,14 @@ static void nfc_task(void *arg)
                 s_state.store(NfcState::redeeming);
                 display_nfc_status("redeeming...", amt_str);
 
-                if (redeem_token(s_received_token)) {
+                int rc = redeem_or_stash_token(s_received_token);
+                if (rc == 1) {
                     s_state.store(NfcState::success);
                     display_nfc_status("paid!", amt_str);
+                    display_refresh();
+                } else if (rc == 0) {
+                    s_state.store(NfcState::success);
+                    display_nfc_status("queued", amt_str);
                     display_refresh();
                 } else {
                     s_state.store(NfcState::error);

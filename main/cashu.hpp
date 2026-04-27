@@ -7,6 +7,12 @@
 #include <optional>
 #include <cstdint>
 
+// NUT-12: when set, a BlindSignature returned by the mint without a DLEQ
+// is rejected (instead of being accepted with only a warning). Default on.
+#ifndef CASHU_REQUIRE_DLEQ_FROM_MINT
+#define CASHU_REQUIRE_DLEQ_FROM_MINT 1
+#endif
+
 namespace cashu {
 
 // NUT-12: Discrete Log Equality proof
@@ -131,6 +137,15 @@ struct NUT10Option {
     std::string kind;
     std::string data;
     std::optional<std::vector<std::vector<std::string>>> tags;
+};
+
+// NUT-10: well-known structured secret carried inside Proof.secret
+// when serialized as JSON: ["<kind>", {"nonce":"<str>", "data":"<str>", "tags":[...]}]
+struct NUT10Secret {
+    std::string kind;
+    std::string nonce;
+    std::string data;
+    std::vector<std::vector<std::string>> tags;
 };
 
 // NUT-18: Payment request

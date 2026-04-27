@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <cstring>
 #include <esp_log.h>
+#include <esp_random.h>
 #include <esp_system.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
@@ -102,8 +103,20 @@ void display_refresh()
     display_clear();
 
     // ---- Title bar ----
-    const char *wifi_tag = wifi_is_connected() ? "wifi" : "----";
-    draw_title_bar(wifi_tag);
+    int total_pending = 0;
+    for (int i = 0; i < MAX_MINTS; i++) {
+        if (!g_wallets[i]) continue;
+        total_pending += g_wallets[i]->pending_count();
+    }
+    const char *base = wifi_is_connected() ? "wifi" : "----";
+    char wifi_buf[16];
+    if (total_pending > 0) {
+        unsigned p = (total_pending > 99) ? 99 : (unsigned)total_pending;
+        snprintf(wifi_buf, sizeof(wifi_buf), "%s+%u", base, p);
+    } else {
+        snprintf(wifi_buf, sizeof(wifi_buf), "%s", base);
+    }
+    draw_title_bar(wifi_buf);
 
     // ---- Tally ----
     int total_balance = 0, total_proofs = 0;
@@ -954,10 +967,17 @@ extern "C" void app_main(void)
         ESP_LOGE(TAG, "failed to create secp256k1 context");
         return;
     }
+    {
+        unsigned char rand32[32];
+        esp_fill_random(rand32, sizeof(rand32));
+        if (!secp256k1_context_randomize(g_ctx, rand32))
+            ESP_LOGW(TAG, "secp256k1 context randomize failed");
+    }
 
     crypto_run_tests(g_ctx);
 
     cashu::Wallet::load_seed();
+    cashu::Wallet::ensure_p2pk_keypair(g_ctx);
 
     for (int i = 0; i < MAX_MINTS; i++) {
         std::string url = cashu::Wallet::load_mint_url_for_slot(i);
@@ -976,6 +996,39 @@ extern "C" void app_main(void)
                 ESP_LOGW(TAG, "failed to refresh keysets for [%d]", i);
         }
     }
+
+    // Drain task: every time WiFi transitions to connected, walk each
+    // wallet's pending queue and try to swap the stashed offline-receive
+    // tokens.
+    xTaskCreate([](void *) {
+        EventGroupHandle_t eg = wifi_get_event_group();
+        for (;;) {
+            xEventGroupWaitBits(eg, WIFI_CONNECTED_BIT,
+                                pdFALSE, pdTRUE, portMAX_DELAY);
+            /* Settle: give the IP stack a moment before the first HTTP. */
+            vTaskDelay(pdMS_TO_TICKS(2000));
+
+            int total_ok = 0, total_fail = 0;
+            for (int i = 0; i < MAX_MINTS; i++) {
+                if (!g_wallets[i]) continue;
+                if (g_wallets[i]->pending_count() == 0) continue;
+                int ok = 0, fail = 0;
+                g_wallets[i]->drain_pending_tokens(ok, fail);
+                total_ok += ok;
+                total_fail += fail;
+            }
+            if (total_ok || total_fail) {
+                ESP_LOGI(TAG, "drain: %d ok, %d failed across all slots",
+                         total_ok, total_fail);
+                display_refresh();
+            }
+
+            /* Wait until the bit clears, then re-loop to wait for the next
+             * rising edge. */
+            while (xEventGroupGetBits(eg) & WIFI_CONNECTED_BIT)
+                vTaskDelay(pdMS_TO_TICKS(5000));
+        }
+    }, "wifi_drain", 8192, NULL, 4, NULL);
 
     // NFC creates the shared I2C bus; display and keypad join it
     if (!nfc_init())

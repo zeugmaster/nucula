@@ -33,6 +33,12 @@ public:
     static bool erase_seed();
     static bool has_seed() { return s_seed_loaded; }
 
+    // NUT-11: P2PK identity derived from seed. Lazy; recomputed each boot.
+    // ensure_p2pk_keypair returns false if no seed is loaded.
+    static bool ensure_p2pk_keypair(secp256k1_context* ctx);
+    static const char* p2pk_pubkey_hex();         // 66-char compressed hex, "" if absent
+    static const unsigned char* p2pk_privkey();   // 32 bytes, NULL if absent
+
     // Per-keyset counter management
     static uint32_t load_counter(const std::string& keyset_id);
     static bool save_counter(const std::string& keyset_id, uint32_t counter);
@@ -58,6 +64,15 @@ public:
               std::vector<Proof>& change);
 
     bool receive(const Token& token, std::vector<Proof>& proofs_out);
+
+    // Offline-receive queue: tokens stashed when WiFi is down and drained on
+    // reconnect. Each entry is a complete cashuA/cashuB token string from one
+    // NFC tap (which itself bundles N proofs). Cap is per-wallet, see
+    // PEND_MAX in wallet.cpp.
+    bool stash_pending_token(const std::string& raw_token);
+    bool list_pending_tokens(std::vector<std::string>& out);
+    bool drain_pending_tokens(int& accepted, int& failed);
+    int  pending_count() const;
 
     // NUT-04: Mint tokens (bolt11)
     bool request_mint_quote(int amount, MintQuote& quote_out);
@@ -92,8 +107,15 @@ private:
     bool load_keysets_nvs();
     void merge_keysets(const std::vector<Keyset>& fresh);
 
+    bool keyset_pubkey_for_amount(const Keyset& ks, uint64_t amount,
+                                  secp256k1_pubkey& out) const;
+
     static unsigned char s_seed[64];
     static bool s_seed_loaded;
+
+    static unsigned char s_p2pk_priv[32];
+    static char          s_p2pk_pub_hex[67];   // 66 + NUL
+    static bool          s_p2pk_loaded;
 };
 
 } // namespace cashu

@@ -1,15 +1,19 @@
 #include "wallet.hpp"
 #include "cashu_json.hpp"
+#include "cashu_cbor.hpp"
 #include "crypto.h"
 #include "hex.h"
 #include "http.h"
+#include "nut10.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <esp_log.h>
 #include <esp_random.h>
 #include <nvs_flash.h>
 #include <nvs.h>
+#include <cJSON.h>
 
 #define TAG "wallet"
 
@@ -19,6 +23,10 @@ static const int MAX_KEYSETS = 10;
 // Static seed storage
 unsigned char cashu::Wallet::s_seed[64] = {};
 bool cashu::Wallet::s_seed_loaded = false;
+
+unsigned char cashu::Wallet::s_p2pk_priv[32]      = {};
+char          cashu::Wallet::s_p2pk_pub_hex[67]   = {};
+bool          cashu::Wallet::s_p2pk_loaded        = false;
 
 static void slot_key(char* buf, size_t sz, const char* base, int slot)
 {
@@ -149,8 +157,88 @@ bool Wallet::erase_seed()
     nvs_close(handle);
     memset(s_seed, 0, 64);
     s_seed_loaded = false;
+    /* P2PK key is independent of the seed and intentionally retained. */
     ESP_LOGI(TAG, "seed erased");
     return true;
+}
+
+// -------------------------------------------------------------------------
+// NUT-11: P2PK identity
+//
+// For now the locking key is independent of the BIP-39 seed: a 32-byte
+// scalar generated once with esp_fill_random, persisted in NVS under
+// "p2pk_priv", and reused across transactions. This is privacy-naive (one
+// observer-linkable pubkey) but lets the offline-receive flow function with
+// a stable identity that survives reboots. Per-receive nonce derivation is
+// a follow-up.
+// -------------------------------------------------------------------------
+
+bool Wallet::ensure_p2pk_keypair(secp256k1_context* ctx)
+{
+    if (s_p2pk_loaded)
+        return true;
+
+    nvs_handle_t h;
+    bool have_priv = false;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        size_t sz = sizeof(s_p2pk_priv);
+        if (nvs_get_blob(h, "p2pk_priv", s_p2pk_priv, &sz) == ESP_OK && sz == 32) {
+            have_priv = true;
+        }
+        if (!have_priv) {
+            /* Generate fresh: random 32 bytes that satisfy
+             * secp256k1_ec_seckey_verify (in [1, n-1]). Retry on the
+             * vanishingly unlikely failure. */
+            for (int tries = 0; tries < 8 && !have_priv; tries++) {
+                esp_fill_random(s_p2pk_priv, 32);
+                if (secp256k1_ec_seckey_verify(ctx, s_p2pk_priv))
+                    have_priv = true;
+            }
+            if (have_priv) {
+                if (nvs_set_blob(h, "p2pk_priv", s_p2pk_priv, 32) != ESP_OK ||
+                    nvs_commit(h) != ESP_OK) {
+                    ESP_LOGE(TAG, "p2pk: nvs persist failed");
+                    have_priv = false;
+                } else {
+                    ESP_LOGI(TAG, "p2pk: generated and persisted new keypair");
+                }
+            }
+        }
+        nvs_close(h);
+    }
+
+    if (!have_priv) {
+        ESP_LOGE(TAG, "p2pk: could not load or generate keypair");
+        return false;
+    }
+
+    secp256k1_pubkey pk;
+    if (!secp256k1_ec_pubkey_create(ctx, &pk, s_p2pk_priv)) {
+        ESP_LOGE(TAG, "p2pk: pubkey_create failed");
+        return false;
+    }
+    unsigned char pub33[33];
+    size_t out_len = 33;
+    if (!secp256k1_ec_pubkey_serialize(ctx, pub33, &out_len,
+                                       &pk, SECP256K1_EC_COMPRESSED)) {
+        ESP_LOGE(TAG, "p2pk: pubkey serialize failed");
+        return false;
+    }
+
+    bytes_to_hex(pub33, 33, s_p2pk_pub_hex);
+    s_p2pk_loaded = true;
+    ESP_LOGI(TAG, "p2pk pubkey: %s", s_p2pk_pub_hex);
+    return true;
+}
+
+const char* Wallet::p2pk_pubkey_hex()
+{
+    return s_p2pk_loaded ? s_p2pk_pub_hex : "";
+}
+
+const unsigned char* Wallet::p2pk_privkey()
+{
+    return s_p2pk_loaded ? s_p2pk_priv : nullptr;
 }
 
 // -------------------------------------------------------------------------
@@ -652,8 +740,29 @@ bool Wallet::generate_outputs(const std::vector<int>& amounts,
 }
 
 // -------------------------------------------------------------------------
-// Unblinding (NUT-00)
+// Unblinding (NUT-00) + NUT-12 DLEQ verification
 // -------------------------------------------------------------------------
+
+bool Wallet::keyset_pubkey_for_amount(const Keyset& ks, uint64_t amount,
+                                      secp256k1_pubkey& out) const
+{
+    auto key_it = ks.keys.find(amount);
+    if (key_it == ks.keys.end()) {
+        ESP_LOGE(TAG, "no key for amount %llu in keyset %s",
+                 (unsigned long long)amount, ks.id.c_str());
+        return false;
+    }
+    unsigned char K_bytes[33];
+    if (!hex_to_bytes(key_it->second.c_str(), K_bytes, 33)) {
+        ESP_LOGE(TAG, "invalid mint key hex");
+        return false;
+    }
+    if (!cashu_pubkey_parse(ctx_, &out, K_bytes)) {
+        ESP_LOGE(TAG, "invalid mint pubkey");
+        return false;
+    }
+    return true;
+}
 
 bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
                                 const BlindingData& blinding,
@@ -672,12 +781,9 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
         const auto& sig = signatures[i];
         uint64_t amt = (uint64_t)sig.amount;
 
-        auto key_it = keyset.keys.find(amt);
-        if (key_it == keyset.keys.end()) {
-            ESP_LOGE(TAG, "no key for amount %d in keyset %s",
-                     sig.amount, keyset.id.c_str());
+        secp256k1_pubkey K;
+        if (!keyset_pubkey_for_amount(keyset, amt, K))
             return false;
-        }
 
         unsigned char C_bytes[33];
         if (!hex_to_bytes(sig.C_.c_str(), C_bytes, 33)) {
@@ -690,21 +796,44 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
             return false;
         }
 
-        unsigned char K_bytes[33];
-        if (!hex_to_bytes(key_it->second.c_str(), K_bytes, 33)) {
-            ESP_LOGE(TAG, "invalid mint key hex");
-            return false;
-        }
-        secp256k1_pubkey K;
-        if (!cashu_pubkey_parse(ctx_, &K, K_bytes)) {
-            ESP_LOGE(TAG, "invalid mint pubkey");
-            return false;
-        }
-
         unsigned char r_bytes[32];
         if (!hex_to_bytes(blinding.blinding_factors[i].c_str(), r_bytes, 32)) {
             ESP_LOGE(TAG, "invalid blinding factor hex");
             return false;
+        }
+
+        // NUT-12: verify the DLEQ proof on the BlindSignature before we trust C_.
+        if (sig.dleq) {
+            unsigned char e_b[32], s_b[32];
+            if (!hex_to_bytes(sig.dleq->e.c_str(), e_b, 32) ||
+                !hex_to_bytes(sig.dleq->s.c_str(), s_b, 32)) {
+                ESP_LOGE(TAG, "dleq: invalid e/s hex on sig[%d]", (int)i);
+                return false;
+            }
+            unsigned char B__bytes[33];
+            if (!hex_to_bytes(blinding.outputs[i].B_.c_str(), B__bytes, 33)) {
+                ESP_LOGE(TAG, "dleq: invalid B_ hex on sig[%d]", (int)i);
+                return false;
+            }
+            secp256k1_pubkey B__pk;
+            if (!cashu_pubkey_parse(ctx_, &B__pk, B__bytes)) {
+                ESP_LOGE(TAG, "dleq: invalid B_ pubkey on sig[%d]", (int)i);
+                return false;
+            }
+            if (!cashu_verify_dleq(ctx_, &K, &B__pk, &C_, e_b, s_b)) {
+                ESP_LOGE(TAG, "dleq verification failed for sig[%d] amount=%d",
+                         (int)i, sig.amount);
+                return false;
+            }
+        } else {
+#if CASHU_REQUIRE_DLEQ_FROM_MINT
+            ESP_LOGE(TAG, "mint omitted DLEQ on sig[%d] amount=%d (rejecting)",
+                     (int)i, sig.amount);
+            return false;
+#else
+            ESP_LOGW(TAG, "mint omitted DLEQ on sig[%d] amount=%d",
+                     (int)i, sig.amount);
+#endif
         }
 
         secp256k1_pubkey C;
@@ -791,6 +920,37 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
     for (const auto& p : inputs)
         stripped.push_back(Proof{p.id, p.amount, p.secret, p.C, std::nullopt, p.witness});
 
+    // NUT-11: any input whose secret is a P2PK structured secret locked to
+    // our pubkey gets a witness signature attached. Unlocked inputs are a
+    // no-op (parse_nut10_secret returns false on raw-hex secrets).
+    for (auto& p : stripped) {
+        NUT10Secret ns;
+        if (!parse_nut10_secret(p.secret, ns)) continue;
+        if (ns.kind != "P2PK") continue;
+        if (!s_p2pk_loaded || ns.data != std::string(s_p2pk_pub_hex)) {
+            ESP_LOGE(TAG, "swap: input locked to %s, refusing", ns.data.c_str());
+            return false;
+        }
+        unsigned char sig[64];
+        if (!cashu_schnorr_sign_secret(ctx_, s_p2pk_priv,
+                                       (const unsigned char*)p.secret.c_str(),
+                                       p.secret.size(), sig)) {
+            ESP_LOGE(TAG, "swap: schnorr sign failed");
+            return false;
+        }
+        char sig_hex[129];
+        bytes_to_hex(sig, 64, sig_hex);
+
+        cJSON* witness = cJSON_CreateObject();
+        cJSON* arr = cJSON_CreateArray();
+        cJSON_AddItemToArray(arr, cJSON_CreateString(sig_hex));
+        cJSON_AddItemToObject(witness, "signatures", arr);
+        char* w = cJSON_PrintUnformatted(witness);
+        p.witness = std::string(w ? w : "");
+        if (w) cJSON_free(w);
+        cJSON_Delete(witness);
+    }
+
     SwapRequest req{stripped, blinding.outputs};
     std::string body = serialize(req);
 
@@ -856,6 +1016,55 @@ bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
         return false;
     }
 
+    // NUT-12 (Carol-side): if a transferred proof carries a DLEQ with the
+    // sender's blinding factor `r`, verify it against the keyset's pubkey for
+    // that amount before swapping. A missing DLEQ is allowed (warn only) since
+    // senders are not required to forward it.
+    for (size_t i = 0; i < token.proofs.size(); i++) {
+        const auto& p = token.proofs[i];
+        if (!p.dleq || !p.dleq->r) {
+            ESP_LOGW(TAG, "receive: proof[%d] has no DLEQ (accepting)", (int)i);
+            continue;
+        }
+        const Keyset* ks = keyset_for_id(p.id);
+        if (!ks) {
+            ESP_LOGE(TAG, "receive: unknown keyset id %s on proof[%d]",
+                     p.id.c_str(), (int)i);
+            return false;
+        }
+        secp256k1_pubkey A;
+        if (!keyset_pubkey_for_amount(*ks, (uint64_t)p.amount, A))
+            return false;
+
+        unsigned char C_bytes[33];
+        if (!hex_to_bytes(p.C.c_str(), C_bytes, 33)) {
+            ESP_LOGE(TAG, "receive: invalid C hex on proof[%d]", (int)i);
+            return false;
+        }
+        secp256k1_pubkey C_pk;
+        if (!cashu_pubkey_parse(ctx_, &C_pk, C_bytes)) {
+            ESP_LOGE(TAG, "receive: invalid C pubkey on proof[%d]", (int)i);
+            return false;
+        }
+
+        unsigned char e_b[32], s_b[32], r_b[32];
+        if (!hex_to_bytes(p.dleq->e.c_str(), e_b, 32) ||
+            !hex_to_bytes(p.dleq->s.c_str(), s_b, 32) ||
+            !hex_to_bytes(p.dleq->r->c_str(), r_b, 32)) {
+            ESP_LOGE(TAG, "receive: invalid dleq hex on proof[%d]", (int)i);
+            return false;
+        }
+
+        if (!cashu_verify_dleq_unblinded(ctx_, &A, &C_pk,
+                                         (const unsigned char*)p.secret.c_str(),
+                                         p.secret.size(),
+                                         e_b, s_b, r_b)) {
+            ESP_LOGE(TAG, "dleq verification failed for proof[%d] amount=%d",
+                     (int)i, p.amount);
+            return false;
+        }
+    }
+
     std::vector<Proof> inputs = token.proofs;
 
     std::vector<Proof> new_proofs, change;
@@ -867,11 +1076,10 @@ bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
     proofs_out.insert(proofs_out.end(), new_proofs.begin(), new_proofs.end());
     proofs_out.insert(proofs_out.end(), change.begin(), change.end());
 
-    // Strip DLEQ/witness before storing -- only needed during verification
-    for (auto& p : proofs_out) {
-        p.dleq = std::nullopt;
+    // Witnesses are single-use and don't survive a swap. DLEQ is preserved
+    // so the proof can be forwarded later (NUT-12 Carol-mode).
+    for (auto& p : proofs_out)
         p.witness = std::nullopt;
-    }
 
     for (const auto& p : proofs_out)
         proofs_.push_back(p);
@@ -1053,10 +1261,9 @@ bool Wallet::mint_tokens(const std::string& quote_id, int amount)
     if (!unblind_signatures(mint_resp.signatures, blinding, *ks, new_proofs))
         return false;
 
-    for (auto& p : new_proofs) {
-        p.dleq = std::nullopt;
+    // Witnesses are single-use; DLEQ stays so the proof can be forwarded.
+    for (auto& p : new_proofs)
         p.witness = std::nullopt;
-    }
 
     for (const auto& p : new_proofs)
         proofs_.push_back(p);
@@ -1239,7 +1446,6 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
         std::vector<Proof> change_proofs;
         if (unblind_signatures(*melt_resp.change, truncated, *ks, change_proofs)) {
             for (auto& p : change_proofs) {
-                p.dleq = std::nullopt;
                 p.witness = std::nullopt;
                 change_amount += p.amount;
                 proofs_.push_back(p);
@@ -1266,6 +1472,194 @@ bool Wallet::clear_proofs()
 {
     proofs_.clear();
     return save_proofs();
+}
+
+// -------------------------------------------------------------------------
+// Offline-receive pending queue
+// -------------------------------------------------------------------------
+//
+// NVS schema (namespace "wallet"):
+//   pendn_<slot>     u8           current count, 0..PEND_MAX
+//   pend_<slot>_<i>  string       full cashuA/cashuB token, i = 0..PEND_MAX-1
+//
+// PEND_MAX is bounded by the 15-char NVS key limit (single hex digit for i).
+
+static const int PEND_MAX = 8;
+
+static void pend_count_key(char* buf, size_t sz, int slot)
+{
+    snprintf(buf, sz, "pendn_%d", slot);
+}
+
+static void pend_item_key(char* buf, size_t sz, int slot, int idx)
+{
+    snprintf(buf, sz, "pend_%d_%x", slot, idx);
+}
+
+static int pending_count_for_slot(int slot)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return 0;
+    char k[16];
+    pend_count_key(k, sizeof(k), slot);
+    uint8_t n = 0;
+    nvs_get_u8(h, k, &n);
+    nvs_close(h);
+    return (int)n;
+}
+
+int Wallet::pending_count() const
+{
+    return pending_count_for_slot(nvs_slot_);
+}
+
+bool Wallet::stash_pending_token(const std::string& raw_token)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
+        ESP_LOGE(TAG, "pending: nvs_open failed");
+        return false;
+    }
+    char ck[16];
+    pend_count_key(ck, sizeof(ck), nvs_slot_);
+    uint8_t n = 0;
+    nvs_get_u8(h, ck, &n);
+    if (n >= PEND_MAX) {
+        ESP_LOGE(TAG, "pending: queue full (%d/%d)", (int)n, PEND_MAX);
+        nvs_close(h);
+        return false;
+    }
+    char ik[16];
+    pend_item_key(ik, sizeof(ik), nvs_slot_, (int)n);
+    if (nvs_set_str(h, ik, raw_token.c_str()) != ESP_OK) {
+        ESP_LOGE(TAG, "pending: nvs_set_str failed");
+        nvs_close(h);
+        return false;
+    }
+    n++;
+    if (nvs_set_u8(h, ck, n) != ESP_OK) {
+        nvs_close(h);
+        return false;
+    }
+    nvs_commit(h);
+    nvs_close(h);
+    ESP_LOGI(TAG, "pending: stashed token %d (slot %d)", (int)n - 1, nvs_slot_);
+    return true;
+}
+
+bool Wallet::list_pending_tokens(std::vector<std::string>& out)
+{
+    out.clear();
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK)
+        return false;
+    char ck[16];
+    pend_count_key(ck, sizeof(ck), nvs_slot_);
+    uint8_t n = 0;
+    nvs_get_u8(h, ck, &n);
+    for (int i = 0; i < (int)n; i++) {
+        char ik[16];
+        pend_item_key(ik, sizeof(ik), nvs_slot_, i);
+        size_t len = 0;
+        if (nvs_get_str(h, ik, NULL, &len) != ESP_OK || len == 0)
+            continue;
+        std::string s(len, '\0');
+        if (nvs_get_str(h, ik, &s[0], &len) != ESP_OK)
+            continue;
+        if (!s.empty() && s.back() == '\0') s.pop_back();
+        out.push_back(std::move(s));
+    }
+    nvs_close(h);
+    return true;
+}
+
+bool Wallet::drain_pending_tokens(int& accepted, int& failed)
+{
+    accepted = 0;
+    failed = 0;
+
+    std::vector<std::string> items;
+    if (!list_pending_tokens(items) || items.empty())
+        return true;
+
+    /* The pending list is rebuilt as we go. Tokens that swap successfully
+     * (or fail permanently) are dropped; transient failures are retained. */
+    std::vector<std::string> retained;
+    bool any_transient = false;
+
+    for (size_t i = 0; i < items.size(); i++) {
+        const std::string& raw = items[i];
+        Token tok;
+        bool decoded = false;
+        if (raw.compare(0, 6, "cashuB") == 0)
+            decoded = deserialize_token_v4(raw.c_str(), tok);
+        else if (raw.compare(0, 6, "cashuA") == 0)
+            decoded = deserialize_token_v3(raw.c_str(), tok);
+
+        if (!decoded) {
+            ESP_LOGW(TAG, "pending[%d]: decode failed, dropping", (int)i);
+            failed++;
+            continue;
+        }
+        if (tok.mint != mint_url_) {
+            /* Stashed against the wrong wallet slot. Keep it; another
+             * wallet's drain pass will pick it up. */
+            ESP_LOGW(TAG, "pending[%d]: mint mismatch, retaining", (int)i);
+            retained.push_back(raw);
+            continue;
+        }
+
+        if (keysets_.empty() && !load_keysets()) {
+            ESP_LOGW(TAG, "pending[%d]: keysets unavailable, retaining", (int)i);
+            retained.push_back(raw);
+            any_transient = true;
+            continue;
+        }
+
+        std::vector<Proof> got;
+        if (receive(tok, got)) {
+            ESP_LOGI(TAG, "pending[%d]: redeemed", (int)i);
+            accepted++;
+        } else {
+            /* receive() can fail for either a transient (HTTP) or a
+             * permanent (mint says spent / bad witness) reason. We can't
+             * easily tell from here; conservatively keep the token unless
+             * it's been retried many times. For v1: keep on first failure;
+             * a future improvement can add a per-entry attempt counter. */
+            ESP_LOGW(TAG, "pending[%d]: redeem failed, retaining", (int)i);
+            retained.push_back(raw);
+            any_transient = true;
+        }
+    }
+
+    /* Rewrite the pending list: erase all entries, write back retained. */
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK)
+        return false;
+    for (int i = 0; i < PEND_MAX; i++) {
+        char ik[16];
+        pend_item_key(ik, sizeof(ik), nvs_slot_, i);
+        nvs_erase_key(h, ik);
+    }
+    char ck[16];
+    pend_count_key(ck, sizeof(ck), nvs_slot_);
+    if (retained.empty()) {
+        nvs_erase_key(h, ck);
+    } else {
+        for (size_t i = 0; i < retained.size(); i++) {
+            char ik[16];
+            pend_item_key(ik, sizeof(ik), nvs_slot_, (int)i);
+            nvs_set_str(h, ik, retained[i].c_str());
+        }
+        nvs_set_u8(h, ck, (uint8_t)retained.size());
+    }
+    nvs_commit(h);
+    nvs_close(h);
+
+    ESP_LOGI(TAG, "pending: drain slot %d -> %d ok, %d retained, %d dropped",
+             nvs_slot_, accepted, (int)retained.size(), failed);
+    (void)any_transient;
+    return true;
 }
 
 } // namespace cashu

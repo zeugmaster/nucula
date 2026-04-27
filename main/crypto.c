@@ -3,6 +3,8 @@
 #include <string.h>
 #include <mbedtls/sha256.h>
 #include <mbedtls/md.h>
+#include "secp256k1_extrakeys.h"
+#include "secp256k1_schnorrsig.h"
 
 static const char DOMAIN_SEPARATOR[] = "Secp256k1_HashToCurve_Cashu_";
 #define DOMAIN_SEPARATOR_LEN 28
@@ -349,4 +351,21 @@ int cashu_pubkey_parse(const secp256k1_context *ctx,
                        const unsigned char input[33])
 {
     return secp256k1_ec_pubkey_parse(ctx, out, input, 33);
+}
+
+int cashu_schnorr_sign_secret(const secp256k1_context *ctx,
+                              const unsigned char priv[32],
+                              const unsigned char *secret_bytes,
+                              size_t secret_len,
+                              unsigned char sig64_out[64])
+{
+    unsigned char msg32[32];
+    if (mbedtls_sha256(secret_bytes, secret_len, msg32, 0) != 0)
+        return 0;
+
+    secp256k1_keypair kp;
+    if (!secp256k1_keypair_create(ctx, &kp, priv))
+        return 0;
+
+    return secp256k1_schnorrsig_sign32(ctx, sig64_out, msg32, &kp, NULL);
 }

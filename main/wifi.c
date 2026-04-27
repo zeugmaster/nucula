@@ -3,6 +3,7 @@
 
 #include <string.h>
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -10,15 +11,30 @@
 #include "esp_netif.h"
 #include "nvs_flash.h"
 
-#define MAX_RETRIES   5
-
-#define CONNECTED_BIT BIT0
-#define FAIL_BIT      BIT1
+/* Number of fast back-to-back retries the event handler will fire on its own
+ * before handing off to the periodic supervisor. After this, the supervisor
+ * reconnects on a fixed cadence and never gives up. */
+#define FAST_RETRY_COUNT      3
+#define SUPERVISOR_PERIOD_MS  30000
 
 static const char *TAG = "wifi";
 static EventGroupHandle_t s_event_group;
 static int s_retry_count;
 static bool s_connected;
+
+static void wifi_supervisor_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        if (!s_connected) {
+            ESP_LOGI(TAG, "supervisor: attempting reconnect");
+            esp_err_t err = esp_wifi_connect();
+            if (err != ESP_OK && err != ESP_ERR_WIFI_CONN)
+                ESP_LOGW(TAG, "esp_wifi_connect() returned %d", err);
+        }
+        vTaskDelay(pdMS_TO_TICKS(SUPERVISOR_PERIOD_MS));
+    }
+}
 
 static void event_handler(void *arg, esp_event_base_t base,
                           int32_t id, void *data)
@@ -30,19 +46,19 @@ static void event_handler(void *arg, esp_event_base_t base,
             (wifi_event_sta_disconnected_t *)data;
         ESP_LOGW(TAG, "disconnected, reason: %d", event->reason);
         s_connected = false;
-        if (s_retry_count < MAX_RETRIES) {
+        xEventGroupClearBits(s_event_group, WIFI_CONNECTED_BIT);
+        if (s_retry_count < FAST_RETRY_COUNT) {
             s_retry_count++;
-            ESP_LOGI(TAG, "retrying connection (%d/%d)", s_retry_count, MAX_RETRIES);
+            ESP_LOGI(TAG, "fast retry (%d/%d)", s_retry_count, FAST_RETRY_COUNT);
             esp_wifi_connect();
-        } else {
-            xEventGroupSetBits(s_event_group, FAIL_BIT);
         }
+        /* After FAST_RETRY_COUNT the supervisor task takes over. */
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "connected, ip: " IPSTR, IP2STR(&event->ip_info.ip));
         s_retry_count = 0;
         s_connected = true;
-        xEventGroupSetBits(s_event_group, CONNECTED_BIT);
+        xEventGroupSetBits(s_event_group, WIFI_CONNECTED_BIT);
     }
 }
 
@@ -82,23 +98,36 @@ esp_err_t wifi_init(void)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
+    /* Spawn the supervisor before we even check the initial result. The fast
+     * retries from event_handler may already be exhausted by the time we
+     * return; the supervisor takes it from there. */
+    BaseType_t ok = xTaskCreate(wifi_supervisor_task, "wifi_sup",
+                                2048, NULL, 3, NULL);
+    if (ok != pdPASS)
+        ESP_LOGE(TAG, "failed to spawn wifi_supervisor_task");
+
     ESP_LOGI(TAG, "connecting to \"%s\"...", WIFI_SSID);
 
     EventBits_t bits = xEventGroupWaitBits(s_event_group,
-                                           CONNECTED_BIT | FAIL_BIT,
+                                           WIFI_CONNECTED_BIT,
                                            pdFALSE, pdFALSE,
                                            pdMS_TO_TICKS(15000));
 
-    if (bits & CONNECTED_BIT) {
+    if (bits & WIFI_CONNECTED_BIT) {
         esp_wifi_set_ps(WIFI_PS_NONE);
         return ESP_OK;
     }
 
-    ESP_LOGE(TAG, "failed to connect to \"%s\"", WIFI_SSID);
+    ESP_LOGW(TAG, "not connected within 15s; supervisor continues retrying");
     return ESP_FAIL;
 }
 
 bool wifi_is_connected(void)
 {
     return s_connected;
+}
+
+EventGroupHandle_t wifi_get_event_group(void)
+{
+    return s_event_group;
 }
