@@ -80,23 +80,23 @@ static char scan_matrix(void)
         uint8_t col_pin = s_col_pins[c];
         uint8_t drive   = (uint8_t)((~(1u << col_pin)) | 0x80);
 
-        if (i2c_master_transmit(s_dev, &drive, 1, 50) != ESP_OK) continue;
+        if (i2c_master_transmit(s_dev, &drive, 1, 200) != ESP_OK) continue;
         vTaskDelay(pdMS_TO_TICKS(1));
 
         uint8_t val = 0xFF;
-        if (i2c_master_receive(s_dev, &val, 1, 50) != ESP_OK) continue;
+        if (i2c_master_receive(s_dev, &val, 1, 200) != ESP_OK) continue;
 
         for (int r = 0; r < 4; r++) {
             if (!(val & (1u << s_row_pins[r]))) {
                 uint8_t idle = 0xFF;
-                i2c_master_transmit(s_dev, &idle, 1, 50);
+                i2c_master_transmit(s_dev, &idle, 1, 200);
                 return s_keymap[r][c];
             }
         }
     }
 
     uint8_t idle = 0xFF;
-    i2c_master_transmit(s_dev, &idle, 1, 50);
+    i2c_master_transmit(s_dev, &idle, 1, 200);
     return '\0';
 }
 
