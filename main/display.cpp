@@ -13,8 +13,8 @@
 #define SSD1309_CMD   0x00   // control byte: following bytes are commands
 #define SSD1309_DATA  0x40   // control byte: following bytes are GDDRAM data
 
-// Optional hardware reset pin (D3 on XIAO). Set to -1 if not wired.
-#define PIN_RST  GPIO_NUM_21
+// Optional hardware reset pin (D3 on XIAO C3 = GPIO 5). Set to -1 if not wired.
+#define PIN_RST  GPIO_NUM_5
 
 static i2c_master_dev_handle_t s_dev = nullptr;
 
