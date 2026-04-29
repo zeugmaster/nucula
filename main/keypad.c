@@ -11,11 +11,11 @@ static i2c_master_dev_handle_t s_dev    = NULL;
 static QueueHandle_t            s_queue  = NULL;
 static char                     s_held   = '\0'; // key currently held down
 
-// Pin mapping derived from physical scan:
-//   Columns (left→right): P4, P6, P2
-//   Rows (top→bottom):    P5, P0, P1, P3
-static const uint8_t s_col_pins[3] = {4, 6, 2};
-static const uint8_t s_row_pins[4] = {5, 0, 1, 3};
+// Pin mapping derived from physical scan (XIAO C3 board):
+//   Columns (left→right): P2, P0, P4
+//   Rows (top→bottom):    P1, P6, P5, P3
+static const uint8_t s_col_pins[3] = {2, 0, 4};
+static const uint8_t s_row_pins[4] = {1, 6, 5, 3};
 
 static const char s_keymap[4][3] = {
     {'1', '2', '3'},
