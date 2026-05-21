@@ -86,10 +86,19 @@ static int redeem_or_stash_token(const std::string &token_str)
     ESP_LOGI(TAG, "token: %d sat, %d proofs from %s",
              input_total, (int)token.proofs.size(), token.mint.c_str());
 
-    cashu::Wallet *w = wallet_for_token(token);
-    if (!w) return -1;
-
     if (!wifi_is_connected()) {
+        // Offline: only accept a token from a mint we already hold keysets
+        // for. Verifying the proofs' DLEQ (NUT-12) requires that mint's
+        // public keys; without them a forged token is indistinguishable from
+        // real ecash, and there is no online swap to fall back on. Refuse —
+        // and do NOT create a new mint slot for an unknown mint.
+        cashu::Wallet *w = find_wallet_for(token.mint.c_str());
+        if (!w || w->keysets().empty()) {
+            ESP_LOGE(TAG, "offline: refusing token from unknown mint %s "
+                          "(no keysets, cannot verify DLEQ)",
+                     token.mint.c_str());
+            return -1;
+        }
         if (!w->stash_pending_token(token_str)) {
             ESP_LOGE(TAG, "pending: stash failed");
             return -1;
@@ -97,6 +106,9 @@ static int redeem_or_stash_token(const std::string &token_str)
         ESP_LOGI(TAG, "offline: stashed %d sat for later drain", input_total);
         return 0;
     }
+
+    cashu::Wallet *w = wallet_for_token(token);
+    if (!w) return -1;
 
     if (w->keysets().empty() || !w->active_keyset()) {
         if (!w->load_keysets()) { ESP_LOGE(TAG, "keyset load failed"); return -1; }
