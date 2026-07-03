@@ -13,6 +13,15 @@
 #define CASHU_REQUIRE_DLEQ_FROM_MINT 1
 #endif
 
+// NUT-02: when set, a keyset whose ID does not match the ID re-derived from
+// its public keys (plus unit/fee/final_expiry for v2) is rejected at load
+// time instead of being accepted with only a warning. Default on. During
+// first bring-up against a new mint you may build with this set to 0 to log
+// mismatches without rejecting, confirm the IDs match, then restore to 1.
+#ifndef CASHU_REQUIRE_VALID_KEYSET_ID
+#define CASHU_REQUIRE_VALID_KEYSET_ID 1
+#endif
+
 namespace cashu {
 
 // NUT-12: Discrete Log Equality proof
@@ -59,6 +68,7 @@ struct Keyset {
     std::string unit;
     bool active;
     int input_fee_ppk;
+    std::optional<int64_t> final_expiry;  // NUT-02 v2: unix epoch, part of id preimage
     std::map<uint64_t, std::string> keys;
 };
 
@@ -123,6 +133,7 @@ struct KeysetInfo {
     std::string unit;
     bool active;
     int input_fee_ppk;
+    std::optional<int64_t> final_expiry;  // NUT-02 v2: unix epoch, part of id preimage
 };
 
 // NUT-18: Transport method for payment requests

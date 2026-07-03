@@ -161,6 +161,8 @@ cJSON* to_json(const Keyset& v) {
     cJSON_AddStringToObject(j, "unit", v.unit.c_str());
     cJSON_AddBoolToObject(j, "active", v.active);
     cJSON_AddNumberToObject(j, "input_fee_ppk", v.input_fee_ppk);
+    if (v.final_expiry)
+        cJSON_AddNumberToObject(j, "final_expiry", (double)*v.final_expiry);
     cJSON* keys = cJSON_CreateObject();
     for (const auto& [amount, pubkey] : v.keys) {
         std::string key = std::to_string(amount);
@@ -180,6 +182,9 @@ bool from_json(const cJSON* j, Keyset& out) {
         out.active = true;
     if (!get_int(j, "input_fee_ppk", out.input_fee_ppk))
         out.input_fee_ppk = 0;
+    int64_t fe;
+    out.final_expiry = get_int64(j, "final_expiry", fe)
+        ? std::optional<int64_t>(fe) : std::nullopt;
     out.keys.clear();
     const cJSON* keys = cJSON_GetObjectItemCaseSensitive(j, "keys");
     if (keys && cJSON_IsObject(keys)) {
@@ -203,6 +208,8 @@ cJSON* to_json(const KeysetInfo& v) {
     cJSON_AddStringToObject(j, "unit", v.unit.c_str());
     cJSON_AddBoolToObject(j, "active", v.active);
     cJSON_AddNumberToObject(j, "input_fee_ppk", v.input_fee_ppk);
+    if (v.final_expiry)
+        cJSON_AddNumberToObject(j, "final_expiry", (double)*v.final_expiry);
     return j;
 }
 
@@ -216,6 +223,9 @@ bool from_json(const cJSON* j, KeysetInfo& out) {
         out.active = true;
     if (!get_int(j, "input_fee_ppk", out.input_fee_ppk))
         out.input_fee_ppk = 0;
+    int64_t fe;
+    out.final_expiry = get_int64(j, "final_expiry", fe)
+        ? std::optional<int64_t>(fe) : std::nullopt;
     return true;
 }
 

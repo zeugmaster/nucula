@@ -1,5 +1,6 @@
 #include "crypto_test.h"
 #include "crypto.h"
+#include "cashu_suite.h"
 #include "bip39.h"
 #include "hex.h"
 #include <stdio.h>
@@ -281,11 +282,34 @@ static int test_nut13_v2(void)
     return 1;
 }
 
+static int test_sha256(void)
+{
+    /* SHA256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad */
+    static const char *expected_hex =
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    unsigned char digest[32];
+    if (!cashu_sha256((const unsigned char *)"abc", 3, digest)) {
+        ESP_LOGE(TAG, "sha256: call failed");
+        return 0;
+    }
+    unsigned char expected[32];
+    hex_to_bytes(expected_hex, expected, 32);
+    if (memcmp(digest, expected, 32) != 0) {
+        char got[65];
+        bytes_to_hex(digest, 32, got);
+        ESP_LOGE(TAG, "sha256: mismatch\n  got:    %s\n  expect: %s", got, expected_hex);
+        return 0;
+    }
+    ESP_LOGI(TAG, "sha256: ok");
+    return 1;
+}
+
 int crypto_run_tests(const secp256k1_context *ctx)
 {
     ESP_LOGI(TAG, "running crypto test vectors");
 
     int pass = 1;
+    pass &= test_sha256();
     pass &= test_hash_to_curve(ctx);
     pass &= test_blind_message(ctx);
     pass &= test_unblind(ctx);
