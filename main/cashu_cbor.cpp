@@ -311,12 +311,17 @@ std::string serialize_token_v4(const Token &token)
         CborEncoder entry_map;
         cbor_encoder_create_map(&t_arr, &entry_map, 2);
 
-        // "i": keyset ID as bytes (short form: first 8 bytes = 16 hex chars)
+        // "i": keyset ID as bytes. Encode the FULL id: v1 -> 8 bytes, v2 -> 33.
+        // (NUT-00 also permits an 8-byte short form, but emitting the full id
+        //  keeps our tokens losslessly round-trippable and keyset-verifiable.
+        //  Truncating a 33-byte v2 id here previously made hex_to_bytes fail
+        //  the exact-length check and emit uninitialized bytes.)
         cbor_encode_text_stringz(&entry_map, "i");
         size_t id_byte_len = keyset_id.size() / 2;
-        if (id_byte_len > 8) id_byte_len = 8;
+        if (id_byte_len > 33) id_byte_len = 33;
         uint8_t id_bytes[33];
-        hex_to_bytes(keyset_id.c_str(), id_bytes, id_byte_len);
+        if (!hex_to_bytes(keyset_id.c_str(), id_bytes, id_byte_len))
+            id_byte_len = 0;
         cbor_encode_byte_string(&entry_map, id_bytes, id_byte_len);
 
         // "p": proofs array

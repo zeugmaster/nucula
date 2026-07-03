@@ -2,6 +2,7 @@
 #include "cashu_json.hpp"
 #include "cashu_cbor.hpp"
 #include "crypto.h"
+#include "keyset.hpp"
 #include "hex.h"
 #include "http.h"
 #include "nut10.hpp"
@@ -497,6 +498,7 @@ void Wallet::merge_keysets(const std::vector<Keyset>& fresh)
             if (existing.id == fk.id) {
                 existing.active = fk.active;
                 existing.input_fee_ppk = fk.input_fee_ppk;
+                existing.final_expiry = fk.final_expiry;
                 if (existing.keys.empty())
                     existing.keys = fk.keys;
                 found = true;
@@ -567,30 +569,43 @@ bool Wallet::load_keysets()
         infos.resize(MAX_KEYSETS);
     }
 
-    // Step 2: fetch full keys for each keyset
-    std::vector<Keyset> result;
-    for (const auto& info : infos) {
-        std::string keys_url = mint_url_ + "/v1/keys/" + info.id;
-
+    // Step 2: fetch keys for all ACTIVE keysets in a SINGLE GET /v1/keys.
+    // This replaces N per-keyset /v1/keys/{id} TLS handshakes with one — far
+    // less peak heap and far more reliable on a memory-constrained device.
+    // Inactive keysets are not fetched here; any the wallet already holds
+    // proofs under are preserved from NVS by merge_keysets (it never drops
+    // existing keysets), so held proofs stay spendable.
+    std::vector<Keyset> keys_resp;
+    {
+        std::string keys_url = mint_url_ + "/v1/keys";
         http_response_t kresp = {};
         err = http_get(keys_url.c_str(), &kresp);
         if (err != ESP_OK || kresp.status != 200 || !kresp.body) {
-            ESP_LOGW(TAG, "GET %s failed, skipping keyset %s",
-                     keys_url.c_str(), info.id.c_str());
+            ESP_LOGE(TAG, "GET %s failed (err=%s, status=%d)",
+                     keys_url.c_str(), esp_err_to_name(err), kresp.status);
             http_response_free(&kresp);
-            continue;
+            return false;
         }
-
         cJSON* kjson = cJSON_Parse(kresp.body);
         http_response_free(&kresp);
-        if (!kjson) continue;
+        if (kjson) {
+            from_json_keyset_response(kjson, keys_resp);
+            cJSON_Delete(kjson);
+        }
+    }
 
-        std::vector<Keyset> key_response;
-        bool parsed = from_json_keyset_response(kjson, key_response);
-        cJSON_Delete(kjson);
+    std::vector<Keyset> result;
+    for (const auto& info : infos) {
+        if (!info.active)
+            continue;  // only active keysets are fetched here / minted with
 
-        if (!parsed || key_response.empty()) {
-            ESP_LOGW(TAG, "failed to parse keys for keyset %s", info.id.c_str());
+        // Match this keyset's keys from the single /v1/keys response.
+        std::map<uint64_t, std::string>* keys = nullptr;
+        for (auto& kk : keys_resp) {
+            if (kk.id == info.id) { keys = &kk.keys; break; }
+        }
+        if (!keys || keys->empty()) {
+            ESP_LOGW(TAG, "no keys for active keyset %s, skipping", info.id.c_str());
             continue;
         }
 
@@ -599,14 +614,60 @@ bool Wallet::load_keysets()
         ks.unit = info.unit;
         ks.active = info.active;
         ks.input_fee_ppk = info.input_fee_ppk;
-        ks.keys = std::move(key_response[0].keys);
+        ks.final_expiry = info.final_expiry;
+        ks.keys = std::move(*keys);
+
+        // NUT-02: re-derive the keyset id from its keys (+unit/fee/expiry for
+        // v2) and reject a mint whose claimed id does not match — closing the
+        // gap where the mint's claimed id was trusted verbatim. Only v1/v2 ids
+        // can be re-derived: v3/BLS crypto is not implemented yet (skip), and
+        // legacy pre-NUT-02 ids cannot be re-derived (accept unvalidated, secp).
+        KeysetVersion ver = keyset_version(ks.id);
+        if (ver == KeysetVersion::v3) {
+            ESP_LOGW(TAG, "keyset %s: v3/BLS not supported yet, skipping", ks.id.c_str());
+            continue;
+        }
+        if (ver == KeysetVersion::v1 || ver == KeysetVersion::v2) {
+            if (!verify_keyset_id(ks)) {
+#if CASHU_REQUIRE_VALID_KEYSET_ID
+                ESP_LOGE(TAG, "keyset %s: id != derived %s, rejecting",
+                         ks.id.c_str(), derive_keyset_id(ks).c_str());
+                continue;
+#else
+                ESP_LOGW(TAG, "keyset %s: id != derived %s, accepting (validation off)",
+                         ks.id.c_str(), derive_keyset_id(ks).c_str());
+#endif
+            }
+        } else {
+            ESP_LOGI(TAG, "keyset %s: legacy/unrecognized id, accepting unvalidated",
+                     ks.id.c_str());
+        }
 
         result.push_back(std::move(ks));
     }
 
     if (result.empty()) {
-        ESP_LOGE(TAG, "failed to load any keyset keys");
+        ESP_LOGE(TAG, "no active keyset keys loaded from %s", mint_url_.c_str());
         return false;
+    }
+
+    // NUT-02: reject keyset id collisions. The shortest prefix any subsystem
+    // keys on is the 13-hex NUT-13 counter key, so enforce uniqueness there
+    // (which also keeps the 8-byte short-form resolver unambiguous).
+    for (size_t a = 0; a < result.size(); a++) {
+        for (size_t b = a + 1; b < result.size(); ) {
+            if (result[a].id.compare(0, 13, result[b].id, 0, 13) == 0) {
+                ESP_LOGE(TAG, "keyset id prefix collision: %s vs %s",
+                         result[a].id.c_str(), result[b].id.c_str());
+                if (result[a].active && result[b].active) {
+                    ESP_LOGE(TAG, "two active keysets collide; aborting load");
+                    return false;
+                }
+                result.erase(result.begin() + b);  // drop the later one
+            } else {
+                b++;
+            }
+        }
     }
 
     merge_keysets(result);
@@ -627,6 +688,15 @@ const Keyset* Wallet::active_keyset(const std::string& unit) const
 {
     for (const auto& k : keysets_)
         if (k.active && k.unit == unit)
+            return &k;
+    return nullptr;
+}
+
+const Keyset* Wallet::active_keyset_for_mint(const std::string& unit) const
+{
+    for (const auto& k : keysets_)
+        if (k.active && k.unit == unit &&
+            keyset_profile(keyset_version(k.id)).can_mint)
             return &k;
     return nullptr;
 }
@@ -676,6 +746,13 @@ bool Wallet::generate_outputs(const std::vector<int>& amounts,
     out.secrets.clear();
     out.blinding_factors.clear();
 
+    const cashu_suite_t* suite = suite_for_id(keyset_id);
+    if (!suite) {
+        ESP_LOGE(TAG, "generate_outputs: no crypto suite for keyset %s",
+                 keyset_id.c_str());
+        return false;
+    }
+
     uint32_t counter = 0;
     bool deterministic = s_seed_loaded;
     if (deterministic) {
@@ -690,14 +767,14 @@ bool Wallet::generate_outputs(const std::vector<int>& amounts,
         unsigned char r_bytes[32];
 
         if (deterministic) {
-            if (!cashu_derive_secret(s_seed, 64, keyset_id.c_str(),
-                                     counter + (uint32_t)i, secret_bytes)) {
+            if (!suite->derive_secret(s_seed, 64, keyset_id.c_str(),
+                                      counter + (uint32_t)i, secret_bytes)) {
                 ESP_LOGE(TAG, "derive_secret failed at counter %lu",
                          (unsigned long)(counter + i));
                 return false;
             }
-            if (!cashu_derive_r(s_seed, 64, keyset_id.c_str(),
-                                counter + (uint32_t)i, r_bytes)) {
+            if (!suite->derive_r(s_seed, 64, keyset_id.c_str(),
+                                 counter + (uint32_t)i, r_bytes)) {
                 ESP_LOGE(TAG, "derive_r failed at counter %lu",
                          (unsigned long)(counter + i));
                 return false;
@@ -714,18 +791,16 @@ bool Wallet::generate_outputs(const std::vector<int>& amounts,
         char r_hex[65];
         bytes_to_hex(r_bytes, 32, r_hex);
 
-        secp256k1_pubkey B_;
-        if (!cashu_blind_message(ctx_, &B_,
-                                 (const unsigned char*)secret.c_str(),
-                                 secret.size(), r_bytes)) {
+        unsigned char B_ser[CASHU_MAX_POINT_LEN];
+        size_t B_len = sizeof(B_ser);
+        if (!suite->blind((void*)ctx_,
+                          (const unsigned char*)secret.c_str(), secret.size(),
+                          r_bytes, 32, B_ser, &B_len)) {
             ESP_LOGE(TAG, "blind_message failed");
             return false;
         }
-
-        unsigned char B_ser[33];
-        cashu_pubkey_serialize(ctx_, B_ser, &B_);
-        char B_hex[67];
-        bytes_to_hex(B_ser, 33, B_hex);
+        char B_hex[CASHU_MAX_POINT_LEN * 2 + 1];
+        bytes_to_hex(B_ser, B_len, B_hex);
 
         out.outputs.push_back(BlindedMessage{amt, std::string(B_hex), keyset_id});
         out.secrets.push_back(secret);
@@ -743,8 +818,8 @@ bool Wallet::generate_outputs(const std::vector<int>& amounts,
 // Unblinding (NUT-00) + NUT-12 DLEQ verification
 // -------------------------------------------------------------------------
 
-bool Wallet::keyset_pubkey_for_amount(const Keyset& ks, uint64_t amount,
-                                      secp256k1_pubkey& out) const
+bool Wallet::keyset_key_hex_for_amount(const Keyset& ks, uint64_t amount,
+                                       std::string& out_hex) const
 {
     auto key_it = ks.keys.find(amount);
     if (key_it == ks.keys.end()) {
@@ -752,15 +827,7 @@ bool Wallet::keyset_pubkey_for_amount(const Keyset& ks, uint64_t amount,
                  (unsigned long long)amount, ks.id.c_str());
         return false;
     }
-    unsigned char K_bytes[33];
-    if (!hex_to_bytes(key_it->second.c_str(), K_bytes, 33)) {
-        ESP_LOGE(TAG, "invalid mint key hex");
-        return false;
-    }
-    if (!cashu_pubkey_parse(ctx_, &out, K_bytes)) {
-        ESP_LOGE(TAG, "invalid mint pubkey");
-        return false;
-    }
+    out_hex = key_it->second;
     return true;
 }
 
@@ -777,22 +844,33 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
 
     proofs_out.clear();
 
+    const cashu_suite_t* suite = suite_for_id(keyset.id);
+    if (!suite) {
+        ESP_LOGE(TAG, "unblind: no crypto suite for keyset %s", keyset.id.c_str());
+        return false;
+    }
+    const size_t plen = suite->pubkey_len;
+    if (plen > CASHU_MAX_POINT_LEN) {
+        ESP_LOGE(TAG, "unblind: suite pubkey_len %d too large", (int)plen);
+        return false;
+    }
+
     for (size_t i = 0; i < signatures.size(); i++) {
         const auto& sig = signatures[i];
         uint64_t amt = (uint64_t)sig.amount;
 
-        secp256k1_pubkey K;
-        if (!keyset_pubkey_for_amount(keyset, amt, K))
+        std::string K_hex;
+        if (!keyset_key_hex_for_amount(keyset, amt, K_hex))
             return false;
-
-        unsigned char C_bytes[33];
-        if (!hex_to_bytes(sig.C_.c_str(), C_bytes, 33)) {
-            ESP_LOGE(TAG, "invalid C_ hex");
+        unsigned char K_bytes[CASHU_MAX_POINT_LEN];
+        if (K_hex.size() != plen * 2 || !hex_to_bytes(K_hex.c_str(), K_bytes, plen)) {
+            ESP_LOGE(TAG, "invalid mint key hex");
             return false;
         }
-        secp256k1_pubkey C_;
-        if (!cashu_pubkey_parse(ctx_, &C_, C_bytes)) {
-            ESP_LOGE(TAG, "invalid C_ pubkey");
+
+        unsigned char C__bytes[CASHU_MAX_POINT_LEN];
+        if (sig.C_.size() != plen * 2 || !hex_to_bytes(sig.C_.c_str(), C__bytes, plen)) {
+            ESP_LOGE(TAG, "invalid C_ hex");
             return false;
         }
 
@@ -804,26 +882,25 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
 
         // NUT-12: verify the DLEQ proof on the BlindSignature before we trust C_.
         if (sig.dleq) {
-            unsigned char e_b[32], s_b[32];
-            if (!hex_to_bytes(sig.dleq->e.c_str(), e_b, 32) ||
-                !hex_to_bytes(sig.dleq->s.c_str(), s_b, 32)) {
-                ESP_LOGE(TAG, "dleq: invalid e/s hex on sig[%d]", (int)i);
-                return false;
-            }
-            unsigned char B__bytes[33];
-            if (!hex_to_bytes(blinding.outputs[i].B_.c_str(), B__bytes, 33)) {
-                ESP_LOGE(TAG, "dleq: invalid B_ hex on sig[%d]", (int)i);
-                return false;
-            }
-            secp256k1_pubkey B__pk;
-            if (!cashu_pubkey_parse(ctx_, &B__pk, B__bytes)) {
-                ESP_LOGE(TAG, "dleq: invalid B_ pubkey on sig[%d]", (int)i);
-                return false;
-            }
-            if (!cashu_verify_dleq(ctx_, &K, &B__pk, &C_, e_b, s_b)) {
-                ESP_LOGE(TAG, "dleq verification failed for sig[%d] amount=%d",
-                         (int)i, sig.amount);
-                return false;
+            if (suite->has_dleq) {
+                unsigned char e_b[32], s_b[32];
+                if (!hex_to_bytes(sig.dleq->e.c_str(), e_b, 32) ||
+                    !hex_to_bytes(sig.dleq->s.c_str(), s_b, 32)) {
+                    ESP_LOGE(TAG, "dleq: invalid e/s hex on sig[%d]", (int)i);
+                    return false;
+                }
+                unsigned char B__bytes[CASHU_MAX_POINT_LEN];
+                if (blinding.outputs[i].B_.size() != plen * 2 ||
+                    !hex_to_bytes(blinding.outputs[i].B_.c_str(), B__bytes, plen)) {
+                    ESP_LOGE(TAG, "dleq: invalid B_ hex on sig[%d]", (int)i);
+                    return false;
+                }
+                if (!suite->verify_dleq((void*)ctx_, K_bytes, plen, B__bytes, plen,
+                                        C__bytes, plen, e_b, s_b)) {
+                    ESP_LOGE(TAG, "dleq verification failed for sig[%d] amount=%d",
+                             (int)i, sig.amount);
+                    return false;
+                }
             }
         } else {
 #if CASHU_REQUIRE_DLEQ_FROM_MINT
@@ -836,16 +913,15 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
 #endif
         }
 
-        secp256k1_pubkey C;
-        if (!cashu_unblind(ctx_, &C, &C_, r_bytes, &K)) {
+        unsigned char C_ser[CASHU_MAX_POINT_LEN];
+        size_t C_len = sizeof(C_ser);
+        if (!suite->unblind((void*)ctx_, C__bytes, plen, r_bytes, 32,
+                            K_bytes, plen, C_ser, &C_len)) {
             ESP_LOGE(TAG, "unblind failed");
             return false;
         }
-
-        unsigned char C_ser[33];
-        cashu_pubkey_serialize(ctx_, C_ser, &C);
-        char C_hex[67];
-        bytes_to_hex(C_ser, 33, C_hex);
+        char C_hex[CASHU_MAX_POINT_LEN * 2 + 1];
+        bytes_to_hex(C_ser, C_len, C_hex);
 
         Proof proof;
         proof.id = keyset.id;
@@ -878,9 +954,9 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
         return false;
     }
 
-    const Keyset* ks = active_keyset();
+    const Keyset* ks = active_keyset_for_mint();
     if (!ks) {
-        ESP_LOGE(TAG, "swap: no active keyset");
+        ESP_LOGE(TAG, "swap: no mintable keyset");
         return false;
     }
 
@@ -1016,37 +1092,69 @@ bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
         return false;
     }
 
+    // Copy proofs and normalize their (possibly short-form) keyset ids to our
+    // stored full ids, so DLEQ checks and the swap can locate the keyset and
+    // the mint receives full ids in the request. Refresh from the mint once if
+    // a keyset is unknown.
+    std::vector<Proof> inputs = token.proofs;
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        bool unknown = false;
+        for (auto& p : inputs) {
+            bool amb = false;
+            const Keyset* ks = resolve_keyset(keysets_, p.id, &amb);
+            if (amb) {
+                ESP_LOGE(TAG, "receive: ambiguous keyset id %.16s", p.id.c_str());
+                return false;
+            }
+            if (!ks) { unknown = true; continue; }
+            p.id = ks->id;  // normalize to the full stored id
+        }
+        if (!unknown) break;
+        if (attempt == 0) {
+            ESP_LOGW(TAG, "receive: unknown keyset, refreshing from mint");
+            load_keysets();
+            continue;
+        }
+        ESP_LOGE(TAG, "receive: unknown keyset id (after refresh)");
+        return false;
+    }
+
     // NUT-12 (Carol-side): if a transferred proof carries a DLEQ with the
     // sender's blinding factor `r`, verify it against the keyset's pubkey for
     // that amount before swapping. A missing DLEQ is allowed (warn only) since
     // senders are not required to forward it.
-    for (size_t i = 0; i < token.proofs.size(); i++) {
-        const auto& p = token.proofs[i];
+    for (size_t i = 0; i < inputs.size(); i++) {
+        const auto& p = inputs[i];
         if (!p.dleq || !p.dleq->r) {
             ESP_LOGW(TAG, "receive: proof[%d] has no DLEQ (accepting)", (int)i);
             continue;
         }
+        const cashu_suite_t* suite = suite_for_id(p.id);
         const Keyset* ks = keyset_for_id(p.id);
-        if (!ks) {
-            ESP_LOGE(TAG, "receive: unknown keyset id %s on proof[%d]",
+        if (!suite || !ks) {
+            ESP_LOGE(TAG, "receive: no suite/keyset for id %s on proof[%d]",
                      p.id.c_str(), (int)i);
             return false;
         }
-        secp256k1_pubkey A;
-        if (!keyset_pubkey_for_amount(*ks, (uint64_t)p.amount, A))
+        if (!suite->has_dleq)
+            continue;  // scheme carries no DLEQ to verify
+        const size_t plen = suite->pubkey_len;
+        if (plen > CASHU_MAX_POINT_LEN)
             return false;
 
-        unsigned char C_bytes[33];
-        if (!hex_to_bytes(p.C.c_str(), C_bytes, 33)) {
+        std::string A_hex;
+        if (!keyset_key_hex_for_amount(*ks, (uint64_t)p.amount, A_hex))
+            return false;
+        unsigned char A_bytes[CASHU_MAX_POINT_LEN];
+        if (A_hex.size() != plen * 2 || !hex_to_bytes(A_hex.c_str(), A_bytes, plen)) {
+            ESP_LOGE(TAG, "receive: invalid mint key hex on proof[%d]", (int)i);
+            return false;
+        }
+        unsigned char C_bytes[CASHU_MAX_POINT_LEN];
+        if (p.C.size() != plen * 2 || !hex_to_bytes(p.C.c_str(), C_bytes, plen)) {
             ESP_LOGE(TAG, "receive: invalid C hex on proof[%d]", (int)i);
             return false;
         }
-        secp256k1_pubkey C_pk;
-        if (!cashu_pubkey_parse(ctx_, &C_pk, C_bytes)) {
-            ESP_LOGE(TAG, "receive: invalid C pubkey on proof[%d]", (int)i);
-            return false;
-        }
-
         unsigned char e_b[32], s_b[32], r_b[32];
         if (!hex_to_bytes(p.dleq->e.c_str(), e_b, 32) ||
             !hex_to_bytes(p.dleq->s.c_str(), s_b, 32) ||
@@ -1054,18 +1162,15 @@ bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
             ESP_LOGE(TAG, "receive: invalid dleq hex on proof[%d]", (int)i);
             return false;
         }
-
-        if (!cashu_verify_dleq_unblinded(ctx_, &A, &C_pk,
-                                         (const unsigned char*)p.secret.c_str(),
-                                         p.secret.size(),
-                                         e_b, s_b, r_b)) {
+        if (!suite->verify_dleq_unblinded((void*)ctx_, A_bytes, plen,
+                                          C_bytes, plen,
+                                          (const unsigned char*)p.secret.c_str(),
+                                          p.secret.size(), e_b, s_b, r_b)) {
             ESP_LOGE(TAG, "dleq verification failed for proof[%d] amount=%d",
                      (int)i, p.amount);
             return false;
         }
     }
-
-    std::vector<Proof> inputs = token.proofs;
 
     std::vector<Proof> new_proofs, change;
     if (!swap(inputs, -1, new_proofs, change))
@@ -1220,9 +1325,9 @@ bool Wallet::check_mint_quote(const std::string& quote_id, MintQuote& quote_out)
 
 bool Wallet::mint_tokens(const std::string& quote_id, int amount)
 {
-    const Keyset* ks = active_keyset();
+    const Keyset* ks = active_keyset_for_mint();
     if (!ks) {
-        ESP_LOGE(TAG, "mint_tokens: no active keyset");
+        ESP_LOGE(TAG, "mint_tokens: no mintable keyset");
         return false;
     }
 
@@ -1352,9 +1457,9 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
 {
     change_amount = 0;
 
-    const Keyset* ks = active_keyset();
+    const Keyset* ks = active_keyset_for_mint();
     if (!ks) {
-        ESP_LOGE(TAG, "melt: no active keyset");
+        ESP_LOGE(TAG, "melt: no mintable keyset");
         return false;
     }
 

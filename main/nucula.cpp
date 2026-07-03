@@ -14,6 +14,7 @@
 #include "cashu_json.hpp"
 #include "cashu_cbor.hpp"
 #include "wallet.hpp"
+#include "keyset.hpp"
 #include "console.h"
 #include "display.h"
 #include "nfc.hpp"
@@ -962,6 +963,25 @@ extern "C" void app_main(void)
     if (wifi_init() != ESP_OK)
         ESP_LOGE(TAG, "wifi failed, continuing offline");
 
+    // Bring up the interactive console FIRST, while heap is plentiful, so its
+    // USB driver + line buffer always allocate. Command handlers tolerate the
+    // wallets not being ready yet (they null-check g_wallets[i]). Initializing
+    // it last starved it once WiFi + every wallet's keysets were loaded.
+    console_init(NULL);
+    console_register_cmd("status",  cmd_status,  "show system and wallet status");
+    console_register_cmd("balance", cmd_balance,  "show wallet balance");
+    console_register_cmd("receive", cmd_receive,  "receive a cashuA token");
+    console_register_cmd("mint",    cmd_mint,     "mint [list|add <url>|remove <idx>]");
+    console_register_cmd("nfc",     cmd_nfc,      "nfc [request <amount>|stop]");
+    console_register_cmd("invoice", cmd_invoice,  "invoice <amount> [mint_idx]");
+    console_register_cmd("claim",   cmd_claim,    "claim <quote_id> [mint_idx]");
+    console_register_cmd("melt",    cmd_melt,     "melt <bolt11> [mint_idx]");
+    console_register_cmd("stickup", cmd_stickup,  "drain wallet into v4 tokens");
+    console_register_cmd("seed",    cmd_seed,     "seed [show|generate|restore|wipe]");
+    console_register_cmd("keypad",  cmd_keypad,   "keypad scan — probe PCF8574 wiring");
+    console_register_cmd("reboot",  cmd_reboot,   "restart the device");
+    console_start();
+
     g_ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
     if (!g_ctx) {
         ESP_LOGE(TAG, "failed to create secp256k1 context");
@@ -975,6 +995,8 @@ extern "C" void app_main(void)
     }
 
     crypto_run_tests(g_ctx);
+    if (!cashu::keyset_run_tests())
+        ESP_LOGE(TAG, "keyset id derivation self-test FAILED");
 
     cashu::Wallet::load_seed();
     cashu::Wallet::ensure_p2pk_keypair(g_ctx);
@@ -1050,19 +1072,4 @@ extern "C" void app_main(void)
     }
 
     display_refresh();
-
-    console_init(NULL);
-    console_register_cmd("status",  cmd_status,  "show system and wallet status");
-    console_register_cmd("balance", cmd_balance,  "show wallet balance");
-    console_register_cmd("receive", cmd_receive,  "receive a cashuA token");
-    console_register_cmd("mint",    cmd_mint,     "mint [list|add <url>|remove <idx>]");
-    console_register_cmd("nfc",     cmd_nfc,      "nfc [request <amount>|stop]");
-    console_register_cmd("invoice", cmd_invoice,  "invoice <amount> [mint_idx]");
-    console_register_cmd("claim",   cmd_claim,    "claim <quote_id> [mint_idx]");
-    console_register_cmd("melt",    cmd_melt,     "melt <bolt11> [mint_idx]");
-    console_register_cmd("stickup", cmd_stickup,  "drain wallet into v4 tokens");
-    console_register_cmd("seed",    cmd_seed,     "seed [show|generate|restore|wipe]");
-    console_register_cmd("keypad",  cmd_keypad,   "keypad scan — probe PCF8574 wiring");
-    console_register_cmd("reboot",  cmd_reboot,   "restart the device");
-    console_start();
 }

@@ -1,4 +1,5 @@
 #include "crypto.h"
+#include "cashu_suite.h"
 #include "hex.h"
 #include <string.h>
 #include <mbedtls/sha256.h>
@@ -369,3 +370,109 @@ int cashu_schnorr_sign_secret(const secp256k1_context *ctx,
 
     return secp256k1_schnorrsig_sign32(ctx, sig64_out, msg32, &kp, NULL);
 }
+
+/* ======================================================================== *
+ *  Crypto-suite vtable (cashu_suite.h)
+ *
+ *  Byte-oriented adapter shims wrapping the secp256k1 functions above so the
+ *  wallet can drive BDHKE/DLEQ/NUT-13 through a curve-agnostic interface. The
+ *  opaque void* ctx carried by the vtable is the wallet's secp256k1_context*.
+ * ======================================================================== */
+
+int cashu_sha256(const unsigned char *data, size_t len, unsigned char out[32])
+{
+    return mbedtls_sha256(data, len, out, 0) == 0 ? 1 : 0;
+}
+
+static int secp_blind(void *ctx,
+                      const unsigned char *secret, size_t secret_len,
+                      const unsigned char *r, size_t r_len,
+                      unsigned char *B_out, size_t *B_out_len)
+{
+    const secp256k1_context *c = (const secp256k1_context *)ctx;
+    if (r_len != 32 || !B_out_len || *B_out_len < 33)
+        return 0;
+    secp256k1_pubkey B_;
+    if (!cashu_blind_message(c, &B_, secret, secret_len, r))
+        return 0;
+    if (!cashu_pubkey_serialize(c, B_out, &B_))
+        return 0;
+    *B_out_len = 33;
+    return 1;
+}
+
+static int secp_unblind(void *ctx,
+                        const unsigned char *C_, size_t C__len,
+                        const unsigned char *r, size_t r_len,
+                        const unsigned char *K, size_t K_len,
+                        unsigned char *C_out, size_t *C_out_len)
+{
+    const secp256k1_context *c = (const secp256k1_context *)ctx;
+    if (C__len != 33 || r_len != 32 || K_len != 33 || !C_out_len || *C_out_len < 33)
+        return 0;
+    secp256k1_pubkey C_pt, K_pt, C_res;
+    if (!cashu_pubkey_parse(c, &C_pt, C_))
+        return 0;
+    if (!cashu_pubkey_parse(c, &K_pt, K))
+        return 0;
+    if (!cashu_unblind(c, &C_res, &C_pt, r, &K_pt))
+        return 0;
+    if (!cashu_pubkey_serialize(c, C_out, &C_res))
+        return 0;
+    *C_out_len = 33;
+    return 1;
+}
+
+static int secp_verify_dleq(void *ctx,
+                            const unsigned char *A, size_t A_len,
+                            const unsigned char *B_, size_t B__len,
+                            const unsigned char *C_, size_t C__len,
+                            const unsigned char *e, const unsigned char *s)
+{
+    const secp256k1_context *c = (const secp256k1_context *)ctx;
+    if (A_len != 33 || B__len != 33 || C__len != 33)
+        return 0;
+    secp256k1_pubkey A_pt, B_pt, C_pt;
+    if (!cashu_pubkey_parse(c, &A_pt, A))
+        return 0;
+    if (!cashu_pubkey_parse(c, &B_pt, B_))
+        return 0;
+    if (!cashu_pubkey_parse(c, &C_pt, C_))
+        return 0;
+    return cashu_verify_dleq(c, &A_pt, &B_pt, &C_pt, e, s);
+}
+
+static int secp_verify_dleq_unblinded(void *ctx,
+                                      const unsigned char *A, size_t A_len,
+                                      const unsigned char *C, size_t C_len,
+                                      const unsigned char *secret, size_t secret_len,
+                                      const unsigned char *e, const unsigned char *s,
+                                      const unsigned char *r)
+{
+    const secp256k1_context *c = (const secp256k1_context *)ctx;
+    if (A_len != 33 || C_len != 33)
+        return 0;
+    secp256k1_pubkey A_pt, C_pt;
+    if (!cashu_pubkey_parse(c, &A_pt, A))
+        return 0;
+    if (!cashu_pubkey_parse(c, &C_pt, C))
+        return 0;
+    return cashu_verify_dleq_unblinded(c, &A_pt, &C_pt, secret, secret_len, e, s, r);
+}
+
+/* secp256k1 BDHKE suite. Bound to keyset versions v1 (0x00) and v2 (0x01) by
+ * keyset.cpp; the version_byte here advertises the current default (v2). */
+const cashu_suite_t cashu_suite_secp256k1 = {
+    .version_byte = 0x01,
+    .name = "secp256k1",
+    .pubkey_len = 33,
+    .scalar_len = 32,
+    .can_mint = 1,
+    .has_dleq = 1,
+    .blind = secp_blind,
+    .unblind = secp_unblind,
+    .verify_dleq = secp_verify_dleq,
+    .verify_dleq_unblinded = secp_verify_dleq_unblinded,
+    .derive_secret = cashu_derive_secret,
+    .derive_r = cashu_derive_r,
+};

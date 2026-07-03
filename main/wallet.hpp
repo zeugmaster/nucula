@@ -19,6 +19,9 @@ public:
     bool save_mint_url();
     bool erase_nvs();
     const Keyset* active_keyset(const std::string& unit = "sat") const;
+    // Like active_keyset() but only returns a keyset whose version may mint new
+    // outputs (a v1/deprecated keyset is spendable as input but not mintable).
+    const Keyset* active_keyset_for_mint(const std::string& unit = "sat") const;
     const Keyset* keyset_for_id(const std::string& id) const;
     int calculate_fee(const std::vector<Proof>& inputs) const;
     static std::vector<int> split_amount(int amount);
@@ -107,8 +110,11 @@ private:
     bool load_keysets_nvs();
     void merge_keysets(const std::vector<Keyset>& fresh);
 
-    bool keyset_pubkey_for_amount(const Keyset& ks, uint64_t amount,
-                                  secp256k1_pubkey& out) const;
+    // Mint public key (compressed hex) for a given amount in a keyset. Returned
+    // as hex so callers can hand it to the byte-oriented crypto suite, keeping
+    // the wallet free of curve-specific point types.
+    bool keyset_key_hex_for_amount(const Keyset& ks, uint64_t amount,
+                                   std::string& out_hex) const;
 
     static unsigned char s_seed[64];
     static bool s_seed_loaded;
