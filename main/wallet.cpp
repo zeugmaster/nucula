@@ -400,6 +400,30 @@ bool Wallet::save_keysets()
     slot_key(old_key, sizeof(old_key), "keys", nvs_slot_);
     nvs_erase_key(handle, old_key);
 
+    // Over the cap, prefer keysets our proofs reference (dropping one orphans
+    // its proofs: no unit, no fee info, no keys for DLEQ), then active
+    // keysets, then the rest.
+    std::vector<size_t> order(keysets_.size());
+    for (size_t i = 0; i < order.size(); i++)
+        order[i] = i;
+    if (keysets_.size() > (size_t)MAX_KEYSETS) {
+        std::vector<int> rank(keysets_.size(), 2);
+        for (size_t i = 0; i < keysets_.size(); i++)
+            if (keysets_[i].active)
+                rank[i] = 1;
+        for (const auto& p : proofs_)
+            for (size_t i = 0; i < keysets_.size(); i++)
+                if (keysets_[i].id == p.id) { rank[i] = 0; break; }
+        std::stable_sort(order.begin(), order.end(),
+                         [&rank](size_t a, size_t b) { return rank[a] < rank[b]; });
+        for (size_t i = MAX_KEYSETS; i < order.size(); i++) {
+            const Keyset& ks = keysets_[order[i]];
+            ESP_LOGE(TAG, "[%d] keyset cap: dropping %s (unit %s%s) from NVS",
+                     nvs_slot_, ks.id.c_str(), ks.unit.c_str(),
+                     ks.active ? ", active" : "");
+        }
+    }
+
     char cnt_key[16];
     snprintf(cnt_key, sizeof(cnt_key), "kn_%d", nvs_slot_);
     uint8_t count = (uint8_t)keysets_.size();
@@ -416,7 +440,7 @@ bool Wallet::save_keysets()
     for (int i = 0; i < count; i++) {
         char ks_key[16];
         snprintf(ks_key, sizeof(ks_key), "k_%d_%d", nvs_slot_, i);
-        std::string blob = serialize(keysets_[i]);
+        std::string blob = serialize(keysets_[order[i]]);
         if (blob.empty()) {
             ESP_LOGE(TAG, "save keyset %d: serialization failed", i);
             nvs_close(handle);
