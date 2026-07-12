@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <cstring>
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_random.h>
 #include <esp_system.h>
@@ -420,16 +421,18 @@ static void cmd_receive(const char *arg)
 
     nucula_console_write("swapping...\r\n");
     std::vector<cashu::Proof> received;
+    int64_t t0 = esp_timer_get_time();
     if (!w->receive(token, received)) {
         nucula_console_write("error: receive failed\r\n");
         return;
     }
+    long long ms = (esp_timer_get_time() - t0) / 1000;
 
     int output_total = 0;
     for (const auto &p : received)
         output_total += p.amount;
-    console_printf("received %d sat in %d proofs\r\n",
-                   output_total, (int)received.size());
+    console_printf("received %d sat in %d proofs (%lld ms)\r\n",
+                   output_total, (int)received.size(), ms);
     display_refresh();
 }
 
@@ -926,6 +929,67 @@ static void cmd_reboot(const char *arg)
 }
 
 // -------------------------------------------------------------------------
+// Telemetry
+// -------------------------------------------------------------------------
+
+static void cmd_heap(const char *arg)
+{
+    (void)arg;
+    console_printf("free:          %lu\r\n", (unsigned long)esp_get_free_heap_size());
+    console_printf("largest block: %u\r\n",
+                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    console_printf("min ever free: %lu\r\n",
+                   (unsigned long)esp_get_minimum_free_heap_size());
+}
+
+static void cmd_tasks(const char *arg)
+{
+    (void)arg;
+    UBaseType_t n = uxTaskGetNumberOfTasks();
+    TaskStatus_t *st = (TaskStatus_t *)malloc(n * sizeof(TaskStatus_t));
+    if (!st) {
+        nucula_console_write("error: out of memory\r\n");
+        return;
+    }
+    n = uxTaskGetSystemState(st, n, NULL);
+    console_printf("%-16s %4s %10s\r\n", "name", "prio", "stack-min");
+    for (UBaseType_t i = 0; i < n; i++)
+        console_printf("%-16s %4u %10u\r\n", st[i].pcTaskName,
+                       (unsigned)st[i].uxCurrentPriority,
+                       (unsigned)st[i].usStackHighWaterMark);
+    free(st);
+}
+
+static void cmd_log(const char *arg)
+{
+    esp_log_level_t level;
+    if (arg && arg[0] && (arg[1] == '\0' || arg[1] == ' ')) {
+        switch (arg[0]) {
+            case 'e': level = ESP_LOG_ERROR; break;
+            case 'w': level = ESP_LOG_WARN;  break;
+            case 'i': level = ESP_LOG_INFO;  break;
+            case 'd': level = ESP_LOG_DEBUG; break;
+            default:  goto usage;
+        }
+        const char *tag = arg + 1;
+        while (*tag == ' ') tag++;
+        esp_log_level_set(*tag ? tag : "*", level);
+        console_printf("log level '%c' set for %s\r\n", arg[0], *tag ? tag : "*");
+        return;
+    }
+usage:
+    nucula_console_write("usage: log <e|w|i|d> [tag]\r\n");
+}
+
+static void cmd_bench(const char *arg)
+{
+    (void)arg;
+    nucula_console_write("benchmarking crypto primitives...\r\n");
+    crypto_run_benchmark(g_ctx);
+    nucula_console_write("done (results logged at info level)\r\n");
+}
+
+// -------------------------------------------------------------------------
 // Keypad
 // -------------------------------------------------------------------------
 
@@ -981,6 +1045,10 @@ extern "C" void app_main(void)
     console_register_cmd("seed",    cmd_seed,     "seed [show|generate|restore|wipe]");
     console_register_cmd("keypad",  cmd_keypad,   "keypad scan — probe PCF8574 wiring");
     console_register_cmd("reboot",  cmd_reboot,   "restart the device");
+    console_register_cmd("heap",    cmd_heap,     "show heap usage");
+    console_register_cmd("tasks",   cmd_tasks,    "show task stack high-water marks");
+    console_register_cmd("log",     cmd_log,      "log <e|w|i|d> [tag] — set log level");
+    console_register_cmd("bench",   cmd_bench,    "benchmark crypto primitives");
     console_start();
 
     g_ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);

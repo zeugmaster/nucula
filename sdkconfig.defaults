@@ -18,6 +18,9 @@ CONFIG_LWIP_MAX_SOCKETS=4
 # I2C master ISR in IRAM for reliable NFC communication
 CONFIG_I2C_MASTER_ISR_HANDLER_IN_IRAM=y
 
+# Task telemetry for the console 'tasks' command (stack high-water marks)
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+
 # Memory-constrained TLS. By default each HTTPS connection allocates two
 # ~16 KB mbedTLS content buffers up front, which must each be contiguous.
 # Once the heap is fragmented by cached mint keysets the swap-POST handshake

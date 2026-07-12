@@ -326,40 +326,79 @@ int crypto_run_tests(const secp256k1_context *ctx)
 
 void crypto_run_benchmark(const secp256k1_context *ctx)
 {
-    #define BENCH_N 1000
+    /* Per-op time is accumulated around each call so the periodic yields
+     * (which keep the watchdog fed) don't distort the numbers. */
+    int64_t t0, total;
 
-    ESP_LOGI(TAG, "benchmarking %d blind messages...", BENCH_N);
-
-    unsigned char secret[32] = {0};
-    unsigned char r[32] = {0};
-    r[31] = 1;
-    secp256k1_pubkey B_;
-
-    int64_t start = esp_timer_get_time();
-
-    for (int i = 0; i < BENCH_N; i++) {
-        secret[0] = (unsigned char)(i & 0xff);
-        secret[1] = (unsigned char)((i >> 8) & 0xff);
-        r[0] = (unsigned char)((i + 77) & 0xff);
-        r[1] = (unsigned char)(((i + 77) >> 8) & 0xff);
-
-        if (!cashu_blind_message(ctx, &B_, secret, 32, r)) {
-            ESP_LOGE(TAG, "benchmark: blind_message failed at i=%d", i);
-            return;
+    {
+        enum { N = 100 };
+        unsigned char msg[32] = {0};
+        secp256k1_pubkey pt;
+        total = 0;
+        for (int i = 0; i < N; i++) {
+            msg[0] = (unsigned char)i;
+            t0 = esp_timer_get_time();
+            if (!cashu_hash_to_curve(ctx, &pt, msg, 32)) {
+                ESP_LOGE(TAG, "bench: hash_to_curve failed");
+                return;
+            }
+            total += esp_timer_get_time() - t0;
+            if (i % 20 == 19)
+                vTaskDelay(1);
         }
-
-        if (i % 100 == 99)
-            vTaskDelay(1);
+        ESP_LOGI(TAG, "hash_to_curve x%d: %lld us/op", N, total / N);
     }
 
-    int64_t elapsed_us = esp_timer_get_time() - start;
-    int64_t per_op_us = elapsed_us / BENCH_N;
+    {
+        enum { N = 50 };
+        unsigned char secret[32] = {0};
+        unsigned char r[32] = {0};
+        r[31] = 1;
+        secp256k1_pubkey B_;
+        total = 0;
+        for (int i = 0; i < N; i++) {
+            secret[0] = (unsigned char)i;
+            t0 = esp_timer_get_time();
+            if (!cashu_blind_message(ctx, &B_, secret, 32, r)) {
+                ESP_LOGE(TAG, "bench: blind_message failed");
+                return;
+            }
+            total += esp_timer_get_time() - t0;
+            if (i % 10 == 9)
+                vTaskDelay(1);
+        }
+        ESP_LOGI(TAG, "blind_message x%d: %lld us/op", N, total / N);
+    }
 
-    ESP_LOGI(TAG, "blind_message x%d: %lld ms total, %lld us/op (~%lld ops/sec)",
-             BENCH_N,
-             elapsed_us / 1000,
-             per_op_us,
-             per_op_us > 0 ? (int64_t)1000000 / per_op_us : 0);
-
-    #undef BENCH_N
+    {
+        /* Same vector as test_dleq — the dominant per-output cost of a
+         * receive (~4 scalar mults + point serialization hashing). */
+        enum { N = 50 };
+        unsigned char A_bytes[33], B_bytes[33], C_bytes[33];
+        hex_to_bytes("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+                     A_bytes, 33);
+        hex_to_bytes("02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
+                     B_bytes, 33);
+        hex_to_bytes("02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
+                     C_bytes, 33);
+        secp256k1_pubkey A, B_, C_;
+        cashu_pubkey_parse(ctx, &A, A_bytes);
+        cashu_pubkey_parse(ctx, &B_, B_bytes);
+        cashu_pubkey_parse(ctx, &C_, C_bytes);
+        unsigned char e[32], s[32];
+        hex_to_bytes("9818e061ee51d5c8edc3342369a554998ff7b4381c8652d724cdf46429be73d9", e, 32);
+        hex_to_bytes("9818e061ee51d5c8edc3342369a554998ff7b4381c8652d724cdf46429be73da", s, 32);
+        total = 0;
+        for (int i = 0; i < N; i++) {
+            t0 = esp_timer_get_time();
+            if (!cashu_verify_dleq(ctx, &A, &B_, &C_, e, s)) {
+                ESP_LOGE(TAG, "bench: verify_dleq failed");
+                return;
+            }
+            total += esp_timer_get_time() - t0;
+            if (i % 10 == 9)
+                vTaskDelay(1);
+        }
+        ESP_LOGI(TAG, "verify_dleq   x%d: %lld us/op", N, total / N);
+    }
 }

@@ -3,7 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include "esp_http_client.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_crt_bundle.h"
 
 #define TAG "http"
@@ -68,16 +70,20 @@ static esp_err_t perform_with_timeout(const char *url, esp_http_client_method_t 
         esp_http_client_set_post_field(client, post_data, post_len);
     }
 
+    int64_t t0 = esp_timer_get_time();
     esp_err_t err = esp_http_client_perform(client);
+    long long ms = (esp_timer_get_time() - t0) / 1000;
 
     if (err == ESP_OK) {
         resp->status = esp_http_client_get_status_code(client);
         resp->body = rb.buf;
         resp->body_len = rb.len;
-        ESP_LOGD(TAG, "%s %s -> %d (%zu bytes)", post_data ? "POST" : "GET",
-                 url, resp->status, resp->body_len);
+        ESP_LOGI(TAG, "%s %s -> %d in %lld ms (%zu B, heap %lu, largest %u)",
+                 post_data ? "POST" : "GET", url, resp->status, ms,
+                 resp->body_len, (unsigned long)esp_get_free_heap_size(),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     } else {
-        ESP_LOGE(TAG, "request failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "request failed after %lld ms: %s", ms, esp_err_to_name(err));
         free(rb.buf);
         resp->body = NULL;
         resp->body_len = 0;
