@@ -544,7 +544,7 @@ static void cmd_nfc(const char *arg)
             return;
         }
         if (nfc_state() == NfcState::off) {
-            nucula_console_write("error: PN532 not initialized\r\n");
+            nucula_console_write("error: NFC not available\r\n");
             return;
         }
         console_printf("requesting %d sat via NFC...\r\n", amount);

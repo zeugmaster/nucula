@@ -33,7 +33,7 @@ extern void display_refresh();
 extern void display_nfc_status(const char *line1, const char *line2);
 
 // -------------------------------------------------------------------------
-// Token redemption (unchanged from PN532 version)
+// Token redemption
 // -------------------------------------------------------------------------
 
 static cashu::Wallet *find_wallet_for(const char *mint_url)
