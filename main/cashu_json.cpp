@@ -426,9 +426,10 @@ bool from_json_keyset_info_response(const cJSON *j, std::vector<KeysetInfo> &out
 
 std::string proofs_to_json(const std::vector<Proof>& proofs) {
     cJSON* arr = to_json_array(proofs);
+    if (!arr) return "";
     char* str = cJSON_PrintUnformatted(arr);
-    std::string result(str);
-    cJSON_free(str);
+    std::string result(str ? str : "");
+    if (str) cJSON_free(str);
     cJSON_Delete(arr);
     return result;
 }
@@ -443,9 +444,10 @@ bool proofs_from_json(const char* json_str, std::vector<Proof>& out) {
 
 std::string keysets_to_json(const std::vector<Keyset>& keysets) {
     cJSON* arr = to_json_array(keysets);
+    if (!arr) return "";
     char* str = cJSON_PrintUnformatted(arr);
-    std::string result(str);
-    cJSON_free(str);
+    std::string result(str ? str : "");
+    if (str) cJSON_free(str);
     cJSON_Delete(arr);
     return result;
 }
@@ -467,11 +469,13 @@ static const size_t V3_PREFIX_LEN = 6;
 
 std::string serialize_token_v3(const Token &token) {
     cJSON *j = to_json(token);
+    if (!j) return "";
     char *json_str = cJSON_PrintUnformatted(j);
+    cJSON_Delete(j);
+    if (!json_str) return "";
     std::string encoded = base64url_encode(
         (const unsigned char *)json_str, strlen(json_str));
     cJSON_free(json_str);
-    cJSON_Delete(j);
     return std::string(V3_PREFIX) + encoded;
 }
 

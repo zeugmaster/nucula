@@ -312,6 +312,13 @@ bool Wallet::erase_nvs()
 bool Wallet::save_proofs()
 {
     std::string blob = proofs_to_json(proofs_);
+    // proofs_to_json returns "" only on allocation failure ("[]" for an
+    // empty wallet). Never let that overwrite stored proofs with nothing —
+    // they are bearer money.
+    if (blob.empty() && !proofs_.empty()) {
+        ESP_LOGE(TAG, "save_proofs: serialization failed, keeping stored proofs");
+        return false;
+    }
 
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &handle);
@@ -398,6 +405,11 @@ bool Wallet::save_keysets()
         char ks_key[16];
         snprintf(ks_key, sizeof(ks_key), "k_%d_%d", nvs_slot_, i);
         std::string blob = serialize(keysets_[i]);
+        if (blob.empty()) {
+            ESP_LOGE(TAG, "save keyset %d: serialization failed", i);
+            nvs_close(handle);
+            return false;
+        }
         err = nvs_set_blob(handle, ks_key, blob.data(), blob.size());
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "save keyset %d failed: %s", i, esp_err_to_name(err));
@@ -1029,6 +1041,10 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
 
     SwapRequest req{stripped, blinding.outputs};
     std::string body = serialize(req);
+    if (body.empty()) {
+        ESP_LOGE(TAG, "swap: request serialization failed");
+        return false;
+    }
 
     std::string url = mint_url_ + "/v1/swap";
     http_response_t resp = {};
@@ -1264,6 +1280,10 @@ bool Wallet::request_mint_quote(int amount, MintQuote& quote_out)
     cJSON_AddStringToObject(body, "unit", "sat");
     char* body_str = cJSON_PrintUnformatted(body);
     cJSON_Delete(body);
+    if (!body_str) {
+        ESP_LOGE(TAG, "mint quote: request serialization failed");
+        return false;
+    }
 
     std::string url = mint_url_ + "/v1/mint/quote/bolt11";
     http_response_t resp = {};
@@ -1338,6 +1358,10 @@ bool Wallet::mint_tokens(const std::string& quote_id, int amount)
 
     MintRequest req{quote_id, blinding.outputs};
     std::string body = serialize(req);
+    if (body.empty()) {
+        ESP_LOGE(TAG, "mint: request serialization failed");
+        return false;
+    }
 
     std::string url = mint_url_ + "/v1/mint/bolt11";
     http_response_t resp = {};
@@ -1393,6 +1417,10 @@ bool Wallet::request_melt_quote(const std::string& bolt11, MeltQuote& quote_out)
     cJSON_AddStringToObject(body, "unit", "sat");
     char* body_str = cJSON_PrintUnformatted(body);
     cJSON_Delete(body);
+    if (!body_str) {
+        ESP_LOGE(TAG, "melt quote: request serialization failed");
+        return false;
+    }
 
     std::string url = mint_url_ + "/v1/melt/quote/bolt11";
     http_response_t resp = {};
@@ -1506,6 +1534,10 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
         req.outputs = change_blinding.outputs;
 
     std::string body = serialize(req);
+    if (body.empty()) {
+        ESP_LOGE(TAG, "melt: request serialization failed");
+        return false;
+    }
 
     std::string url = mint_url_ + "/v1/melt/bolt11";
     http_response_t resp = {};
