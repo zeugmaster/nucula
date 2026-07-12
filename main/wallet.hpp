@@ -146,6 +146,10 @@ public:
     const std::vector<Proof>& proofs() const { return proofs_; }
     int nvs_slot() const { return nvs_slot_; }
     bool clear_proofs();
+    // Remove exactly the given proofs (matched by secret) and persist.
+    // On a failed save the in-RAM set is restored — funds are never
+    // dropped from the wallet without landing in NVS first.
+    bool remove_proofs(const std::vector<Proof>& to_remove);
 
 private:
     std::string mint_url_;

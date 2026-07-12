@@ -1976,6 +1976,27 @@ bool Wallet::clear_proofs()
     return save_proofs();
 }
 
+bool Wallet::remove_proofs(const std::vector<Proof>& to_remove)
+{
+    std::vector<Proof> kept;
+    kept.reserve(proofs_.size());
+    for (const auto& p : proofs_) {
+        bool drop = false;
+        for (const auto& r : to_remove)
+            if (r.secret == p.secret) { drop = true; break; }
+        if (!drop)
+            kept.push_back(p);
+    }
+
+    std::vector<Proof> backup = std::move(proofs_);
+    proofs_ = std::move(kept);
+    if (!save_proofs()) {
+        proofs_ = std::move(backup);
+        return false;
+    }
+    return true;
+}
+
 // -------------------------------------------------------------------------
 // Offline-receive pending queue
 // -------------------------------------------------------------------------

@@ -37,6 +37,75 @@
 // Defined below; used by cmd_mint's info subcommand too.
 static cashu::Wallet *resolve_wallet(const char *idx_str);
 
+// Trailing options shared by the money commands: "u=<unit> m=<method>
+// a=<amount> w=<mint idx>" in any order. A bare integer token is still
+// accepted as the mint index (the old positional syntax).
+struct CmdOpts {
+    std::string unit;     // empty = Wallet::default_unit()
+    std::string method;   // empty = bolt11
+    int amount = -1;      // a=, only meaningful where documented
+    std::string idx;      // empty = auto-resolve
+};
+
+static bool parse_cmd_opts(const char *p, CmdOpts &out)
+{
+    while (p && *p) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        const char *end = strchr(p, ' ');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        std::string tok(p, len);
+        if (tok.rfind("u=", 0) == 0) {
+            out.unit = cashu::normalize_unit(tok.substr(2));
+            if (!cashu::unit_token_valid(out.unit.c_str())) {
+                console_printf("error: bad unit '%s'\r\n", tok.c_str() + 2);
+                return false;
+            }
+        } else if (tok.rfind("m=", 0) == 0) {
+            out.method = tok.substr(2);
+            if (!cashu::unit_token_valid(out.method.c_str())) {
+                console_printf("error: bad method '%s'\r\n", tok.c_str() + 2);
+                return false;
+            }
+        } else if (tok.rfind("a=", 0) == 0) {
+            out.amount = atoi(tok.c_str() + 2);
+            if (out.amount <= 0) {
+                console_printf("error: bad amount '%s'\r\n", tok.c_str() + 2);
+                return false;
+            }
+        } else if (tok.rfind("w=", 0) == 0) {
+            out.idx = tok.substr(2);
+        } else if (tok.find_first_not_of("0123456789") == std::string::npos) {
+            out.idx = tok;   // bare integer = mint index (legacy syntax)
+        } else {
+            console_printf("error: unknown option '%s'\r\n", tok.c_str());
+            return false;
+        }
+        p = end;
+    }
+    return true;
+}
+
+// Print one formatted line per unit held by the wallet, prefix-indented.
+// Returns true when any proofs have an unknown keyset ("?" unit).
+static bool print_unit_balances(cashu::Wallet *w, const char *prefix,
+                                const char *label)
+{
+    bool unknown = false;
+    std::vector<std::string> units;
+    w->collect_units(units);
+    for (const auto &u : units) {
+        if (u == "?") {
+            unknown = true;
+            continue;
+        }
+        char amt[48];
+        cashu::format_amount(amt, sizeof(amt), w->balance_for_unit(u), u.c_str());
+        console_printf("%s%s%s\r\n", prefix, label, amt);
+    }
+    return unknown;
+}
+
 static void cmd_status(const char *arg)
 {
     wallet_store_guard guard;
@@ -45,50 +114,118 @@ static void cmd_status(const char *arg)
     console_printf("nfc:     %s\r\n", nfc_status_str());
     console_printf("heap:    %lu bytes free\r\n",
                    (unsigned long)esp_get_free_heap_size());
+    console_printf("unit:    %s (default)\r\n",
+                   cashu::Wallet::default_unit().c_str());
 
     int count = wallet_store_count();
     console_printf("mints:   %d/%d\r\n", count, MAX_MINTS);
 
-    long long total_balance = 0;
     for (int i = 0; i < MAX_MINTS; i++) {
         auto *w = wallet_store_get(i);
         if (!w) continue;
-        const cashu::Keyset *ks = w->active_keyset();
         console_printf("[%d] %s\r\n", i, w->mint_url().c_str());
-        if (ks)
-            console_printf("    active:  %s (%d keys)\r\n",
-                           ks->id.c_str(), (int)ks->keys.size());
+        for (const auto &ks : w->keysets())
+            if (ks.active)
+                console_printf("    active:  %s (%s, %d keys)\r\n",
+                               ks.id.c_str(), ks.unit.c_str(),
+                               (int)ks.keys.size());
         console_printf("    keysets: %d\r\n", (int)w->keysets().size());
-        long long bal = w->balance();
-        console_printf("    balance: %lld sat (%d proofs)\r\n",
-                       bal, (int)w->proofs().size());
-        total_balance += bal;
+        console_printf("    proofs:  %d\r\n", (int)w->proofs().size());
+        if (print_unit_balances(w, "    ", "balance: "))
+            nucula_console_write("    warning: proofs with unknown keyset\r\n");
     }
-    if (count > 0)
-        console_printf("total:   %lld sat\r\n", (long long)total_balance);
+    if (count > 0) {
+        std::vector<std::string> units;
+        wallet_store_collect_units(units);
+        for (const auto &u : units) {
+            if (u == "?") continue;
+            char amt[48];
+            cashu::format_amount(amt, sizeof(amt),
+                                 wallet_store_balance_for_unit(u.c_str()),
+                                 u.c_str());
+            console_printf("total:   %s\r\n", amt);
+        }
+    }
 }
 
 static void cmd_balance(const char *arg)
 {
     wallet_store_guard guard;
     (void)arg;
-    long long total = 0;
     bool any = false;
     for (int i = 0; i < MAX_MINTS; i++) {
         auto *w = wallet_store_get(i);
         if (!w || w->proofs().empty()) continue;
         any = true;
         console_printf("[%s]\r\n", w->mint_url().c_str());
-        for (const auto &p : w->proofs())
-            console_printf("  %d sat  (keyset %s)\r\n", p.amount, p.id.c_str());
-        long long sub = w->balance();
-        console_printf("  subtotal: %lld sat\r\n", sub);
-        total += sub;
+        for (const auto &p : w->proofs()) {
+            const std::string *u = w->unit_for_proof(p);
+            char amt[48];
+            cashu::format_amount(amt, sizeof(amt), p.amount,
+                                 u ? u->c_str() : "?");
+            console_printf("  %s  (keyset %s)\r\n", amt, p.id.c_str());
+        }
+        if (print_unit_balances(w, "  ", "subtotal: "))
+            nucula_console_write("  warning: proofs with unknown keyset excluded\r\n");
     }
-    if (!any)
+    if (!any) {
         nucula_console_write("no proofs\r\n");
-    else
-        console_printf("total: %lld sat\r\n", total);
+        return;
+    }
+    std::vector<std::string> units;
+    wallet_store_collect_units(units);
+    for (const auto &u : units) {
+        if (u == "?") continue;
+        char amt[48];
+        cashu::format_amount(amt, sizeof(amt),
+                             wallet_store_balance_for_unit(u.c_str()), u.c_str());
+        console_printf("total: %s\r\n", amt);
+    }
+}
+
+// unit [<name>] — show or set the persisted default unit.
+static void cmd_unit(const char *arg)
+{
+    wallet_store_guard guard;
+    if (!arg || strlen(arg) == 0) {
+        console_printf("default unit: %s\r\n",
+                       cashu::Wallet::default_unit().c_str());
+        std::vector<std::string> units;
+        wallet_store_collect_units(units);
+        if (!units.empty()) {
+            nucula_console_write("held units:");
+            for (const auto &u : units)
+                console_printf(" %s", u.c_str());
+            nucula_console_write("\r\n");
+        }
+        return;
+    }
+
+    // First token only; normalize before validating.
+    const char *end = strchr(arg, ' ');
+    std::string unit = cashu::normalize_unit(
+        end ? std::string(arg, end - arg) : std::string(arg));
+    if (!cashu::unit_token_valid(unit.c_str())) {
+        nucula_console_write("error: unit must be non-empty [a-z0-9_-]\r\n");
+        return;
+    }
+
+    // Warn — but allow — when no mint currently backs the unit; keysets
+    // may simply not be fetched yet.
+    bool backed = false;
+    for (int i = 0; i < MAX_MINTS && !backed; i++) {
+        auto *w = wallet_store_get(i);
+        if (w && w->active_keyset(unit))
+            backed = true;
+    }
+
+    if (!cashu::Wallet::set_default_unit(unit)) {
+        nucula_console_write("error: failed to persist default unit\r\n");
+        return;
+    }
+    console_printf("default unit: %s%s\r\n", unit.c_str(),
+                   backed ? "" : " (no mint has an active keyset for it yet)");
+    display_refresh();
 }
 
 static void cmd_receive(const char *arg)
@@ -109,9 +246,11 @@ static void cmd_receive(const char *arg)
         return;
     }
 
-    console_printf("token: %lld sat in %d proofs from %s\r\n",
-                   (long long)cashu::proofs_sum(token.proofs),
-                   (int)token.proofs.size(), token.mint.c_str());
+    char amt[48];
+    cashu::format_amount(amt, sizeof(amt),
+                         cashu::proofs_sum(token.proofs), token.unit.c_str());
+    console_printf("token: %s in %d proofs from %s\r\n",
+                   amt, (int)token.proofs.size(), token.mint.c_str());
 
     cashu::Wallet *w = wallet_store_get_or_create(token.mint);
     if (!w) {
@@ -119,7 +258,7 @@ static void cmd_receive(const char *arg)
         return;
     }
 
-    if (w->keysets().empty() || !w->active_keyset()) {
+    if (w->keysets().empty() || !w->active_keyset(token.unit)) {
         nucula_console_write("loading keysets...\r\n");
         if (!w->load_keysets()) {
             nucula_console_write("error: failed to load keysets\r\n");
@@ -136,8 +275,10 @@ static void cmd_receive(const char *arg)
     }
     long long ms = (esp_timer_get_time() - t0) / 1000;
 
-    console_printf("received %lld sat in %d proofs (%lld ms)\r\n",
-                   (long long)cashu::proofs_sum(received), (int)received.size(), ms);
+    cashu::format_amount(amt, sizeof(amt),
+                         cashu::proofs_sum(received), token.unit.c_str());
+    console_printf("received %s in %d proofs (%lld ms)\r\n",
+                   amt, (int)received.size(), ms);
     display_refresh();
 }
 
@@ -327,7 +468,7 @@ static void cmd_invoice(const char *arg)
 {
     wallet_store_guard guard;
     if (!arg || strlen(arg) == 0) {
-        nucula_console_write("usage: invoice <amount> [mint_index]\r\n");
+        nucula_console_write("usage: invoice <amount> [u=<unit>] [m=<method>] [w=<mint_idx>]\r\n");
         return;
     }
     if (!wifi_is_connected()) {
@@ -341,45 +482,60 @@ static void cmd_invoice(const char *arg)
         return;
     }
 
-    const char *idx_str = nullptr;
-    const char *space = strchr(arg, ' ');
-    if (space) {
-        idx_str = space + 1;
-        while (*idx_str == ' ') idx_str++;
-        if (*idx_str == '\0') idx_str = nullptr;
-    }
+    CmdOpts opts;
+    if (!parse_cmd_opts(strchr(arg, ' '), opts))
+        return;
+    const std::string unit = opts.unit.empty() ? cashu::Wallet::default_unit()
+                                               : opts.unit;
+    const std::string method = opts.method.empty() ? std::string("bolt11")
+                                                   : opts.method;
 
-    cashu::Wallet *w = resolve_wallet(idx_str);
+    cashu::Wallet *w = resolve_wallet(opts.idx.empty() ? nullptr
+                                                       : opts.idx.c_str());
     if (!w) return;
 
-    if (w->keysets().empty() || !w->active_keyset()) {
+    if (w->keysets().empty() || !w->active_keyset(unit)) {
         nucula_console_write("loading keysets...\r\n");
         if (!w->load_keysets()) {
             nucula_console_write("error: failed to load keysets\r\n");
+            return;
+        }
+        if (!w->active_keyset(unit)) {
+            console_printf("error: mint has no active %s keyset\r\n",
+                           unit.c_str());
             return;
         }
     }
 
     nucula_console_write("requesting mint quote...\r\n");
     cashu::MintQuote quote;
-    if (!w->request_mint_quote(amount, "sat", "bolt11", quote)) {
+    if (!w->request_mint_quote(amount, unit, method, quote)) {
         nucula_console_write("error: failed to get mint quote\r\n");
         return;
     }
 
-    nucula_console_write("pay this invoice:\r\n");
+    // For bolt11 `request` is an invoice; for custom methods it is an
+    // opaque payment target (URL, account reference) — print verbatim.
+    nucula_console_write(method == "bolt11" ? "pay this invoice:\r\n"
+                                            : "payment request:\r\n");
     nucula_console_write(quote.request.c_str());
     nucula_console_write("\r\n");
     console_printf("quote: %s\r\n", quote.quote.c_str());
-    console_printf("amount: %d sat\r\n", quote.amount);
-    nucula_console_write("then run: claim <quote_id>\r\n");
+    char amt[48];
+    cashu::format_amount(amt, sizeof(amt), quote.amount, quote.unit.c_str());
+    console_printf("amount: %s\r\n", amt);
+    if (method == "bolt11")
+        nucula_console_write("then run: claim <quote_id>\r\n");
+    else
+        console_printf("then run: claim %s m=%s\r\n",
+                       quote.quote.c_str(), method.c_str());
 }
 
 static void cmd_claim(const char *arg)
 {
     wallet_store_guard guard;
     if (!arg || strlen(arg) == 0) {
-        nucula_console_write("usage: claim <quote_id> [mint_index]\r\n");
+        nucula_console_write("usage: claim <quote_id> [m=<method>] [w=<mint_idx>]\r\n");
         return;
     }
     if (!wifi_is_connected()) {
@@ -387,33 +543,34 @@ static void cmd_claim(const char *arg)
         return;
     }
 
-    // Split quote_id and optional mint index
+    // Split quote_id and optional trailing options
     std::string quote_id;
+    CmdOpts opts;
     const char *space = strchr(arg, ' ');
-    const char *idx_str = nullptr;
     if (space) {
         quote_id = std::string(arg, space - arg);
-        idx_str = space + 1;
-        while (*idx_str == ' ') idx_str++;
-        if (*idx_str == '\0') idx_str = nullptr;
+        if (!parse_cmd_opts(space, opts))
+            return;
     } else {
         quote_id = arg;
     }
+    const std::string method = opts.method.empty() ? std::string("bolt11")
+                                                   : opts.method;
 
     cashu::Wallet *w = nullptr;
     cashu::MintQuote quote;
 
-    if (idx_str) {
-        w = resolve_wallet(idx_str);
+    if (!opts.idx.empty()) {
+        w = resolve_wallet(opts.idx.c_str());
         if (!w) return;
-        if (!w->check_mint_quote(quote_id, "bolt11", quote)) {
+        if (!w->check_mint_quote(quote_id, method, quote)) {
             nucula_console_write("error: quote not found on this mint\r\n");
             return;
         }
     } else {
         for (int i = 0; i < MAX_MINTS; i++) {
             if (!wallet_store_get(i)) continue;
-            if (wallet_store_get(i)->check_mint_quote(quote_id, "bolt11", quote)) {
+            if (wallet_store_get(i)->check_mint_quote(quote_id, method, quote)) {
                 w = wallet_store_get(i);
                 break;
             }
@@ -440,10 +597,16 @@ static void cmd_claim(const char *arg)
         return;
     }
 
-    if (w->keysets().empty() || !w->active_keyset()) {
+    const std::string unit = quote.unit.empty() ? std::string("sat") : quote.unit;
+    if (w->keysets().empty() || !w->active_keyset(unit)) {
         nucula_console_write("loading keysets...\r\n");
         if (!w->load_keysets()) {
             nucula_console_write("error: failed to load keysets\r\n");
+            return;
+        }
+        if (!w->active_keyset(unit)) {
+            console_printf("error: mint has no active %s keyset\r\n",
+                           unit.c_str());
             return;
         }
     }
@@ -465,7 +628,8 @@ static void cmd_melt(const char *arg)
 {
     wallet_store_guard guard;
     if (!arg || strlen(arg) == 0) {
-        nucula_console_write("usage: melt <bolt11_invoice> [mint_index]\r\n");
+        nucula_console_write("usage: melt <request> [u=<unit>] [m=<method>] "
+                             "[a=<amount>] [w=<mint_idx>]\r\n");
         return;
     }
     if (!wifi_is_connected()) {
@@ -473,59 +637,77 @@ static void cmd_melt(const char *arg)
         return;
     }
 
-    // Split bolt11 and optional mint index
-    std::string bolt11;
-    const char *idx_str = nullptr;
+    // Split the payment request and optional trailing options
+    std::string request;
+    CmdOpts opts;
     const char *space = strchr(arg, ' ');
     if (space) {
-        bolt11 = std::string(arg, space - arg);
-        idx_str = space + 1;
-        while (*idx_str == ' ') idx_str++;
-        if (*idx_str == '\0') idx_str = nullptr;
+        request = std::string(arg, space - arg);
+        if (!parse_cmd_opts(space, opts))
+            return;
     } else {
-        bolt11 = arg;
+        request = arg;
     }
+    const std::string unit = opts.unit.empty() ? cashu::Wallet::default_unit()
+                                               : opts.unit;
+    const std::string method = opts.method.empty() ? std::string("bolt11")
+                                                   : opts.method;
 
-    cashu::Wallet *w = resolve_wallet(idx_str);
+    cashu::Wallet *w = resolve_wallet(opts.idx.empty() ? nullptr
+                                                       : opts.idx.c_str());
     if (!w) return;
 
-    if (w->keysets().empty() || !w->active_keyset()) {
+    if (w->keysets().empty() || !w->active_keyset(unit)) {
         nucula_console_write("loading keysets...\r\n");
         if (!w->load_keysets()) {
             nucula_console_write("error: failed to load keysets\r\n");
+            return;
+        }
+        if (!w->active_keyset(unit)) {
+            console_printf("error: mint has no active %s keyset\r\n",
+                           unit.c_str());
             return;
         }
     }
 
     nucula_console_write("requesting melt quote...\r\n");
     cashu::MeltQuote quote;
-    if (!w->request_melt_quote(bolt11, "sat", "bolt11", quote)) {
+    std::optional<int> req_amount = opts.amount > 0
+        ? std::optional<int>(opts.amount) : std::nullopt;
+    if (!w->request_melt_quote(request, unit, method, quote, req_amount)) {
         nucula_console_write("error: failed to get melt quote\r\n");
         return;
     }
 
-    long long wallet_bal = w->balance();
+    long long wallet_bal = w->balance_for_unit(quote.unit);
     int total_needed = quote.amount + quote.fee_reserve;
-    console_printf("amount:      %d sat\r\n", quote.amount);
-    console_printf("fee_reserve: %d sat\r\n", quote.fee_reserve);
-    console_printf("balance:     %lld sat\r\n", wallet_bal);
+    char amt[48];
+    cashu::format_amount(amt, sizeof(amt), quote.amount, quote.unit.c_str());
+    console_printf("amount:      %s\r\n", amt);
+    cashu::format_amount(amt, sizeof(amt), quote.fee_reserve, quote.unit.c_str());
+    console_printf("fee_reserve: %s\r\n", amt);
+    cashu::format_amount(amt, sizeof(amt), wallet_bal, quote.unit.c_str());
+    console_printf("balance:     %s\r\n", amt);
 
     if (wallet_bal < total_needed) {
-        console_printf("error: insufficient balance (%lld < %d)\r\n",
-                       wallet_bal, total_needed);
+        console_printf("error: insufficient %s balance (%lld < %d)\r\n",
+                       quote.unit.c_str(), wallet_bal, total_needed);
         return;
     }
 
-    nucula_console_write("paying invoice...\r\n");
+    nucula_console_write("paying...\r\n");
     int change_amount = 0;
     if (!w->melt_tokens(quote, change_amount)) {
         nucula_console_write("error: melt failed\r\n");
         return;
     }
 
-    console_printf("paid %d sat\r\n", quote.amount);
-    if (change_amount > 0)
-        console_printf("change: %d sat\r\n", change_amount);
+    cashu::format_amount(amt, sizeof(amt), quote.amount, quote.unit.c_str());
+    console_printf("paid %s\r\n", amt);
+    if (change_amount > 0) {
+        cashu::format_amount(amt, sizeof(amt), change_amount, quote.unit.c_str());
+        console_printf("change: %s\r\n", amt);
+    }
     display_refresh();
 }
 
@@ -540,28 +722,56 @@ static void cmd_stickup(const char *arg)
         if (!w || w->proofs().empty()) continue;
 
         any = true;
-        console_printf("[%d] %s: %lld sat in %d proofs\r\n",
-                       i, w->mint_url().c_str(),
-                       (long long)w->balance(), (int)w->proofs().size());
 
-        cashu::Token token;
-        token.mint = w->mint_url();
-        token.unit = "sat";
-        token.proofs = w->proofs();
+        // A token's proofs share one unit, so drain one V4 token per unit.
+        // Proofs whose keyset is unknown stay on-device: stamping a guessed
+        // unit would make receivers reject or mis-account them.
+        std::vector<std::string> units;
+        w->collect_units(units);
+        for (const auto &u : units) {
+            if (u == "?") {
+                console_printf("[%d] warning: proofs with unknown keyset "
+                               "retained (no unit to stamp)\r\n", i);
+                continue;
+            }
 
-        std::string serialized = cashu::serialize_token_v4(token);
-        if (serialized.empty()) {
-            // Without this token string the proofs have no other exit —
-            // clearing them here would destroy the funds.
-            console_printf("[%d] error: token serialization failed, not draining\r\n", i);
-            continue;
+            std::vector<cashu::Proof> drained;
+            for (const auto &p : w->proofs()) {
+                const std::string *pu = w->unit_for_proof(p);
+                if (pu && *pu == u)
+                    drained.push_back(p);
+            }
+            if (drained.empty()) continue;
+
+            cashu::Token token;
+            token.mint = w->mint_url();
+            token.unit = u;
+            token.proofs = drained;
+
+            std::string serialized = cashu::serialize_token_v4(token);
+            if (serialized.empty()) {
+                // Without this token string the proofs have no other exit —
+                // dropping them here would destroy the funds.
+                console_printf("[%d] error: %s token serialization failed, "
+                               "not draining\r\n", i, u.c_str());
+                continue;
+            }
+
+            char amt[48];
+            cashu::format_amount(amt, sizeof(amt),
+                                 cashu::proofs_sum(drained), u.c_str());
+            console_printf("[%d] %s: %s in %d proofs\r\n",
+                           i, w->mint_url().c_str(), amt, (int)drained.size());
+            nucula_console_write(serialized.c_str());
+            nucula_console_write("\r\n");
+
+            if (!w->remove_proofs(drained)) {
+                console_printf("[%d] error: failed to persist drain — proofs "
+                               "kept on device, token above is a duplicate\r\n", i);
+                continue;
+            }
+            console_printf("[%d] drained %s\r\n", i, u.c_str());
         }
-
-        nucula_console_write(serialized.c_str());
-        nucula_console_write("\r\n");
-
-        w->clear_proofs();
-        console_printf("[%d] drained\r\n", i);
     }
 
     if (!any)
@@ -806,13 +1016,14 @@ extern "C" void app_main(void)
     // it last starved it once WiFi + every wallet's keysets were loaded.
     console_init(NULL);
     console_register_cmd("status",  cmd_status,  "show system and wallet status");
-    console_register_cmd("balance", cmd_balance,  "show wallet balance");
+    console_register_cmd("balance", cmd_balance,  "show wallet balance per unit");
+    console_register_cmd("unit",    cmd_unit,     "unit [<name>] — show/set default unit");
     console_register_cmd("receive", cmd_receive,  "receive a cashuA token");
     console_register_cmd("mint",    cmd_mint,     "mint [list|add <url>|remove <idx>|info]");
     console_register_cmd("nfc",     cmd_nfc,      "nfc [request <amount>|stop]");
-    console_register_cmd("invoice", cmd_invoice,  "invoice <amount> [mint_idx]");
-    console_register_cmd("claim",   cmd_claim,    "claim <quote_id> [mint_idx]");
-    console_register_cmd("melt",    cmd_melt,     "melt <bolt11> [mint_idx]");
+    console_register_cmd("invoice", cmd_invoice,  "invoice <amount> [u=|m=|w=]");
+    console_register_cmd("claim",   cmd_claim,    "claim <quote_id> [m=|w=]");
+    console_register_cmd("melt",    cmd_melt,     "melt <request> [u=|m=|a=|w=]");
     console_register_cmd("stickup", cmd_stickup,  "drain wallet into v4 tokens");
     console_register_cmd("seed",    cmd_seed,     "seed [show|generate|restore|wipe]");
     console_register_cmd("keypad",  cmd_keypad,   "keypad scan — probe PCF8574 wiring");
