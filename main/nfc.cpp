@@ -4,6 +4,7 @@
 #include "cashu_json.hpp"
 #include "cashu_cbor.hpp"
 #include "wallet.hpp"
+#include "wallet_store.hpp"
 #include "display.h"
 #include "wifi.h"
 
@@ -27,41 +28,12 @@ static std::atomic<NfcState> s_state{NfcState::off};
 static std::atomic<bool> s_stop_flag{false};
 static TaskHandle_t s_task_handle = nullptr;
 
-extern cashu::Wallet *g_wallets[];
-extern secp256k1_context *g_ctx;
 extern void display_refresh();
 extern void display_nfc_status(const char *line1, const char *line2);
 
 // -------------------------------------------------------------------------
 // Token redemption
 // -------------------------------------------------------------------------
-
-static cashu::Wallet *find_wallet_for(const char *mint_url)
-{
-    for (int i = 0; i < MAX_MINTS; i++)
-        if (g_wallets[i] && g_wallets[i]->mint_url() == mint_url)
-            return g_wallets[i];
-    return nullptr;
-}
-
-// Returns the wallet that owns the token's mint, creating a new slot if
-// needed. NULL if no slot is free.
-static cashu::Wallet *wallet_for_token(const cashu::Token &token)
-{
-    cashu::Wallet *w = find_wallet_for(token.mint.c_str());
-    if (w) return w;
-    int slot = -1;
-    for (int i = 0; i < MAX_MINTS; i++) if (!g_wallets[i]) { slot = i; break; }
-    if (slot < 0) {
-        ESP_LOGE(TAG, "no free mint slots");
-        return nullptr;
-    }
-    w = new cashu::Wallet(token.mint, g_ctx, slot);
-    g_wallets[slot] = w;
-    w->save_mint_url();
-    ESP_LOGI(TAG, "added mint [%d]: %s", slot, token.mint.c_str());
-    return w;
-}
 
 // Returns:
 //   1  on online success (swapped immediately)
@@ -85,7 +57,7 @@ static int redeem_or_stash_token(const std::string &token_str)
         // public keys; without them a forged token is indistinguishable from
         // real ecash, and there is no online swap to fall back on. Refuse —
         // and do NOT create a new mint slot for an unknown mint.
-        cashu::Wallet *w = find_wallet_for(token.mint.c_str());
+        cashu::Wallet *w = wallet_store_find(token.mint.c_str());
         if (!w || w->keysets().empty()) {
             ESP_LOGE(TAG, "offline: refusing token from unknown mint %s "
                           "(no keysets, cannot verify DLEQ)",
@@ -100,7 +72,7 @@ static int redeem_or_stash_token(const std::string &token_str)
         return 0;
     }
 
-    cashu::Wallet *w = wallet_for_token(token);
+    cashu::Wallet *w = wallet_store_get_or_create(token.mint);
     if (!w) return -1;
 
     if (w->keysets().empty() || !w->active_keyset()) {
@@ -212,7 +184,7 @@ static void nfc_task(void *arg)
     // Offline-receive: ask the sender to lock the proofs to our P2PK pubkey
     // so we can swap them once WiFi returns. Online we skip the lock for
     // privacy (single static key would link receives).
-    if (!wifi_is_connected() && cashu::Wallet::ensure_p2pk_keypair(g_ctx)) {
+    if (!wifi_is_connected() && cashu::Wallet::ensure_p2pk_keypair(wallet_store_ctx())) {
         cashu::NUT10Option opt;
         opt.kind = "P2PK";
         opt.data = cashu::Wallet::p2pk_pubkey_hex();

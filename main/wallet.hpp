@@ -5,8 +5,6 @@
 #include <string>
 #include <vector>
 
-static const int MAX_MINTS = 3;
-
 namespace cashu {
 
 class Wallet {
