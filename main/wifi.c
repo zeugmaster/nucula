@@ -1,5 +1,6 @@
 #include "wifi.h"
 #include "wifi_config.h"
+#include "http.h"
 
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -24,13 +25,21 @@ static bool s_connected;
 static void wifi_supervisor_task(void *arg)
 {
     (void)arg;
+    bool was_connected = false;
     for (;;) {
         if (!s_connected) {
+            if (was_connected) {
+                /* Falling edge: the cached HTTP connections are dead. Done
+                 * here (not in the event handler) because closing blocks on
+                 * the HTTP mutex until any in-flight request finishes. */
+                http_close_all();
+            }
             ESP_LOGI(TAG, "supervisor: attempting reconnect");
             esp_err_t err = esp_wifi_connect();
             if (err != ESP_OK && err != ESP_ERR_WIFI_CONN)
                 ESP_LOGW(TAG, "esp_wifi_connect() returned %d", err);
         }
+        was_connected = s_connected;
         vTaskDelay(pdMS_TO_TICKS(SUPERVISOR_PERIOD_MS));
     }
 }
@@ -127,8 +136,10 @@ esp_err_t wifi_init(void)
     /* Spawn the supervisor before we even check the initial result. The fast
      * retries from event_handler may already be exhausted by the time we
      * return; the supervisor takes it from there. */
+    /* 4096: the supervisor also runs http_close_all (TLS teardown) now, and
+     * its high-water mark was already down to ~270 bytes at 2048. */
     BaseType_t ok = xTaskCreate(wifi_supervisor_task, "wifi_sup",
-                                2048, NULL, 3, NULL);
+                                4096, NULL, 3, NULL);
     if (ok != pdPASS)
         ESP_LOGE(TAG, "failed to spawn wifi_supervisor_task");
 

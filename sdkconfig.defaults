@@ -41,3 +41,8 @@ CONFIG_LOG_MAXIMUM_LEVEL_INFO=y
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 CONFIG_MBEDTLS_DYNAMIC_FREE_CA_CERT=y
 CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
+
+# TLS session tickets: a reconnect to a mint resumes the session instead of
+# paying the full handshake + cert-chain verification again. Tickets live
+# inside the cached esp_http_client handles (http.c connection cache).
+CONFIG_ESP_TLS_CLIENT_SESSION_TICKETS=y

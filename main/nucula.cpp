@@ -12,6 +12,7 @@
 #include "crypto.h"
 #include "crypto_test.h"
 #include "wifi.h"
+#include "http.h"
 #include "cashu.hpp"
 #include "cashu_json.hpp"
 #include "cashu_cbor.hpp"
@@ -735,6 +736,8 @@ extern "C" void app_main(void)
     if (nvs_err != ESP_OK)
         ESP_LOGE(TAG, "NVS init failed: %s — wallet persistence disabled",
                  esp_err_to_name(nvs_err));
+
+    http_init();
 
     if (wifi_init() != ESP_OK)
         ESP_LOGE(TAG, "wifi failed, continuing offline");

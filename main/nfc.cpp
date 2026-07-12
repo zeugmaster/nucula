@@ -7,6 +7,7 @@
 #include "wallet_store.hpp"
 #include "ui.h"
 #include "wifi.h"
+#include "http.h"
 
 #include <cstring>
 #include <string>
@@ -213,6 +214,20 @@ static void nfc_task(void *arg)
     // Full radio responsiveness while a payment is in flight; restored on
     // every exit path below.
     wifi_set_low_latency(true);
+
+    // Prime the TLS connection to the expected mint while the user is
+    // still tapping: the post-tap swap then reuses it.
+    if (wifi_is_connected()) {
+        if (!params->mint_url.empty()) {
+            http_prewarm(params->mint_url.c_str());
+        } else {
+            wallet_store_guard guard;
+            for (int i = 0; i < MAX_MINTS; i++) {
+                auto *w = wallet_store_get(i);
+                if (w) { http_prewarm(w->mint_url().c_str()); break; }
+            }
+        }
+    }
 
     int64_t start = esp_timer_get_time();
     char amt_str[16];
