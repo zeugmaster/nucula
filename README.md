@@ -84,6 +84,7 @@ nucula> balance
 | `heap` / `tasks` | Heap and task-stack telemetry |
 | `log <e\|w\|i\|d> [tag]` | Set runtime log level |
 | `bench` | Benchmark crypto primitives |
+| `selftest` | Run crypto/keyset self-tests |
 | `reboot` | Restart the device |
 
 ## Protocol

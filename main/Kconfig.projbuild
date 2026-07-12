@@ -1,0 +1,12 @@
+menu "Nucula"
+
+    config NUCULA_SELFTEST_ON_BOOT
+        bool "Run crypto/keyset self-tests at every boot"
+        default n
+        help
+            Runs the BDHKE/DLEQ/NUT-13 crypto vectors and the keyset-id
+            derivation self-tests during app_main. Costs roughly a second
+            of boot time; the same tests are always available at runtime
+            via the 'selftest' console command.
+
+endmenu

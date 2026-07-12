@@ -989,6 +989,16 @@ static void cmd_bench(const char *arg)
     nucula_console_write("done (results logged at info level)\r\n");
 }
 
+static void cmd_selftest(const char *arg)
+{
+    (void)arg;
+    nucula_console_write("running self-tests (details logged at info level)...\r\n");
+    bool ok = crypto_run_tests(g_ctx) != 0;
+    if (!cashu::keyset_run_tests())
+        ok = false;
+    console_printf("self-tests %s\r\n", ok ? "PASSED" : "FAILED");
+}
+
 // -------------------------------------------------------------------------
 // Keypad
 // -------------------------------------------------------------------------
@@ -1049,6 +1059,7 @@ extern "C" void app_main(void)
     console_register_cmd("tasks",   cmd_tasks,    "show task stack high-water marks");
     console_register_cmd("log",     cmd_log,      "log <e|w|i|d> [tag] — set log level");
     console_register_cmd("bench",   cmd_bench,    "benchmark crypto primitives");
+    console_register_cmd("selftest", cmd_selftest, "run crypto/keyset self-tests");
     console_start();
 
     g_ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
@@ -1063,9 +1074,11 @@ extern "C" void app_main(void)
             ESP_LOGW(TAG, "secp256k1 context randomize failed");
     }
 
+#if CONFIG_NUCULA_SELFTEST_ON_BOOT
     crypto_run_tests(g_ctx);
     if (!cashu::keyset_run_tests())
         ESP_LOGE(TAG, "keyset id derivation self-test FAILED");
+#endif
 
     cashu::Wallet::load_seed();
     cashu::Wallet::ensure_p2pk_keypair(g_ctx);
