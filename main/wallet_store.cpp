@@ -123,15 +123,6 @@ int wallet_store_count()
     return n;
 }
 
-long long wallet_store_total_balance()
-{
-    wallet_store_guard guard;
-    long long total = 0;
-    for (int i = 0; i < MAX_MINTS; i++)
-        if (s_wallets[i]) total += s_wallets[i]->balance();
-    return total;
-}
-
 long long wallet_store_balance_for_unit(const char *unit)
 {
     if (!unit)

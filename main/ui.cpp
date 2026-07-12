@@ -7,9 +7,13 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include <string>
+#include <vector>
+
 #include "display.h"
 #include "keypad.h"
 #include "nfc.hpp"
+#include "unit.hpp"
 #include "wallet_store.hpp"
 #include "wifi.h"
 
@@ -53,12 +57,12 @@ void display_refresh()
 {
     // Layout (64px total, 128px wide):
     //   y= 0.. 8  title bar (scale 1)
-    //   y=10..25  balance (scale 2, centered)
-    //   y=27..34  "sat" (scale 1, centered)
+    //   y=10..25  default-unit balance (scale 2, centered)
+    //   y=27..34  unit label (scale 1, centered)
     //   y=36      separator
-    //   y=38..45  mint line 0 (scale 1)
-    //   y=46..53  mint line 1 (scale 1)
-    //   y=56..63  status: proof count + heap (scale 1)
+    //   y=38..53  two lines: per-mint balances (single-unit device) or
+    //             other-unit totals (multi-unit device)
+    //   y=56..63  status: proof count + heap + unit overflow (scale 1)
 
     // Never hard-block the UI on a long wallet operation (a melt can hold
     // the store for up to two minutes): skip this frame instead — every
@@ -82,56 +86,88 @@ void display_refresh()
     draw_title_bar(wifi_buf);
 
     // ---- Tally ----
-    long long total_balance = wallet_store_total_balance();
+    const std::string def_unit = cashu::Wallet::default_unit();
+    long long def_balance = wallet_store_balance_for_unit(def_unit.c_str());
     int total_proofs = 0;
     for (int i = 0; i < MAX_MINTS; i++) {
         auto *w = wallet_store_get(i);
         if (w)
             total_proofs += (int)w->proofs().size();
     }
+    // Units other than the default that any wallet holds ("?" excluded).
+    std::vector<std::string> units;
+    wallet_store_collect_units(units);
+    std::vector<std::string> others;
+    for (const auto &u : units)
+        if (u != def_unit && u != "?")
+            others.push_back(u);
 
-    // ---- Balance (scale 2, centered) ----
-    char buf[22];
-    snprintf(buf, sizeof(buf), "%lld", total_balance);
+    // ---- Balance in the default unit (scale 2, centered) ----
+    char buf[40];
+    cashu::format_amount_value(buf, sizeof(buf), def_balance, def_unit.c_str());
     int scale = 2;
     if (display_text_width(buf, scale) > LCD_W - 4) scale = 1;
     int bx = (LCD_W - display_text_width(buf, scale)) / 2;
     if (bx < 0) bx = 0;
     display_text(bx, 10, buf, scale);
 
-    // ---- "sat" label (scale 1, centered) ----
-    int sat_x = (LCD_W - display_text_width("sat", 1)) / 2;
-    display_text(sat_x, 27, "sat", 1);
+    // ---- Unit label (scale 1, centered) ----
+    int ux = (LCD_W - display_text_width(def_unit.c_str(), 1)) / 2;
+    if (ux < 0) ux = 0;
+    display_text(ux, 27, def_unit.c_str(), 1);
 
     // ---- Separator ----
     display_hline(0, 36, LCD_W);
 
-    // ---- Mint list (scale 1, up to 2 lines) ----
     int y = 38;
     int shown = 0;
-    for (int i = 0; i < MAX_MINTS && shown < 2; i++) {
-        auto *w = wallet_store_get(i);
-        if (!w) continue;
-        const char *url = w->mint_url().c_str();
-        if (strncmp(url, "https://", 8) == 0) url += 8;
-        else if (strncmp(url, "http://", 7) == 0) url += 7;
+    if (others.empty()) {
+        // ---- Single-unit device: per-mint balances (up to 2 lines) ----
+        for (int i = 0; i < MAX_MINTS && shown < 2; i++) {
+            auto *w = wallet_store_get(i);
+            if (!w) continue;
+            const char *url = w->mint_url().c_str();
+            if (strncmp(url, "https://", 8) == 0) url += 8;
+            else if (strncmp(url, "http://", 7) == 0) url += 7;
 
-        char amount[14];
-        snprintf(amount, sizeof(amount), "%lld", (long long)w->balance());
-        int ax = LCD_W - display_text_width(amount, 1) - 1;
+            char amount[16];
+            cashu::format_amount_value(amount, sizeof(amount),
+                                       w->balance_for_unit(def_unit),
+                                       def_unit.c_str());
+            int ax = LCD_W - display_text_width(amount, 1) - 1;
 
-        int url_chars = (ax - 2) / 6;
-        char line[32];
-        snprintf(line, sizeof(line), "%.*s", url_chars, url);
-        display_text(1, y, line, 1);
-        display_text(ax, y, amount, 1);
-        y += 8;
-        shown++;
+            int url_chars = (ax - 2) / 6;
+            char line[32];
+            snprintf(line, sizeof(line), "%.*s", url_chars, url);
+            display_text(1, y, line, 1);
+            display_text(ax, y, amount, 1);
+            y += 8;
+            shown++;
+        }
+    } else {
+        // ---- Multi-unit device: other-unit totals (up to 2 lines) ----
+        for (const auto &u : others) {
+            if (shown >= 2) break;
+            char amount[16];
+            cashu::format_amount_value(amount, sizeof(amount),
+                                       wallet_store_balance_for_unit(u.c_str()),
+                                       u.c_str());
+            int ax = LCD_W - display_text_width(amount, 1) - 1;
+            display_text(1, y, u.c_str(), 1);
+            display_text(ax, y, amount, 1);
+            y += 8;
+            shown++;
+        }
     }
 
     // ---- Status bar (scale 1) ----
-    snprintf(buf, sizeof(buf), "%dp heap:%luk",
-             total_proofs, (unsigned long)(esp_get_free_heap_size() / 1024));
+    int overflow = (int)others.size() - shown;
+    if (overflow > 0)
+        snprintf(buf, sizeof(buf), "%dp heap:%luk +%du", total_proofs,
+                 (unsigned long)(esp_get_free_heap_size() / 1024), overflow);
+    else
+        snprintf(buf, sizeof(buf), "%dp heap:%luk", total_proofs,
+                 (unsigned long)(esp_get_free_heap_size() / 1024));
     display_text(1, 56, buf, 1);
 
     wallet_store_unlock();
@@ -142,22 +178,27 @@ void display_refresh()
 // Keypad UI
 // -------------------------------------------------------------------------
 
-// Amount entry screen: shows digits being typed, * / # hints at the bottom.
-static void show_amount_entry(const char *digits)
+// Amount entry screen: digits are integer minor units of `unit` (typing
+// 123 with usd shows 1.23), * / # hints at the bottom.
+static void show_amount_entry(const char *digits, const char *unit)
 {
     display_clear();
     draw_title_bar("amount");
 
-    // Amount (scale 2, centered)
-    const char *show = (digits && digits[0]) ? digits : "0";
+    // Amount (scale 2, centered), rendered with the unit's decimals
+    long long v = (digits && digits[0]) ? atoll(digits) : 0;
+    char show[24];
+    cashu::format_amount_value(show, sizeof(show), v, unit);
     int scale = 2;
     if (display_text_width(show, scale) > LCD_W - 4) scale = 1;
     int ax = (LCD_W - display_text_width(show, scale)) / 2;
+    if (ax < 0) ax = 0;
     display_text(ax, 14, show, scale);
 
-    // "sat" label
-    int sat_x = (LCD_W - display_text_width("sat", 1)) / 2;
-    display_text(sat_x, 32, "sat", 1);
+    // Unit label
+    int ulx = (LCD_W - display_text_width(unit, 1)) / 2;
+    if (ulx < 0) ulx = 0;
+    display_text(ulx, 32, unit, 1);
 
     // Hints at bottom
     display_text(1, 56, "* cancel", 1);
@@ -178,6 +219,7 @@ void keypad_ui_task(void *arg)
     char amount_buf[10] = {};
     int  amount_len     = 0;
     int  nfc_amount     = 0;
+    char unit_buf[32]   = "sat";   // snapshot when amount entry starts
     NfcState last_nfc   = NfcState::off;
 
     for (;;) {
@@ -188,12 +230,16 @@ void keypad_ui_task(void *arg)
 
         case UiState::IDLE:
             if (key >= '1' && key <= '9' && wallet_store_count() > 0) {
+                // Snapshot the default unit for this whole entry/NFC round
+                // so a concurrent `unit` command can't switch mid-flow.
+                snprintf(unit_buf, sizeof(unit_buf), "%s",
+                         cashu::Wallet::default_unit().c_str());
                 amount_len = 0;
                 amount_buf[0] = key;
                 amount_buf[1] = '\0';
                 amount_len = 1;
                 ui = UiState::ENTERING_AMOUNT;
-                show_amount_entry(amount_buf);
+                show_amount_entry(amount_buf, unit_buf);
             }
             break;
 
@@ -203,7 +249,7 @@ void keypad_ui_task(void *arg)
                 if (amount_len < 8) {
                     amount_buf[amount_len++] = key;
                     amount_buf[amount_len]   = '\0';
-                    show_amount_entry(amount_buf);
+                    show_amount_entry(amount_buf, unit_buf);
                 }
             } else if (key == '*') {
                 ui = UiState::IDLE;
@@ -212,11 +258,12 @@ void keypad_ui_task(void *arg)
                 nfc_amount = atoi(amount_buf);
                 if (nfc_amount <= 0) break;             // nothing entered yet
                 if (nfc_state() == NfcState::off) break; // NFC unavailable
-                if (!nfc_request_start(nfc_amount, nullptr, nullptr)) break;
+                if (!nfc_request_start(nfc_amount, unit_buf, nullptr)) break;
                 ui = UiState::NFC_ACTIVE;
                 last_nfc = NfcState::off;
-                char amt_str[16];
-                snprintf(amt_str, sizeof(amt_str), "%d sat", nfc_amount);
+                char amt_str[24];
+                cashu::format_amount(amt_str, sizeof(amt_str), nfc_amount,
+                                     unit_buf);
                 display_nfc_status("waiting", amt_str);
             }
             break;
@@ -233,8 +280,8 @@ void keypad_ui_task(void *arg)
             if (cur == last_nfc) break;
             last_nfc = cur;
 
-            char amt_str[16];
-            snprintf(amt_str, sizeof(amt_str), "%d sat", nfc_amount);
+            char amt_str[24];
+            cashu::format_amount(amt_str, sizeof(amt_str), nfc_amount, unit_buf);
             switch (cur) {
             case NfcState::waiting:
                 display_nfc_status("waiting", amt_str);   break;
