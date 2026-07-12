@@ -1017,12 +1017,15 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
         // NUT-12: verify the DLEQ proof on the BlindSignature before we trust C_.
         if (sig.dleq) {
             if (!suite->has_dleq) {
-                // v3 spec: the mint MUST NOT include a dleq — treat as malformed.
-                ESP_LOGE(TAG, "sig[%d]: dleq on a %s signature (malformed)",
-                         (int)i, suite->name);
-                return false;
-            }
-            {
+                // v3 spec: the mint MUST NOT include a dleq. nutshell PR #999
+                // (the reference v3 mint) currently sends a dummy e=s=1 anyway,
+                // so tolerate it: warn, never verify against it, never store or
+                // forward it. Security is unaffected — v3 verification is
+                // always the pairing batch below, and a has_dleq=0 suite can
+                // never be tricked into DLEQ-verifying attacker-chosen (e, s).
+                ESP_LOGW(TAG, "sig[%d]: mint sent a dleq on a %s signature "
+                              "(spec violation, ignoring)", (int)i, suite->name);
+            } else {
                 unsigned char e_b[32], s_b[32];
                 if (!hex_to_bytes(sig.dleq->e.c_str(), e_b, 32) ||
                     !hex_to_bytes(sig.dleq->s.c_str(), s_b, 32)) {
@@ -1078,7 +1081,10 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
         proof.amount = sig.amount;
         proof.secret = blinding.secrets[i];
         proof.C = std::string(C_hex);
-        if (sig.dleq && blinding.blinding_factors[i].size() == 64) {
+        // Attach the DLEQ for later forwarding (NUT-12 Carol-mode) — only for
+        // DLEQ suites: a spurious v3 dleq must not end up in our tokens.
+        if (suite->has_dleq && sig.dleq &&
+            blinding.blinding_factors[i].size() == 64) {
             proof.dleq = DLEQ{
                 sig.dleq->e,
                 sig.dleq->s,
@@ -1391,10 +1397,12 @@ bool Wallet::verify_incoming_proofs(const std::vector<Proof>& inputs)
         }
 
         if (p.dleq && !suite->has_dleq) {
-            // v3 spec: a Proof MUST NOT carry a dleq — treat as malformed.
-            ESP_LOGE(TAG, "verify: dleq on a %s proof[%d] (malformed)",
+            // v3 spec: a Proof MUST NOT carry a dleq — but wallets built on
+            // nutshell PR #999 may forward its dummy one. Warn and ignore:
+            // the proof still has to pass the pairing batch below, which is
+            // the only verification a has_dleq=0 suite ever runs.
+            ESP_LOGW(TAG, "verify: spurious dleq on %s proof[%d] (ignoring)",
                      suite->name, (int)i);
-            return false;
         }
 
         if (suite->verify_proofs) {
