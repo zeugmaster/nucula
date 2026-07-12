@@ -86,7 +86,7 @@ public:
     bool check_melt_quote(const std::string& quote_id, MeltQuote& quote_out);
     bool melt_tokens(const MeltQuote& quote, int& change_amount);
 
-    int balance() const;
+    int64_t balance() const;
     bool select_proofs(int amount_needed, std::vector<Proof>& selected,
                        std::vector<Proof>& remaining);
 

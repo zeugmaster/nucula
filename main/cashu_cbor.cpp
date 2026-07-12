@@ -56,14 +56,20 @@ static bool cbor_get_uint(CborValue *val, uint64_t &out)
 
 static bool cbor_get_int(CborValue *val, int &out)
 {
+    // Amounts/fees are non-negative and must fit in int32; the previous
+    // unchecked casts silently truncated 64-bit values.
     uint64_t u;
     if (cbor_get_uint(val, u)) {
+        if (u > INT32_MAX)
+            return false;
         out = (int)u;
         return true;
     }
     if (cbor_value_is_integer(val)) {
         int64_t i;
         if (cbor_value_get_int64(val, &i) == CborNoError) {
+            if (i < 0 || i > INT32_MAX)
+                return false;
             out = (int)i;
             return true;
         }

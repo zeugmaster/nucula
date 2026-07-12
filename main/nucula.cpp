@@ -122,17 +122,17 @@ void display_refresh()
     draw_title_bar(wifi_buf);
 
     // ---- Tally ----
-    int total_balance = 0, total_proofs = 0;
+    long long total_balance = 0;
+    int total_proofs = 0;
     for (int i = 0; i < MAX_MINTS; i++) {
         if (!g_wallets[i]) continue;
-        for (const auto &p : g_wallets[i]->proofs())
-            total_balance += p.amount;
+        total_balance += g_wallets[i]->balance();
         total_proofs += (int)g_wallets[i]->proofs().size();
     }
 
     // ---- Balance (scale 2, centered) ----
     char buf[22];
-    snprintf(buf, sizeof(buf), "%d", total_balance);
+    snprintf(buf, sizeof(buf), "%lld", total_balance);
     int scale = 2;
     if (display_text_width(buf, scale) > LCD_W - 4) scale = 1;
     int bx = (LCD_W - display_text_width(buf, scale)) / 2;
@@ -155,12 +155,8 @@ void display_refresh()
         if (strncmp(url, "https://", 8) == 0) url += 8;
         else if (strncmp(url, "http://", 7) == 0) url += 7;
 
-        int bal = 0;
-        for (const auto &p : g_wallets[i]->proofs())
-            bal += p.amount;
-
         char amount[14];
-        snprintf(amount, sizeof(amount), "%d", bal);
+        snprintf(amount, sizeof(amount), "%lld", (long long)g_wallets[i]->balance());
         int ax = LCD_W - display_text_width(amount, 1) - 1;
 
         int url_chars = (ax - 2) / 6;
@@ -323,7 +319,7 @@ static void cmd_status(const char *arg)
     int count = wallet_count();
     console_printf("mints:   %d/%d\r\n", count, MAX_MINTS);
 
-    int total_balance = 0;
+    long long total_balance = 0;
     for (int i = 0; i < MAX_MINTS; i++) {
         auto *w = g_wallets[i];
         if (!w) continue;
@@ -333,39 +329,35 @@ static void cmd_status(const char *arg)
             console_printf("    active:  %s (%d keys)\r\n",
                            ks->id.c_str(), (int)ks->keys.size());
         console_printf("    keysets: %d\r\n", (int)w->keysets().size());
-        int bal = 0;
-        for (const auto &p : w->proofs())
-            bal += p.amount;
-        console_printf("    balance: %d sat (%d proofs)\r\n",
+        long long bal = w->balance();
+        console_printf("    balance: %lld sat (%d proofs)\r\n",
                        bal, (int)w->proofs().size());
         total_balance += bal;
     }
     if (count > 0)
-        console_printf("total:   %d sat\r\n", total_balance);
+        console_printf("total:   %lld sat\r\n", (long long)total_balance);
 }
 
 static void cmd_balance(const char *arg)
 {
     (void)arg;
-    int total = 0;
+    long long total = 0;
     bool any = false;
-    for (int i = 0; i < MAX_MINTS; i++) { 
+    for (int i = 0; i < MAX_MINTS; i++) {
         auto *w = g_wallets[i];
         if (!w || w->proofs().empty()) continue;
         any = true;
         console_printf("[%s]\r\n", w->mint_url().c_str());
-        int sub = 0;
-        for (const auto &p : w->proofs()) {
+        for (const auto &p : w->proofs())
             console_printf("  %d sat  (keyset %s)\r\n", p.amount, p.id.c_str());
-            sub += p.amount;
-        }
-        console_printf("  subtotal: %d sat\r\n", sub);
+        long long sub = w->balance();
+        console_printf("  subtotal: %lld sat\r\n", sub);
         total += sub;
     }
     if (!any)
         nucula_console_write("no proofs\r\n");
     else
-        console_printf("total: %d sat\r\n", total);
+        console_printf("total: %lld sat\r\n", total);
 }
 
 static void cmd_receive(const char *arg)
@@ -385,11 +377,9 @@ static void cmd_receive(const char *arg)
         return;
     }
 
-    int input_total = 0;
-    for (const auto &p : token.proofs)
-        input_total += p.amount;
-    console_printf("token: %d sat in %d proofs from %s\r\n",
-                   input_total, (int)token.proofs.size(), token.mint.c_str());
+    console_printf("token: %lld sat in %d proofs from %s\r\n",
+                   (long long)cashu::proofs_sum(token.proofs),
+                   (int)token.proofs.size(), token.mint.c_str());
 
     cashu::Wallet *w = find_wallet(token.mint.c_str());
 
@@ -422,11 +412,8 @@ static void cmd_receive(const char *arg)
     }
     long long ms = (esp_timer_get_time() - t0) / 1000;
 
-    int output_total = 0;
-    for (const auto &p : received)
-        output_total += p.amount;
-    console_printf("received %d sat in %d proofs (%lld ms)\r\n",
-                   output_total, (int)received.size(), ms);
+    console_printf("received %lld sat in %d proofs (%lld ms)\r\n",
+                   (long long)cashu::proofs_sum(received), (int)received.size(), ms);
     display_refresh();
 }
 
@@ -440,12 +427,10 @@ static void cmd_mint(const char *arg)
         }
         for (int i = 0; i < MAX_MINTS; i++) {
             if (!g_wallets[i]) continue;
-            int bal = 0;
-            for (const auto &p : g_wallets[i]->proofs())
-                bal += p.amount;
-            console_printf("[%d] %s  (%d keysets, %d sat)\r\n",
+            console_printf("[%d] %s  (%d keysets, %lld sat)\r\n",
                            i, g_wallets[i]->mint_url().c_str(),
-                           (int)g_wallets[i]->keysets().size(), bal);
+                           (int)g_wallets[i]->keysets().size(),
+                           (long long)g_wallets[i]->balance());
         }
         console_printf("%d/%d slots used\r\n", count, MAX_MINTS);
         return;
@@ -509,12 +494,9 @@ static void cmd_mint(const char *arg)
             return;
         }
 
-        int bal = 0;
-        for (const auto &p : w->proofs())
-            bal += p.amount;
-        console_printf("removing [%d] %s (%d sat, %d proofs erased)\r\n",
+        console_printf("removing [%d] %s (%lld sat, %d proofs erased)\r\n",
                        slot, w->mint_url().c_str(),
-                       bal, (int)w->proofs().size());
+                       (long long)w->balance(), (int)w->proofs().size());
         w->erase_nvs();
         delete w;
         g_wallets[slot] = nullptr;
@@ -754,14 +736,14 @@ static void cmd_melt(const char *arg)
         return;
     }
 
-    int wallet_bal = w->balance();
+    long long wallet_bal = w->balance();
     int total_needed = quote.amount + quote.fee_reserve;
     console_printf("amount:      %d sat\r\n", quote.amount);
     console_printf("fee_reserve: %d sat\r\n", quote.fee_reserve);
-    console_printf("balance:     %d sat\r\n", wallet_bal);
+    console_printf("balance:     %lld sat\r\n", wallet_bal);
 
     if (wallet_bal < total_needed) {
-        console_printf("error: insufficient balance (%d < %d)\r\n",
+        console_printf("error: insufficient balance (%lld < %d)\r\n",
                        wallet_bal, total_needed);
         return;
     }
@@ -788,14 +770,10 @@ static void cmd_stickup(const char *arg)
         auto *w = g_wallets[i];
         if (!w || w->proofs().empty()) continue;
 
-        int balance = 0;
-        for (const auto &p : w->proofs())
-            balance += p.amount;
-
         any = true;
-        console_printf("[%d] %s: %d sat in %d proofs\r\n",
+        console_printf("[%d] %s: %lld sat in %d proofs\r\n",
                        i, w->mint_url().c_str(),
-                       balance, (int)w->proofs().size());
+                       (long long)w->balance(), (int)w->proofs().size());
 
         cashu::Token token;
         token.mint = w->mint_url();

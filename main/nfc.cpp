@@ -75,9 +75,8 @@ static int redeem_or_stash_token(const std::string &token_str)
         return -1;
     }
 
-    int input_total = 0;
-    for (const auto &p : token.proofs) input_total += p.amount;
-    ESP_LOGI(TAG, "token: %d sat, %d proofs from %s",
+    long long input_total = cashu::proofs_sum(token.proofs);
+    ESP_LOGI(TAG, "token: %lld sat, %d proofs from %s",
              input_total, (int)token.proofs.size(), token.mint.c_str());
 
     if (!wifi_is_connected()) {
@@ -97,7 +96,7 @@ static int redeem_or_stash_token(const std::string &token_str)
             ESP_LOGE(TAG, "pending: stash failed");
             return -1;
         }
-        ESP_LOGI(TAG, "offline: stashed %d sat for later drain", input_total);
+        ESP_LOGI(TAG, "offline: stashed %lld sat for later drain", input_total);
         return 0;
     }
 
@@ -111,9 +110,8 @@ static int redeem_or_stash_token(const std::string &token_str)
     std::vector<cashu::Proof> received;
     if (!w->receive(token, received)) { ESP_LOGE(TAG, "swap failed"); return -1; }
 
-    int total = 0;
-    for (const auto &p : received) total += p.amount;
-    ESP_LOGI(TAG, "redeemed %d sat (%d proofs)", total, (int)received.size());
+    ESP_LOGI(TAG, "redeemed %lld sat (%d proofs)",
+             (long long)cashu::proofs_sum(received), (int)received.size());
     return 1;
 }
 

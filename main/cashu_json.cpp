@@ -15,6 +15,10 @@ static const char* get_string(const cJSON* obj, const char* key) {
 static bool get_int(const cJSON* obj, const char* key, int& out) {
     const cJSON* item = cJSON_GetObjectItemCaseSensitive(obj, key);
     if (!item || !cJSON_IsNumber(item)) return false;
+    // All protocol ints (amounts, fees) are non-negative and must fit in
+    // int32 — valueint saturates silently, so bound via the double value.
+    if (item->valuedouble < 0 || item->valuedouble > 2147483647.0)
+        return false;
     out = item->valueint;
     return true;
 }

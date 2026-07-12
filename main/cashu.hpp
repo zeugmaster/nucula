@@ -48,12 +48,23 @@ struct BlindSignature {
 // NUT-00: Ecash proof (unblinded token)
 struct Proof {
     std::string id;
+    // TODO(uint64): widening amounts to uint64 requires an NVS schema
+    // migration (cJSON numbers are doubles) — deferred; deserializers
+    // reject amounts outside [0, INT32_MAX] instead.
     int amount;
     std::string secret;
     std::string C;
     std::optional<DLEQ> dleq;
     std::optional<std::string> witness;
 };
+
+// Sum of proof amounts, 64-bit so a large wallet can't overflow int.
+inline int64_t proofs_sum(const std::vector<Proof>& proofs) {
+    int64_t total = 0;
+    for (const auto& p : proofs)
+        total += p.amount;
+    return total;
+}
 
 enum class ProofState {
     unspent,

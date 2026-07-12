@@ -973,21 +973,19 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
     }
 
     int fee = calculate_fee(inputs);
-    int input_sum = 0;
-    for (const auto& p : inputs)
-        input_sum += p.amount;
+    int64_t input_sum = proofs_sum(inputs);
 
     int return_amount, change_amount;
     if (amount >= 0) {
         if (input_sum < amount + fee) {
-            ESP_LOGE(TAG, "swap: insufficient inputs (%d < %d + %d)",
-                     input_sum, amount, fee);
+            ESP_LOGE(TAG, "swap: insufficient inputs (%lld < %d + %d)",
+                     (long long)input_sum, amount, fee);
             return false;
         }
         return_amount = amount;
-        change_amount = input_sum - amount - fee;
+        change_amount = (int)(input_sum - amount - fee);
     } else {
-        return_amount = input_sum - fee;
+        return_amount = (int)(input_sum - fee);
         change_amount = 0;
     }
 
@@ -1205,11 +1203,8 @@ bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
     for (const auto& p : proofs_out)
         proofs_.push_back(p);
 
-    int total = 0;
-    for (const auto& p : proofs_out)
-        total += p.amount;
-
-    ESP_LOGI(TAG, "received %d sat (%d proofs)", total, (int)proofs_out.size());
+    ESP_LOGI(TAG, "received %lld sat (%d proofs)",
+             (long long)proofs_sum(proofs_out), (int)proofs_out.size());
     save_proofs();
     return true;
 }
@@ -1218,12 +1213,9 @@ bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
 // Balance
 // -------------------------------------------------------------------------
 
-int Wallet::balance() const
+int64_t Wallet::balance() const
 {
-    int sum = 0;
-    for (const auto& p : proofs_)
-        sum += p.amount;
-    return sum;
+    return proofs_sum(proofs_);
 }
 
 // -------------------------------------------------------------------------
@@ -1397,11 +1389,8 @@ bool Wallet::mint_tokens(const std::string& quote_id, int amount)
     for (const auto& p : new_proofs)
         proofs_.push_back(p);
 
-    int total = 0;
-    for (const auto& p : new_proofs)
-        total += p.amount;
-
-    ESP_LOGI(TAG, "minted %d sat (%d proofs)", total, (int)new_proofs.size());
+    ESP_LOGI(TAG, "minted %lld sat (%d proofs)",
+             (long long)proofs_sum(new_proofs), (int)new_proofs.size());
     save_proofs();
     return true;
 }
