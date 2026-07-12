@@ -26,59 +26,17 @@ typedef unsigned long long llimb_t;
 # endif
 #endif
 
+/* --- local patch (ported from zeugmaster/bls-bench): route Montgomery mul
+   through the ESP32-C3 RSA/MPI peripheral. mpi_mul_mont_n() lives in
+   ../../port/blst_mpi.c; it falls back to a software path for limb counts
+   it doesn't accelerate and on targets without the peripheral. --- */
+extern void mpi_mul_mont_n(limb_t ret[], const limb_t a[], const limb_t b[],
+                           const limb_t p[], limb_t n0, size_t n);
+
 static void mul_mont_n(limb_t ret[], const limb_t a[], const limb_t b[],
                        const limb_t p[], limb_t n0, size_t n)
 {
-    __builtin_assume(n != 0 && n%2 == 0);
-    llimb_t limbx;
-    limb_t mask, borrow, mx, hi, tmp[n+1], carry;
-    size_t i, j;
-
-    for (mx=b[0], hi=0, i=0; i<n; i++) {
-        limbx = (mx * (llimb_t)a[i]) + hi;
-        tmp[i] = (limb_t)limbx;
-        hi = (limb_t)(limbx >> LIMB_T_BITS);
-    }
-    mx = n0*tmp[0];
-    tmp[i] = hi;
-
-    for (carry=0, j=0; ; ) {
-        limbx = (mx * (llimb_t)p[0]) + tmp[0];
-        hi = (limb_t)(limbx >> LIMB_T_BITS);
-        for (i=1; i<n; i++) {
-            limbx = (mx * (llimb_t)p[i] + hi) + tmp[i];
-            tmp[i-1] = (limb_t)limbx;
-            hi = (limb_t)(limbx >> LIMB_T_BITS);
-        }
-        limbx = tmp[i] + (hi + (llimb_t)carry);
-        tmp[i-1] = (limb_t)limbx;
-        carry = (limb_t)(limbx >> LIMB_T_BITS);
-
-        if (++j==n)
-            break;
-
-        for (mx=b[j], hi=0, i=0; i<n; i++) {
-            limbx = (mx * (llimb_t)a[i] + hi) + tmp[i];
-            tmp[i] = (limb_t)limbx;
-            hi = (limb_t)(limbx >> LIMB_T_BITS);
-        }
-        mx = n0*tmp[0];
-        limbx = hi + (llimb_t)carry;
-        tmp[i] = (limb_t)limbx;
-        carry = (limb_t)(limbx >> LIMB_T_BITS);
-    }
-
-    for (borrow=0, i=0; i<n; i++) {
-        limbx = tmp[i] - (p[i] + (llimb_t)borrow);
-        ret[i] = (limb_t)limbx;
-        borrow = (limb_t)(limbx >> LIMB_T_BITS) & 1;
-    }
-
-    mask = carry - borrow;
-    launder(mask);
-
-    for(i=0; i<n; i++)
-        ret[i] = (ret[i] & ~mask) | (tmp[i] & mask);
+    mpi_mul_mont_n(ret, a, b, p, n0, n);
 }
 
 #define MUL_MONT_IMPL(bits) \
@@ -579,49 +537,17 @@ void mul_mont_384x(vec384x ret, const vec384x a, const vec384x b,
 }
 
 /*
- * mul_mont_n without final conditional subtraction, which implies
- * that modulus is one bit short, which in turn means that there are
- * no carries to handle between iterations...
+ * mul_mont_n without final conditional subtraction. bls-bench patch: route
+ * through the MPI peripheral too (it always fully reduces, which is a strict
+ * superset of what the lazy variant promised). Its only remaining caller,
+ * sqr_n_mul_mont_383, only ever feeds reduced operands, so the peripheral's
+ * a*b < p*R precondition is satisfied. (sqr_mont_382x, which used to feed it
+ * a wrapped subtraction, has been rewritten below to use reduced operands.)
  */
 static void mul_mont_nonred_n(limb_t ret[], const limb_t a[], const limb_t b[],
                               const limb_t p[], limb_t n0, size_t n)
 {
-    __builtin_assume(n != 0 && n%2 == 0);
-    llimb_t limbx;
-    limb_t mx, hi, tmp[n+1];
-    size_t i, j;
-
-    for (mx=b[0], hi=0, i=0; i<n; i++) {
-        limbx = (mx * (llimb_t)a[i]) + hi;
-        tmp[i] = (limb_t)limbx;
-        hi = (limb_t)(limbx >> LIMB_T_BITS);
-    }
-    mx = n0*tmp[0];
-    tmp[i] = hi;
-
-    for (j=0; ; ) {
-        limbx = (mx * (llimb_t)p[0]) + tmp[0];
-        hi = (limb_t)(limbx >> LIMB_T_BITS);
-        for (i=1; i<n; i++) {
-            limbx = (mx * (llimb_t)p[i] + hi) + tmp[i];
-            tmp[i-1] = (limb_t)limbx;
-            hi = (limb_t)(limbx >> LIMB_T_BITS);
-        }
-        tmp[i-1] = tmp[i] + hi;
-
-        if (++j==n)
-            break;
-
-        for (mx=b[j], hi=0, i=0; i<n; i++) {
-            limbx = (mx * (llimb_t)a[i] + hi) + tmp[i];
-            tmp[i] = (limb_t)limbx;
-            hi = (limb_t)(limbx >> LIMB_T_BITS);
-        }
-        mx = n0*tmp[0];
-        tmp[i] = hi;
-    }
-
-    vec_copy(ret, tmp, sizeof(tmp)-sizeof(limb_t));
+    mpi_mul_mont_n(ret, a, b, p, n0, n);
 }
 
 void sqr_n_mul_mont_383(vec384 ret, const vec384 a, size_t count,
@@ -635,56 +561,23 @@ void sqr_n_mul_mont_383(vec384 ret, const vec384 a, size_t count,
     mul_mont_n(ret, ret, b, p, n0, NLIMBS(384));
 }
 
+/* bls-bench patch: Fp2 squaring  (a0 + a1·u)^2 = (a0^2 - a1^2) + 2·a0·a1·u,
+   using (a0 + a1)(a0 - a1) for the real part. Every MPI multiply operand is
+   kept reduced into [0, p) via add_mod_384 / sub_mod_384, so the peripheral
+   never sees the wrapped (a0 - a1) the original lazy form fed it. Output is
+   fully reduced — strictly tighter than the lazy variant, hence safe for the
+   Fp12 cyclotomic-squaring callers. */
 void sqr_mont_382x(vec384x ret, const vec384x a,
                           const vec384 p, limb_t n0)
 {
-    llimb_t limbx;
-    limb_t mask, carry, borrow;
-    size_t i;
-    vec384 t0, t1;
+    vec384 t0, t1, t2;
 
-    /* "add_mod_n(t0, a[0], a[1], p, NLIMBS(384));" */
-    for (carry=0, i=0; i<NLIMBS(384); i++) {
-        limbx = a[0][i] + (a[1][i] + (llimb_t)carry);
-        t0[i] = (limb_t)limbx;
-        carry = (limb_t)(limbx >> LIMB_T_BITS);
-    }
-
-    /* "sub_mod_n(t1, a[0], a[1], p, NLIMBS(384));" */
-    for (borrow=0, i=0; i<NLIMBS(384); i++) {
-        limbx = a[0][i] - (a[1][i] + (llimb_t)borrow);
-        t1[i] = (limb_t)limbx;
-        borrow = (limb_t)(limbx >> LIMB_T_BITS) & 1;
-    }
-    mask = 0 - borrow;
-    launder(mask);
-
-    /* "mul_mont_n(ret[1], a[0], a[1], p, n0, NLIMBS(384));" */
-    mul_mont_nonred_n(ret[1], a[0], a[1], p, n0, NLIMBS(384));
-
-    /* "add_mod_n(ret[1], ret[1], ret[1], p, NLIMBS(384));" */
-    for (carry=0, i=0; i<NLIMBS(384); i++) {
-        limb_t a_i = ret[1][i];
-        ret[1][i] = a_i<<1 | carry;
-        carry = a_i>>(LIMB_T_BITS-1);
-    }
-
-    /* "mul_mont_n(ret[0], t0, t1, p, n0, NLIMBS(384));" */
-    mul_mont_nonred_n(ret[0], t0, t1, p, n0, NLIMBS(384));
-
-    /* account for t1's sign... */
-    for (borrow=0, i=0; i<NLIMBS(384); i++) {
-        limbx = ret[0][i] - ((t0[i] & mask) + (llimb_t)borrow);
-        ret[0][i] = (limb_t)limbx;
-        borrow = (limb_t)(limbx >> LIMB_T_BITS) & 1;
-    }
-    mask = 0 - borrow;
-    launder(mask);
-    for (carry=0, i=0; i<NLIMBS(384); i++) {
-        limbx = ret[0][i] + ((p[i] & mask) + (llimb_t)carry);
-        ret[0][i] = (limb_t)limbx;
-        carry = (limb_t)(limbx >> LIMB_T_BITS);
-    }
+    /* a0 * a1 first — before any write to ret (ret may alias a). */
+    mpi_mul_mont_n(t2, a[0], a[1], p, n0, NLIMBS(384));   /* t2  = a0·a1·R^-1     */
+    add_mod_384(t0, a[0], a[1], p);                       /* t0  = (a0 + a1) mod p */
+    sub_mod_384(t1, a[0], a[1], p);                       /* t1  = (a0 - a1) mod p */
+    mpi_mul_mont_n(ret[0], t0, t1, p, n0, NLIMBS(384));   /* re  = (a0^2 - a1^2)·R^-1 */
+    add_mod_384(ret[1], t2, t2, p);                       /* im  = 2·a0·a1·R^-1 mod p */
 }
 
 #if defined(__GNUC__) || defined(__clang__)

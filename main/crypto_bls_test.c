@@ -1,7 +1,11 @@
+#if __has_include("sdkconfig.h")
+#include "sdkconfig.h"
+#endif
 #include "crypto_bls_test.h"
 #include "hex.h"
 #include <blst.h>
 #include <blst_aux.h>
+#include <blst_mpi.h>
 #include <stdio.h>
 #include <string.h>
 #include <esp_log.h>
@@ -505,16 +509,118 @@ static int test_bls_point_validation(void)
     return pass;
 }
 
+/* --------------------------------------------------------------------------
+ * MPI peripheral vs software Montgomery multiply — bit-exactness (C3 only)
+ * ------------------------------------------------------------------------ */
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+
+/* BLS12-381 base-field prime, little-endian 32-bit limbs, and
+ * -p^-1 mod 2^32 (bls-bench mpi.rs). */
+static const uint32_t BLS_P_LE[12] = {
+    0xFFFFAAAB, 0xB9FEFFFF, 0xB153FFFF, 0x1EABFFFE,
+    0xF6B0F624, 0x6730D2A0, 0xF38512BF, 0x64774B84,
+    0x434BACD7, 0x4B1BA7B6, 0x397FE69A, 0x1A0111EA,
+};
+#define BLS_P_N0 0xFFFCFFFDu
+
+/* 48 deterministic pseudorandom bytes, masked below p's top word. */
+static void det_operand(uint32_t out[12], uint32_t seed)
+{
+    unsigned char h[32], h2[32];
+    unsigned char buf[4] = {
+        (unsigned char)(seed >> 24), (unsigned char)(seed >> 16),
+        (unsigned char)(seed >> 8), (unsigned char)seed,
+    };
+    blst_sha256(h, buf, 4);
+    blst_sha256(h2, h, 32);
+    memcpy(out, h, 32);
+    memcpy((unsigned char *)out + 32, h2, 16);
+    out[11] &= 0x19FFFFFF; /* < p's top limb 0x1A0111EA => value < p */
+}
+
+static int test_mpi_bit_exact(void)
+{
+    if (!blst_mpi_enabled()) {
+        ESP_LOGW(TAG, "MPI disabled, skipping bit-exactness test");
+        return 1;
+    }
+
+    uint32_t a[12], b[12], hw[12], sw[12];
+    int pass = 1;
+
+    blst_hw_acquire();
+    for (int k = 0; k < 100 && pass; k++) {
+        det_operand(a, (uint32_t)(2 * k));
+        det_operand(b, (uint32_t)(2 * k + 1));
+        if (k == 1)
+            memcpy(b, a, sizeof(b)); /* squaring */
+        if (k == 2) {
+            memcpy(a, BLS_P_LE, sizeof(a)); /* operand at p-1 */
+            a[0] -= 1;
+        }
+        mpi_mul_mont_n(hw, a, b, BLS_P_LE, BLS_P_N0, 12);
+        blst_mpi_sw_mul_mont_384(sw, a, b, BLS_P_LE, BLS_P_N0);
+        if (memcmp(hw, sw, sizeof(hw)) != 0) {
+            ESP_LOGE(TAG, "MPI vs software mismatch at case %d", k);
+            pass = 0;
+        }
+        if (k % 25 == 24)
+            vTaskDelay(1);
+    }
+
+    /* Chained t = t*b: exercises the resident-X skip on the hardware side. */
+    uint32_t thw[12], tsw[12];
+    det_operand(thw, 999);
+    memcpy(tsw, thw, sizeof(tsw));
+    det_operand(b, 1000);
+    for (int k = 0; k < 50 && pass; k++) {
+        mpi_mul_mont_n(thw, thw, b, BLS_P_LE, BLS_P_N0, 12);
+        blst_mpi_sw_mul_mont_384(tsw, tsw, b, BLS_P_LE, BLS_P_N0);
+        if (memcmp(thw, tsw, sizeof(thw)) != 0) {
+            ESP_LOGE(TAG, "MPI vs software mismatch in t=t*b chain at %d", k);
+            pass = 0;
+        }
+    }
+
+    /* Cache invalidation across a release/acquire cycle (peripheral reset). */
+    blst_hw_release();
+    blst_hw_acquire();
+    det_operand(a, 2001);
+    det_operand(b, 2002);
+    mpi_mul_mont_n(hw, a, b, BLS_P_LE, BLS_P_N0, 12);
+    blst_mpi_sw_mul_mont_384(sw, a, b, BLS_P_LE, BLS_P_N0);
+    if (memcmp(hw, sw, sizeof(hw)) != 0) {
+        ESP_LOGE(TAG, "MPI vs software mismatch after release/acquire");
+        pass = 0;
+    }
+    blst_hw_release();
+
+    if (pass)
+        ESP_LOGI(TAG, "MPI vs software bit-exactness: OK");
+    return pass;
+}
+#endif /* CONFIG_IDF_TARGET_ESP32C3 */
+
 int crypto_bls_run_tests(void)
 {
     ESP_LOGI(TAG, "running BLS12-381 (keyset v3) test vectors");
 
     int pass = 1;
+    blst_hw_acquire();
     pass &= test_bls_round_trip();
+    blst_hw_release();
     vTaskDelay(1);
+    blst_hw_acquire();
     pass &= test_bls_batch();
+    blst_hw_release();
     vTaskDelay(1);
+    blst_hw_acquire();
     pass &= test_bls_point_validation();
+    blst_hw_release();
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+    vTaskDelay(1);
+    pass &= test_mpi_bit_exact();
+#endif
 
     if (pass)
         ESP_LOGI(TAG, "all BLS tests passed");
@@ -543,7 +649,7 @@ int crypto_bls_run_tests(void)
                  total / (iters));                                       \
     } while (0)
 
-void crypto_bls_run_benchmark(void)
+static void bench_rows(void)
 {
     unsigned char secret[32] = {0};
     blst_p1 Y;
@@ -629,4 +735,24 @@ void crypto_bls_run_benchmark(void)
     BENCH("batch_verify n=10", 1, {
         batch_pairing_verification(ks, cs, secrets, secret_lens, 10);
     });
+}
+
+void crypto_bls_run_benchmark(void)
+{
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+    /* Both columns from one binary: the portable path first, then the
+     * RSA/MPI-accelerated one. The whole accelerated pass runs inside one
+     * hold window so the operand caches work as in steady state; TLS
+     * (http_prewarm) simply waits — this is a diagnostic command. */
+    ESP_LOGI(TAG, "--- portable path ---");
+    blst_mpi_set_enabled(0);
+    bench_rows();
+    ESP_LOGI(TAG, "--- RSA/MPI-accelerated path ---");
+    blst_mpi_set_enabled(1);
+    blst_hw_acquire();
+    bench_rows();
+    blst_hw_release();
+#else
+    bench_rows();
+#endif
 }
