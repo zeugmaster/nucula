@@ -465,7 +465,8 @@ static int secp_verify_dleq_unblinded(void *ctx,
 const cashu_suite_t cashu_suite_secp256k1 = {
     .version_byte = 0x01,
     .name = "secp256k1",
-    .pubkey_len = 33,
+    .point_len = 33,
+    .mint_key_len = 33,
     .scalar_len = 32,
     .can_mint = 1,
     .has_dleq = 1,
@@ -473,6 +474,7 @@ const cashu_suite_t cashu_suite_secp256k1 = {
     .unblind = secp_unblind,
     .verify_dleq = secp_verify_dleq,
     .verify_dleq_unblinded = secp_verify_dleq_unblinded,
+    .verify_proofs = NULL, /* DLEQ needs mint cooperation: no intrinsic check */
     .derive_secret = cashu_derive_secret,
     .derive_r = cashu_derive_r,
 };

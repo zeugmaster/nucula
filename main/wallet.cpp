@@ -957,9 +957,10 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
         ESP_LOGE(TAG, "unblind: no crypto suite for keyset %s", keyset.id.c_str());
         return false;
     }
-    const size_t plen = suite->pubkey_len;
-    if (plen > CASHU_MAX_POINT_LEN) {
-        ESP_LOGE(TAG, "unblind: suite pubkey_len %d too large", (int)plen);
+    const size_t plen = suite->point_len;
+    const size_t klen = suite->mint_key_len;
+    if (plen > CASHU_MAX_POINT_LEN || klen > CASHU_MAX_MINTKEY_LEN) {
+        ESP_LOGE(TAG, "unblind: suite point/key length too large");
         return false;
     }
 
@@ -970,8 +971,8 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
         std::string K_hex;
         if (!keyset_key_hex_for_amount(keyset, amt, K_hex))
             return false;
-        unsigned char K_bytes[CASHU_MAX_POINT_LEN];
-        if (K_hex.size() != plen * 2 || !hex_to_bytes(K_hex.c_str(), K_bytes, plen)) {
+        unsigned char K_bytes[CASHU_MAX_MINTKEY_LEN];
+        if (K_hex.size() != klen * 2 || !hex_to_bytes(K_hex.c_str(), K_bytes, klen)) {
             ESP_LOGE(TAG, "invalid mint key hex");
             return false;
         }
@@ -1003,7 +1004,7 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
                     ESP_LOGE(TAG, "dleq: invalid B_ hex on sig[%d]", (int)i);
                     return false;
                 }
-                if (!suite->verify_dleq((void*)ctx_, K_bytes, plen, B__bytes, plen,
+                if (!suite->verify_dleq((void*)ctx_, K_bytes, klen, B__bytes, plen,
                                         C__bytes, plen, e_b, s_b)) {
                     ESP_LOGE(TAG, "dleq verification failed for sig[%d] amount=%d",
                              (int)i, sig.amount);
@@ -1024,7 +1025,7 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
         unsigned char C_ser[CASHU_MAX_POINT_LEN];
         size_t C_len = sizeof(C_ser);
         if (!suite->unblind((void*)ctx_, C__bytes, plen, r_bytes, 32,
-                            K_bytes, plen, C_ser, &C_len)) {
+                            K_bytes, klen, C_ser, &C_len)) {
             ESP_LOGE(TAG, "unblind failed");
             return false;
         }
@@ -1382,15 +1383,16 @@ bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
         }
         if (!suite->has_dleq)
             continue;  // scheme carries no DLEQ to verify
-        const size_t plen = suite->pubkey_len;
-        if (plen > CASHU_MAX_POINT_LEN)
+        const size_t plen = suite->point_len;
+        const size_t klen = suite->mint_key_len;
+        if (plen > CASHU_MAX_POINT_LEN || klen > CASHU_MAX_MINTKEY_LEN)
             return false;
 
         std::string A_hex;
         if (!keyset_key_hex_for_amount(*ks, (uint64_t)p.amount, A_hex))
             return false;
-        unsigned char A_bytes[CASHU_MAX_POINT_LEN];
-        if (A_hex.size() != plen * 2 || !hex_to_bytes(A_hex.c_str(), A_bytes, plen)) {
+        unsigned char A_bytes[CASHU_MAX_MINTKEY_LEN];
+        if (A_hex.size() != klen * 2 || !hex_to_bytes(A_hex.c_str(), A_bytes, klen)) {
             ESP_LOGE(TAG, "receive: invalid mint key hex on proof[%d]", (int)i);
             return false;
         }
@@ -1406,7 +1408,7 @@ bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
             ESP_LOGE(TAG, "receive: invalid dleq hex on proof[%d]", (int)i);
             return false;
         }
-        if (!suite->verify_dleq_unblinded((void*)ctx_, A_bytes, plen,
+        if (!suite->verify_dleq_unblinded((void*)ctx_, A_bytes, klen,
                                           C_bytes, plen,
                                           (const unsigned char*)p.secret.c_str(),
                                           p.secret.size(), e_b, s_b, r_b)) {
