@@ -86,6 +86,13 @@ bool deserialize(const char* json_str, T& out) {
 bool from_json_keyset_response(const cJSON* j, std::vector<Keyset>& out);
 bool from_json_keyset_info_response(const cJSON* j, std::vector<KeysetInfo>& out);
 
+// Parse the NUT-06 GET /v1/info response (subset: name + method matrices).
+bool from_json_mint_info(const cJSON* j, MintInfo& out);
+
+// Self-test of the quote/mint-info parse contract (legacy NUT-23 state,
+// PR#382 accounting responses, melt without fee_reserve).
+bool cashu_json_run_tests();
+
 // Blob serialization for NVS persistence
 std::string proofs_to_json(const std::vector<Proof>& proofs);
 bool proofs_from_json(const char* json_str, std::vector<Proof>& out);

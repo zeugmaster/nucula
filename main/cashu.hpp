@@ -92,13 +92,29 @@ struct SwapResponse {
     std::vector<BlindSignature> signatures;
 };
 
-// NUT-04: Mint quote (Bolt11/NUT-23)
+// NUT-04: Mint quote, method-generic (bolt11/NUT-23 and custom payment
+// methods, nuts PR#382). Parsed leniently: `state` is the legacy bolt11
+// field (deprecated in NUT-23, absent on custom-method mints); the
+// amount_paid/amount_issued accounting pair is the current source of truth.
 struct MintQuote {
     std::string quote;
-    std::string request;
-    int amount;
-    std::string state;
-    int64_t expiry;
+    std::string request;      // opaque payment target (bolt11, URL, account ref)
+    int amount = 0;
+    std::string unit;         // echoed by the mint; "" when absent
+    std::string method;       // from the response, else stamped wallet-side
+    std::string state;        // legacy UNPAID/PAID/ISSUED; "" when absent
+    int64_t expiry = 0;
+    std::optional<int> amount_paid;
+    std::optional<int> amount_issued;
+
+    // Claimable now: paid minus issued when the accounting pair is
+    // present, else `amount` iff the legacy state says PAID.
+    int mintable() const {
+        if (amount_paid && amount_issued)
+            return *amount_paid > *amount_issued ? *amount_paid - *amount_issued
+                                                 : 0;
+        return state == "PAID" ? amount : 0;
+    }
 };
 
 // NUT-04: Mint request/response
@@ -111,13 +127,18 @@ struct MintResponse {
     std::vector<BlindSignature> signatures;
 };
 
-// NUT-05: Melt quote (Bolt11)
+// NUT-05: Melt quote, method-generic. `state` (UNPAID/PENDING/PAID) is
+// still normative for melt; fee_reserve and the request echo are optional
+// (PR#382 custom methods may omit them).
 struct MeltQuote {
     std::string quote;
-    int amount;
-    int fee_reserve;
+    int amount = 0;
+    int fee_reserve = 0;
+    std::string unit;         // echoed by the mint; "" when absent
+    std::string method;       // from the response, else stamped wallet-side
     std::string state;
-    int64_t expiry;
+    int64_t expiry = 0;
+    std::optional<std::string> request;
     std::optional<std::string> payment_preimage;
     std::optional<std::vector<BlindSignature>> change;
 };
@@ -144,6 +165,23 @@ struct KeysetInfo {
     bool active;
     int input_fee_ppk;
     std::optional<int64_t> final_expiry;  // NUT-02 v2: unix epoch, part of id preimage
+};
+
+// NUT-06: one row of the nuts."4"/"5" method-unit matrix
+struct MintMethodSetting {
+    std::string method;
+    std::string unit;
+    std::optional<std::string> method_name;  // display name (nuts PR#374)
+    std::optional<int64_t> min_amount;       // bounds in the unit's minor units
+    std::optional<int64_t> max_amount;
+};
+
+// NUT-06 subset the wallet uses: display name plus the method-unit pairs
+// the mint will mint/melt. Cached in RAM only, never persisted.
+struct MintInfo {
+    std::string name;
+    std::vector<MintMethodSetting> mint_methods;  // nuts."4".methods
+    std::vector<MintMethodSetting> melt_methods;  // nuts."5".methods
 };
 
 // NUT-18: Transport method for payment requests
