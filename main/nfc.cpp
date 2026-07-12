@@ -419,8 +419,9 @@ bool nfc_request_start(int amount, const char *unit, const char *mint_url)
     s_stop_flag.store(false);
     s_token_received = false;
     // 24 KB provisional: tap-time verify_incoming_proofs runs BLS pairings
-    // here (blst keeps miller-loop/final-exp temporaries on the stack).
-    // Re-trim from measured high-water marks like 600eb63.
+    // here (blst keeps miller-loop/final-exp temporaries on the stack; the
+    // console task measured ~13.6 KB peak on the same paths). TODO(hw-verify):
+    // re-trim from this task's HWM after a real v3 NFC tap, like 600eb63.
     if (xTaskCreate(nfc_task, "nfc", 24576, p, 5, &s_task_handle) != pdPASS) {
         delete p;
         return false;
