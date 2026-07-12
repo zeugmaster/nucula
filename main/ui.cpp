@@ -212,7 +212,7 @@ void keypad_ui_task(void *arg)
                 nfc_amount = atoi(amount_buf);
                 if (nfc_amount <= 0) break;             // nothing entered yet
                 if (nfc_state() == NfcState::off) break; // NFC unavailable
-                if (!nfc_request_start(nfc_amount, nullptr)) break;
+                if (!nfc_request_start(nfc_amount, nullptr, nullptr)) break;
                 ui = UiState::NFC_ACTIVE;
                 last_nfc = NfcState::off;
                 char amt_str[16];

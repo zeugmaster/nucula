@@ -416,15 +416,22 @@ static void cmd_nfc(const char *arg)
     if (strncmp(arg, "request ", 8) == 0) {
         int amount = atoi(arg + 8);
         if (amount <= 0) {
-            nucula_console_write("usage: nfc request <amount>\r\n");
+            nucula_console_write("usage: nfc request <amount> [u=<unit>]\r\n");
             return;
         }
         if (nfc_state() == NfcState::off) {
             nucula_console_write("error: NFC not available\r\n");
             return;
         }
-        console_printf("requesting %d sat via NFC...\r\n", amount);
-        if (!nfc_request_start(amount, nullptr))
+        CmdOpts opts;
+        if (!parse_cmd_opts(strchr(arg + 8, ' '), opts))
+            return;
+        const std::string unit = opts.unit.empty()
+            ? cashu::Wallet::default_unit() : opts.unit;
+        char amt[48];
+        cashu::format_amount(amt, sizeof(amt), amount, unit.c_str());
+        console_printf("requesting %s via NFC...\r\n", amt);
+        if (!nfc_request_start(amount, unit.c_str(), nullptr))
             nucula_console_write("error: failed to start\r\n");
         return;
     }
@@ -434,7 +441,7 @@ static void cmd_nfc(const char *arg)
         display_refresh();
         return;
     }
-    nucula_console_write("usage: nfc [request <amount>|stop]\r\n");
+    nucula_console_write("usage: nfc [request <amount> [u=<unit>]|stop]\r\n");
 }
 
 // Caller must hold the wallet_store guard (all cmd_* callers do).
