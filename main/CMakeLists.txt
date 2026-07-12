@@ -8,3 +8,7 @@ idf_component_register(SRCS "nucula.cpp" "crypto.c" "crypto_bls.c" "crypto_test.
                                  esp_netif nvs_flash esp_http_client
                                  esp_driver_usb_serial_jtag vfs
                                  esp_driver_gpio driver)
+
+# Hot-path files get -O2 on top of the project-wide -Os.
+set_source_files_properties("crypto.c" "hex.c" "cashu_cbor.cpp"
+                            PROPERTIES COMPILE_OPTIONS "-O2")
