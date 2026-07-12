@@ -152,13 +152,20 @@ bool Wallet::erase_seed()
     nvs_handle_t handle;
     if (nvs_open(NVS_NS, NVS_READWRITE, &handle) != ESP_OK)
         return false;
-    nvs_erase_key(handle, "seed");
-    nvs_erase_key(handle, "mnemonic");
-    nvs_commit(handle);
+    esp_err_t e1 = nvs_erase_key(handle, "seed");
+    esp_err_t e2 = nvs_erase_key(handle, "mnemonic");
+    esp_err_t ec = nvs_commit(handle);
     nvs_close(handle);
     memset(s_seed, 0, 64);
     s_seed_loaded = false;
     /* P2PK key is independent of the seed and intentionally retained. */
+    bool ok = (e1 == ESP_OK || e1 == ESP_ERR_NVS_NOT_FOUND) &&
+              (e2 == ESP_OK || e2 == ESP_ERR_NVS_NOT_FOUND) &&
+              ec == ESP_OK;
+    if (!ok) {
+        ESP_LOGE(TAG, "seed erase incomplete — it may still be in flash");
+        return false;
+    }
     ESP_LOGI(TAG, "seed erased");
     return true;
 }
@@ -303,8 +310,13 @@ bool Wallet::erase_nvs()
         snprintf(key, sizeof(key), "k_%d_%d", nvs_slot_, i);
         nvs_erase_key(handle, key);
     }
-    nvs_commit(handle);
+    esp_err_t err = nvs_commit(handle);
     nvs_close(handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "erase slot %d: commit failed: %s",
+                 nvs_slot_, esp_err_to_name(err));
+        return false;
+    }
     ESP_LOGI(TAG, "erased NVS slot %d", nvs_slot_);
     return true;
 }
@@ -1667,8 +1679,14 @@ bool Wallet::stash_pending_token(const std::string& raw_token)
         nvs_close(h);
         return false;
     }
-    nvs_commit(h);
+    esp_err_t err = nvs_commit(h);
     nvs_close(h);
+    if (err != ESP_OK) {
+        // Without a durable stash the sender's token would be silently
+        // lost — report failure so the NFC exchange errors out.
+        ESP_LOGE(TAG, "pending: commit failed: %s", esp_err_to_name(err));
+        return false;
+    }
     ESP_LOGI(TAG, "pending: stashed token %d (slot %d)", (int)n - 1, nvs_slot_);
     return true;
 }
@@ -1763,18 +1781,30 @@ bool Wallet::drain_pending_tokens(int& accepted, int& failed)
     }
     char ck[16];
     pend_count_key(ck, sizeof(ck), nvs_slot_);
+    esp_err_t werr = ESP_OK;
     if (retained.empty()) {
-        nvs_erase_key(h, ck);
+        esp_err_t e = nvs_erase_key(h, ck);
+        if (e != ESP_OK && e != ESP_ERR_NVS_NOT_FOUND)
+            werr = e;
     } else {
         for (size_t i = 0; i < retained.size(); i++) {
             char ik[16];
             pend_item_key(ik, sizeof(ik), nvs_slot_, (int)i);
-            nvs_set_str(h, ik, retained[i].c_str());
+            esp_err_t e = nvs_set_str(h, ik, retained[i].c_str());
+            if (e != ESP_OK)
+                werr = e;
         }
-        nvs_set_u8(h, ck, (uint8_t)retained.size());
+        esp_err_t e = nvs_set_u8(h, ck, (uint8_t)retained.size());
+        if (e != ESP_OK)
+            werr = e;
     }
-    nvs_commit(h);
+    esp_err_t cerr = nvs_commit(h);
     nvs_close(h);
+    if (werr != ESP_OK || cerr != ESP_OK) {
+        ESP_LOGE(TAG, "pending: rewrite failed (%s/%s) — retained tokens may be lost",
+                 esp_err_to_name(werr), esp_err_to_name(cerr));
+        return false;
+    }
 
     ESP_LOGI(TAG, "pending: drain slot %d -> %d ok, %d retained, %d dropped",
              nvs_slot_, accepted, (int)retained.size(), failed);
