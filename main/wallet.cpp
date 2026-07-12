@@ -1050,6 +1050,80 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
 }
 
 // -------------------------------------------------------------------------
+// NUT-06: mint info (RAM cache, never persisted)
+// -------------------------------------------------------------------------
+
+bool Wallet::load_mint_info()
+{
+    std::string url = mint_url_ + "/v1/info";
+    http_response_t resp = {};
+    esp_err_t err = http_get(url.c_str(), &resp);
+    if (err != ESP_OK || !resp.body) {
+        ESP_LOGW(TAG, "mint info GET failed: %s", esp_err_to_name(err));
+        http_response_free(&resp);
+        return false;
+    }
+    if (resp.status != 200) {
+        ESP_LOGW(TAG, "mint info: mint returned %d", resp.status);
+        http_response_free(&resp);
+        return false;
+    }
+
+    // Big mints ship 10-20 KB of info; parse and free the transient body +
+    // tree immediately, keeping only the small extracted subset.
+    cJSON* j = cJSON_ParseWithLength(resp.body, resp.body_len);
+    http_response_free(&resp);
+    if (!j) {
+        ESP_LOGW(TAG, "mint info: parse failed");
+        return false;
+    }
+    MintInfo info;
+    bool ok = from_json_mint_info(j, info);
+    cJSON_Delete(j);
+    if (!ok)
+        return false;
+
+    info_ = std::move(info);
+    ESP_LOGI(TAG, "[%d] mint info: %s (%d mint, %d melt method-unit pairs)",
+             nvs_slot_, info_->name.c_str(),
+             (int)info_->mint_methods.size(), (int)info_->melt_methods.size());
+    return true;
+}
+
+const MintInfo* Wallet::mint_info() const
+{
+    return info_ ? &*info_ : nullptr;
+}
+
+bool Wallet::method_supported(bool melt, const std::string& method,
+                              const std::string& unit, int amount) const
+{
+    if (!info_)
+        return true;   // no info loaded: let the mint decide
+    const auto& rows = melt ? info_->melt_methods : info_->mint_methods;
+    for (const auto& r : rows) {
+        if (r.method != method || r.unit != unit)
+            continue;
+        if (amount >= 0 && r.min_amount && amount < *r.min_amount) {
+            ESP_LOGW(TAG, "%s %s/%s: amount %d below mint minimum %lld",
+                     melt ? "melt" : "mint", method.c_str(), unit.c_str(),
+                     amount, (long long)*r.min_amount);
+            return false;
+        }
+        if (amount >= 0 && r.max_amount && amount > *r.max_amount) {
+            ESP_LOGW(TAG, "%s %s/%s: amount %d above mint maximum %lld",
+                     melt ? "melt" : "mint", method.c_str(), unit.c_str(),
+                     amount, (long long)*r.max_amount);
+            return false;
+        }
+        return true;
+    }
+    ESP_LOGW(TAG, "mint does not advertise %s %s/%s",
+             melt ? "melt" : "mint", method.c_str(), unit.c_str());
+    return false;
+}
+
+// -------------------------------------------------------------------------
 // Mint error decoding
 // -------------------------------------------------------------------------
 
@@ -1490,6 +1564,16 @@ bool Wallet::request_mint_quote(int amount, const std::string& unit,
         return false;
     }
 
+    // Lazy NUT-06 fetch off the sat/bolt11 hot path only — the common case
+    // never pays an extra round-trip, and absent info never blocks.
+    if ((method != "bolt11" || unit != "sat") && !info_)
+        load_mint_info();
+    if (!method_supported(false, method, unit, amount)) {
+        ESP_LOGE(TAG, "mint quote: %s/%s rejected by mint info",
+                 method.c_str(), unit.c_str());
+        return false;
+    }
+
     cJSON* body = cJSON_CreateObject();
     cJSON_AddNumberToObject(body, "amount", amount);
     cJSON_AddStringToObject(body, "unit", unit.c_str());
@@ -1654,6 +1738,17 @@ bool Wallet::request_melt_quote(const std::string& request, const std::string& u
     if (!unit_token_valid(unit.c_str()) || !unit_token_valid(method.c_str())) {
         ESP_LOGE(TAG, "melt quote: invalid unit '%s' or method '%s'",
                  unit.c_str(), method.c_str());
+        return false;
+    }
+
+    // Lazy NUT-06 fetch off the sat/bolt11 hot path only. The bolt11 amount
+    // lives in the invoice, so bounds are checked only when the caller
+    // passed an explicit amount.
+    if ((method != "bolt11" || unit != "sat") && !info_)
+        load_mint_info();
+    if (!method_supported(true, method, unit, amount ? *amount : -1)) {
+        ESP_LOGE(TAG, "melt quote: %s/%s rejected by mint info",
+                 method.c_str(), unit.c_str());
         return false;
     }
 

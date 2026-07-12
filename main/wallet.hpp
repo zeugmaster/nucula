@@ -15,6 +15,19 @@ public:
     bool load_from_nvs();
     bool save_mint_url();
     bool erase_nvs();
+
+    // NUT-06: GET /v1/info, parsed down to name + the nuts."4"/"5"
+    // method-unit matrices. RAM cache for the wallet's lifetime, never
+    // persisted. mint_info() is nullptr until a load succeeds.
+    bool load_mint_info();
+    const MintInfo* mint_info() const;
+
+    // Lenient pre-quote check: false only when info IS loaded and the
+    // (method, unit) row is absent or `amount` violates its min/max —
+    // otherwise true (the mint stays the authority, answering
+    // 11006/11013). amount < 0 means unknown, skipping the bounds.
+    bool method_supported(bool melt, const std::string& method,
+                          const std::string& unit, int amount) const;
     const Keyset* active_keyset(const std::string& unit = "sat") const;
     // Like active_keyset() but only returns a keyset whose version may mint new
     // outputs (a v1/deprecated keyset is spendable as input but not mintable).
@@ -138,6 +151,7 @@ private:
     std::string mint_url_;
     std::vector<Keyset> keysets_;
     std::vector<Proof> proofs_;
+    std::optional<MintInfo> info_;   // NUT-06 cache, RAM only
     secp256k1_context* ctx_;
     int nvs_slot_;
 

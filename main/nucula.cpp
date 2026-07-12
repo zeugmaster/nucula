@@ -34,6 +34,9 @@
 // Console commands
 // -------------------------------------------------------------------------
 
+// Defined below; used by cmd_mint's info subcommand too.
+static cashu::Wallet *resolve_wallet(const char *idx_str);
+
 static void cmd_status(const char *arg)
 {
     wallet_store_guard guard;
@@ -187,6 +190,51 @@ static void cmd_mint(const char *arg)
         return;
     }
 
+    if (strncmp(arg, "info", 4) == 0 && (arg[4] == '\0' || arg[4] == ' ')) {
+        const char *idx = arg + 4;
+        while (*idx == ' ') idx++;
+        cashu::Wallet *w = resolve_wallet(*idx ? idx : nullptr);
+        if (!w) return;
+        if (!w->mint_info()) {
+            if (!wifi_is_connected()) {
+                nucula_console_write("error: not connected to wifi\r\n");
+                return;
+            }
+            nucula_console_write("loading mint info...\r\n");
+            if (!w->load_mint_info()) {
+                nucula_console_write("error: failed to load mint info\r\n");
+                return;
+            }
+        }
+        const cashu::MintInfo *info = w->mint_info();
+        console_printf("%s\r\n", info->name.empty() ? w->mint_url().c_str()
+                                                    : info->name.c_str());
+        auto print_rows = [](const char *label,
+                             const std::vector<cashu::MintMethodSetting> &rows) {
+            console_printf("%s\r\n", label);
+            if (rows.empty()) {
+                nucula_console_write("  (none advertised)\r\n");
+                return;
+            }
+            for (const auto &r : rows) {
+                char line[96];
+                int n = snprintf(line, sizeof(line), "  %s %s",
+                                 r.method.c_str(), r.unit.c_str());
+                if (r.method_name && n > 0 && n < (int)sizeof(line))
+                    n += snprintf(line + n, sizeof(line) - n, " \"%s\"",
+                                  r.method_name->c_str());
+                if ((r.min_amount || r.max_amount) && n > 0 && n < (int)sizeof(line))
+                    snprintf(line + n, sizeof(line) - n, " (%lld..%lld)",
+                             r.min_amount ? (long long)*r.min_amount : 0LL,
+                             r.max_amount ? (long long)*r.max_amount : 0LL);
+                console_printf("%s\r\n", line);
+            }
+        };
+        print_rows("mint:", info->mint_methods);
+        print_rows("melt:", info->melt_methods);
+        return;
+    }
+
     if (strncmp(arg, "remove ", 7) == 0) {
         const char *id = arg + 7;
         while (*id == ' ') id++;
@@ -215,7 +263,7 @@ static void cmd_mint(const char *arg)
         return;
     }
 
-    nucula_console_write("usage: mint [list|add <url>|remove <index|url>]\r\n");
+    nucula_console_write("usage: mint [list|add <url>|remove <index|url>|info [idx]]\r\n");
 }
 
 static void cmd_nfc(const char *arg)
@@ -760,7 +808,7 @@ extern "C" void app_main(void)
     console_register_cmd("status",  cmd_status,  "show system and wallet status");
     console_register_cmd("balance", cmd_balance,  "show wallet balance");
     console_register_cmd("receive", cmd_receive,  "receive a cashuA token");
-    console_register_cmd("mint",    cmd_mint,     "mint [list|add <url>|remove <idx>]");
+    console_register_cmd("mint",    cmd_mint,     "mint [list|add <url>|remove <idx>|info]");
     console_register_cmd("nfc",     cmd_nfc,      "nfc [request <amount>|stop]");
     console_register_cmd("invoice", cmd_invoice,  "invoice <amount> [mint_idx]");
     console_register_cmd("claim",   cmd_claim,    "claim <quote_id> [mint_idx]");
