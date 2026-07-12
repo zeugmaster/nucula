@@ -151,15 +151,22 @@ static void on_ndef_written(const uint8_t *data, size_t len)
 static void restart_discovery()
 {
     const uint8_t stop[] = {0x21, 0x06, 0x01, 0x00};
-    nci_write(&s_nci, stop, sizeof(stop));
+    if (nci_write(&s_nci, stop, sizeof(stop)) != ESP_OK) {
+        ESP_LOGW(TAG, "restart discovery: deactivate write failed");
+        return;
+    }
     // Drain responses
     for (int i = 0; i < 10; i++) {
         if (nci_wait_for_irq(200)) {
-            nci_read(&s_nci, s_nci.rx_buf, &s_nci.rx_len);
+            if (nci_read(&s_nci, s_nci.rx_buf, &s_nci.rx_len) != ESP_OK)
+                break;
             if (s_nci.rx_buf[0] == 0x41 && s_nci.rx_buf[1] == 0x06) break;
         } else break;
     }
-    nci_write(&s_nci, s_nci.discovery_cmd, s_nci.discovery_cmd_len);
+    if (nci_write(&s_nci, s_nci.discovery_cmd, s_nci.discovery_cmd_len) != ESP_OK) {
+        ESP_LOGW(TAG, "restart discovery: discover write failed");
+        return;
+    }
     if (nci_wait_for_irq(200))
         nci_read(&s_nci, s_nci.rx_buf, &s_nci.rx_len);
 }
@@ -168,12 +175,17 @@ static void restart_discovery()
 static void send_nci_response(const uint8_t *apdu, size_t apdu_len)
 {
     static uint8_t frame[NCI_MAX_FRAME_SIZE];
+    if (apdu_len > sizeof(frame) - 3) {
+        ESP_LOGE(TAG, "APDU response too large (%d)", (int)apdu_len);
+        return;
+    }
     frame[0] = 0x00;
     frame[1] = (apdu_len >> 8) & 0xFF;
     frame[2] = apdu_len & 0xFF;
     if (apdu_len > 0)
         memcpy(&frame[3], apdu, apdu_len);
-    nci_write(&s_nci, frame, 3 + apdu_len);
+    if (nci_write(&s_nci, frame, 3 + apdu_len) != ESP_OK)
+        ESP_LOGW(TAG, "APDU response write failed");
 }
 
 // -------------------------------------------------------------------------
@@ -329,6 +341,7 @@ static void nfc_task(void *arg)
 
 bool nfc_init(i2c_master_bus_handle_t bus)
 {
+    ndef_init();
     memset(&s_nci, 0, sizeof(s_nci));
 
     int retries = 3;
