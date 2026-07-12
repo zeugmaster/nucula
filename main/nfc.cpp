@@ -210,6 +210,10 @@ static void nfc_task(void *arg)
 
     ndef_set_receive_callback(on_ndef_written);
 
+    // Full radio responsiveness while a payment is in flight; restored on
+    // every exit path below.
+    wifi_set_low_latency(true);
+
     int64_t start = esp_timer_get_time();
     char amt_str[16];
     snprintf(amt_str, sizeof(amt_str), "%d sat", params->amount);
@@ -268,7 +272,6 @@ static void nfc_task(void *arg)
 
             ndef_handle_apdu(&s_nci.rx_buf[3], apdu_len, rsp_buf, &rsp_len);
             send_nci_response(rsp_buf, rsp_len);
-            vTaskDelay(pdMS_TO_TICKS(1)); // brief yield after write
 
             // Check if a token arrived via the callback
             if (s_token_received) {
@@ -302,6 +305,7 @@ static void nfc_task(void *arg)
         ESP_LOGD(TAG, "unhandled NCI: %02X %02X", mt, oid);
     }
 
+    wifi_set_low_latency(false);
     ndef_set_receive_callback(nullptr);
     ndef_clear_message();
     delete params;

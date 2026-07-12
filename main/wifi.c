@@ -140,7 +140,10 @@ esp_err_t wifi_init(void)
                                            pdMS_TO_TICKS(15000));
 
     if (bits & WIFI_CONNECTED_BIT) {
-        esp_wifi_set_ps(WIFI_PS_NONE);
+        /* Battery device: let the radio doze between DTIM beacons. Costs
+         * ~100-300 ms first-packet latency; wifi_set_low_latency(true)
+         * lifts it for the NFC payment window. */
+        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
         return ESP_OK;
     }
 
@@ -151,6 +154,11 @@ esp_err_t wifi_init(void)
 bool wifi_is_connected(void)
 {
     return s_connected;
+}
+
+void wifi_set_low_latency(bool on)
+{
+    esp_wifi_set_ps(on ? WIFI_PS_NONE : WIFI_PS_MIN_MODEM);
 }
 
 EventGroupHandle_t wifi_get_event_group(void)
