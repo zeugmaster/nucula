@@ -21,6 +21,15 @@
 #define CASHU_REQUIRE_VALID_KEYSET_ID 1
 #endif
 
+// When set (default), a suite with intrinsic verification (verify_proofs —
+// the v3 pairing check) must pass it on every unblind/receive; 0 downgrades
+// a verification failure to a warning for first bring-up against an
+// experimental v3 mint. Unlike DLEQ there is nothing the mint can omit —
+// verification needs only the published keys — so this should stay 1.
+#ifndef CASHU_REQUIRE_PROOF_VERIFY
+#define CASHU_REQUIRE_PROOF_VERIFY 1
+#endif
+
 namespace cashu {
 
 // NUT-12: Discrete Log Equality proof

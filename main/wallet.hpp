@@ -78,6 +78,13 @@ public:
 
     bool receive(const Token& token, std::vector<Proof>& proofs_out);
 
+    // Verify whatever is verifiable offline on transferred proofs (ids must
+    // already be normalized to stored full ids): the forwarded NUT-12 DLEQ
+    // for secp proofs, the intrinsic pairing check (one batch per call) for
+    // v3. Rejects v3 proofs carrying a dleq (malformed per spec). Called by
+    // receive() and by the NFC tap path before stashing offline tokens.
+    bool verify_incoming_proofs(const std::vector<Proof>& inputs);
+
     // Offline-receive queue: tokens stashed when WiFi is down and drained on
     // reconnect. Each entry is a complete cashuA/cashuB token string from one
     // NFC tap (which itself bundles N proofs). Cap is per-wallet, see
