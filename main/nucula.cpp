@@ -34,6 +34,7 @@
 
 static void cmd_status(const char *arg)
 {
+    wallet_store_guard guard;
     (void)arg;
     console_printf("wifi:    %s\r\n", wifi_is_connected() ? "connected" : "disconnected");
     console_printf("nfc:     %s\r\n", nfc_status_str());
@@ -64,6 +65,7 @@ static void cmd_status(const char *arg)
 
 static void cmd_balance(const char *arg)
 {
+    wallet_store_guard guard;
     (void)arg;
     long long total = 0;
     bool any = false;
@@ -86,6 +88,7 @@ static void cmd_balance(const char *arg)
 
 static void cmd_receive(const char *arg)
 {
+    wallet_store_guard guard;
     if (!arg || strlen(arg) == 0) {
         nucula_console_write("usage: receive <cashu token>\r\n");
         return;
@@ -135,6 +138,7 @@ static void cmd_receive(const char *arg)
 
 static void cmd_mint(const char *arg)
 {
+    wallet_store_guard guard;
     if (!arg || strlen(arg) == 0 || strcmp(arg, "list") == 0) {
         int count = wallet_store_count();
         if (count == 0) {
@@ -242,6 +246,7 @@ static void cmd_nfc(const char *arg)
     nucula_console_write("usage: nfc [request <amount>|stop]\r\n");
 }
 
+// Caller must hold the wallet_store guard (all cmd_* callers do).
 static cashu::Wallet *resolve_wallet(const char *idx_str)
 {
     int count = wallet_store_count();
@@ -270,6 +275,7 @@ static cashu::Wallet *resolve_wallet(const char *idx_str)
 
 static void cmd_invoice(const char *arg)
 {
+    wallet_store_guard guard;
     if (!arg || strlen(arg) == 0) {
         nucula_console_write("usage: invoice <amount> [mint_index]\r\n");
         return;
@@ -321,6 +327,7 @@ static void cmd_invoice(const char *arg)
 
 static void cmd_claim(const char *arg)
 {
+    wallet_store_guard guard;
     if (!arg || strlen(arg) == 0) {
         nucula_console_write("usage: claim <quote_id> [mint_index]\r\n");
         return;
@@ -401,6 +408,7 @@ static void cmd_claim(const char *arg)
 
 static void cmd_melt(const char *arg)
 {
+    wallet_store_guard guard;
     if (!arg || strlen(arg) == 0) {
         nucula_console_write("usage: melt <bolt11_invoice> [mint_index]\r\n");
         return;
@@ -468,6 +476,7 @@ static void cmd_melt(const char *arg)
 
 static void cmd_stickup(const char *arg)
 {
+    wallet_store_guard guard;
     (void)arg;
 
     bool any = false;
@@ -512,11 +521,13 @@ static void cmd_stickup(const char *arg)
 
 static void erase_all_wallets()
 {
+    wallet_store_guard guard;
     wallet_store_remove_all();
 }
 
 static void cmd_seed(const char *arg)
 {
+    wallet_store_guard guard;
     if (!arg || strlen(arg) == 0 || strcmp(arg, "show") == 0) {
         std::string mnemonic;
         if (cashu::Wallet::load_mnemonic(mnemonic)) {
@@ -810,6 +821,9 @@ extern "C" void app_main(void)
 
                 int total_ok = 0, total_fail = 0;
                 for (int i = 0; i < MAX_MINTS; i++) {
+                    // Per-slot guard: released between slots so console
+                    // commands can interleave with a long drain pass.
+                    wallet_store_guard guard;
                     auto *w = wallet_store_get(i);
                     if (!w || w->pending_count() == 0) continue;
                     int ok = 0, fail = 0;

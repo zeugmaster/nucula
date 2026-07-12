@@ -60,6 +60,13 @@ void display_refresh()
     //   y=46..53  mint line 1 (scale 1)
     //   y=56..63  status: proof count + heap (scale 1)
 
+    // Never hard-block the UI on a long wallet operation (a melt can hold
+    // the store for up to two minutes): skip this frame instead — every
+    // wallet op ends with a display_refresh, so a skipped frame self-heals.
+    // Recursive mutex: callers already holding the guard pass immediately.
+    if (!wallet_store_try_lock(100))
+        return;
+
     display_clear();
 
     // ---- Title bar ----
@@ -127,6 +134,7 @@ void display_refresh()
              total_proofs, (unsigned long)(esp_get_free_heap_size() / 1024));
     display_text(1, 56, buf, 1);
 
+    wallet_store_unlock();
     display_update();
 }
 

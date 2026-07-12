@@ -111,8 +111,12 @@ void wallet_store_remove_all()
         wallet_store_remove(i);
 }
 
+// The aggregate getters lock internally (recursive mutex, so callers that
+// already hold the guard are fine) — they return values, not pointers.
+
 int wallet_store_count()
 {
+    wallet_store_guard guard;
     int n = 0;
     for (int i = 0; i < MAX_MINTS; i++)
         if (s_wallets[i]) n++;
@@ -121,6 +125,7 @@ int wallet_store_count()
 
 long long wallet_store_total_balance()
 {
+    wallet_store_guard guard;
     long long total = 0;
     for (int i = 0; i < MAX_MINTS; i++)
         if (s_wallets[i]) total += s_wallets[i]->balance();
@@ -129,6 +134,7 @@ long long wallet_store_total_balance()
 
 int wallet_store_total_pending()
 {
+    wallet_store_guard guard;
     int total = 0;
     for (int i = 0; i < MAX_MINTS; i++)
         if (s_wallets[i]) total += s_wallets[i]->pending_count();

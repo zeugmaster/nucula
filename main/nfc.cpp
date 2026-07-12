@@ -38,6 +38,11 @@ static TaskHandle_t s_task_handle = nullptr;
 //  -1  on failure
 static int redeem_or_stash_token(const std::string &token_str)
 {
+    // Hold the store for the whole redeem/stash: the wallet pointer must
+    // stay valid across the swap, and stickup/mint-remove must not
+    // interleave with an in-flight redemption.
+    wallet_store_guard guard;
+
     cashu::Token token;
     if (!cashu::deserialize_token(token_str.c_str(), token)) {
         ESP_LOGE(TAG, "token decode failed");
