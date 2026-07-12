@@ -225,16 +225,29 @@ bool deserialize_token_v4(const char *token_str, Token &out)
 // Token V4 Encode
 // -------------------------------------------------------------------------
 
-std::string serialize_token_v4(const Token &token)
+// Encode a hex string as a CBOR byte string. Hard-fails on odd length,
+// invalid characters, or more than max_bytes (<= 33) decoded bytes — a
+// malformed field must abort the whole token, not silently truncate it.
+static bool encode_hex_bytes(CborEncoder *enc, const std::string &hex,
+                             size_t max_bytes)
 {
-    // Group proofs by keyset ID
-    std::map<std::string, std::vector<const Proof *>> by_keyset;
-    for (const auto &p : token.proofs)
-        by_keyset[p.id].push_back(&p);
+    uint8_t bytes[33];
+    size_t len = hex.size() / 2;
+    if ((hex.size() % 2) != 0 || len > max_bytes || max_bytes > sizeof(bytes))
+        return false;
+    if (len > 0 && !hex_to_bytes(hex.c_str(), bytes, len))
+        return false;
+    cbor_encode_byte_string(enc, bytes, len);
+    return true;
+}
 
-    size_t buf_size = 512 + token.proofs.size() * 200;
-    uint8_t *buf = new uint8_t[buf_size];
-    CborEncoder enc;
+// One encoding pass. Returns false on malformed fields; buffer overflow is
+// not an error here — the caller checks cbor_encoder_get_extra_bytes_needed
+// and retries with a larger buffer.
+static bool encode_token_v4(const Token &token,
+        const std::map<std::string, std::vector<const Proof *>> &by_keyset,
+        uint8_t *buf, size_t buf_size, CborEncoder &enc)
+{
     cbor_encoder_init(&enc, buf, buf_size, 0);
 
     int map_items = 3 + (token.memo ? 1 : 0);
@@ -265,16 +278,10 @@ std::string serialize_token_v4(const Token &token)
 
         // "i": keyset ID as bytes. Encode the FULL id: v1 -> 8 bytes, v2 -> 33.
         // (NUT-00 also permits an 8-byte short form, but emitting the full id
-        //  keeps our tokens losslessly round-trippable and keyset-verifiable.
-        //  Truncating a 33-byte v2 id here previously made hex_to_bytes fail
-        //  the exact-length check and emit uninitialized bytes.)
+        //  keeps our tokens losslessly round-trippable and keyset-verifiable.)
         cbor_encode_text_stringz(&entry_map, "i");
-        size_t id_byte_len = keyset_id.size() / 2;
-        if (id_byte_len > 33) id_byte_len = 33;
-        uint8_t id_bytes[33];
-        if (!hex_to_bytes(keyset_id.c_str(), id_bytes, id_byte_len))
-            id_byte_len = 0;
-        cbor_encode_byte_string(&entry_map, id_bytes, id_byte_len);
+        if (!encode_hex_bytes(&entry_map, keyset_id, 33))
+            return false;
 
         // "p": proofs array
         cbor_encode_text_stringz(&entry_map, "p");
@@ -299,10 +306,8 @@ std::string serialize_token_v4(const Token &token)
 
             // "c": signature (byte string)
             cbor_encode_text_stringz(&p_map, "c");
-            size_t c_len = p->C.size() / 2;
-            uint8_t c_bytes[33];
-            hex_to_bytes(p->C.c_str(), c_bytes, c_len);
-            cbor_encode_byte_string(&p_map, c_bytes, c_len);
+            if (!encode_hex_bytes(&p_map, p->C, 33))
+                return false;
 
             if (p->dleq) {
                 cbor_encode_text_stringz(&p_map, "d");
@@ -311,23 +316,17 @@ std::string serialize_token_v4(const Token &token)
                 cbor_encoder_create_map(&p_map, &dleq_map, dleq_items);
 
                 cbor_encode_text_stringz(&dleq_map, "e");
-                size_t e_len = p->dleq->e.size() / 2;
-                uint8_t e_bytes[32];
-                hex_to_bytes(p->dleq->e.c_str(), e_bytes, e_len);
-                cbor_encode_byte_string(&dleq_map, e_bytes, e_len);
+                if (!encode_hex_bytes(&dleq_map, p->dleq->e, 32))
+                    return false;
 
                 cbor_encode_text_stringz(&dleq_map, "s");
-                size_t s_len = p->dleq->s.size() / 2;
-                uint8_t s_bytes[32];
-                hex_to_bytes(p->dleq->s.c_str(), s_bytes, s_len);
-                cbor_encode_byte_string(&dleq_map, s_bytes, s_len);
+                if (!encode_hex_bytes(&dleq_map, p->dleq->s, 32))
+                    return false;
 
                 if (p->dleq->r) {
                     cbor_encode_text_stringz(&dleq_map, "r");
-                    size_t r_len = p->dleq->r->size() / 2;
-                    uint8_t r_bytes[32];
-                    hex_to_bytes(p->dleq->r->c_str(), r_bytes, r_len);
-                    cbor_encode_byte_string(&dleq_map, r_bytes, r_len);
+                    if (!encode_hex_bytes(&dleq_map, *p->dleq->r, 32))
+                        return false;
                 }
                 cbor_encoder_close_container(&p_map, &dleq_map);
             }
@@ -344,10 +343,39 @@ std::string serialize_token_v4(const Token &token)
     }
     cbor_encoder_close_container(&map_enc, &t_arr);
     cbor_encoder_close_container(&enc, &map_enc);
+    return true;
+}
 
-    size_t cbor_len = cbor_encoder_get_buffer_size(&enc, buf);
-    std::string encoded = base64url_encode(buf, cbor_len);
-    delete[] buf;
+std::string serialize_token_v4(const Token &token)
+{
+    // Group proofs by keyset ID
+    std::map<std::string, std::vector<const Proof *>> by_keyset;
+    for (const auto &p : token.proofs)
+        by_keyset[p.id].push_back(&p);
+
+    // Capacity estimate only — if it's short, TinyCBOR reports how many
+    // bytes were missing and we re-encode once into an exact-sized buffer.
+    // The previous code skipped that check and could emit a silently
+    // truncated token (callers like stickup destroy the proofs after).
+    std::vector<uint8_t> buf(512 + token.proofs.size() * 200);
+    CborEncoder enc;
+    if (!encode_token_v4(token, by_keyset, buf.data(), buf.size(), enc)) {
+        ESP_LOGE(TAG, "token encode: malformed field");
+        return "";
+    }
+
+    size_t extra = cbor_encoder_get_extra_bytes_needed(&enc);
+    if (extra > 0) {
+        buf.resize(buf.size() + extra);
+        if (!encode_token_v4(token, by_keyset, buf.data(), buf.size(), enc) ||
+            cbor_encoder_get_extra_bytes_needed(&enc) > 0) {
+            ESP_LOGE(TAG, "token encode: buffer sizing failed");
+            return "";
+        }
+    }
+
+    size_t cbor_len = cbor_encoder_get_buffer_size(&enc, buf.data());
+    std::string encoded = base64url_encode(buf.data(), cbor_len);
     return std::string("cashuB") + encoded;
 }
 
@@ -627,6 +655,11 @@ std::string serialize_payment_request(const PaymentRequest &req)
     }
 
     cbor_encoder_close_container(&enc, &map_enc);
+
+    if (cbor_encoder_get_extra_bytes_needed(&enc) > 0) {
+        ESP_LOGE(TAG, "payment request encode: buffer too small");
+        return "";
+    }
 
     size_t cbor_len = cbor_encoder_get_buffer_size(&enc, buf);
     std::string encoded = base64url_encode(buf, cbor_len);

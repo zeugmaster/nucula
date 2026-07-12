@@ -220,10 +220,10 @@ static void nfc_task(void *arg)
     std::string creq = cashu::serialize_payment_request(req);
     ESP_LOGI(TAG, "creq: %s", creq.c_str());
 
-    if (!ndef_set_message(creq.c_str())) {
-        ESP_LOGE(TAG, "NDEF message too large");
+    if (creq.empty() || !ndef_set_message(creq.c_str())) {
+        ESP_LOGE(TAG, "payment request encode/NDEF failed");
         s_state.store(NfcState::error);
-        display_nfc_status("nfc error", "ndef too large");
+        display_nfc_status("nfc error", "request too large");
         delete params;
         s_task_handle = nullptr;
         vTaskDelete(nullptr);

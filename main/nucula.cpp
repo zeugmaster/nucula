@@ -809,6 +809,12 @@ static void cmd_stickup(const char *arg)
         token.proofs = w->proofs();
 
         std::string serialized = cashu::serialize_token_v4(token);
+        if (serialized.empty()) {
+            // Without this token string the proofs have no other exit —
+            // clearing them here would destroy the funds.
+            console_printf("[%d] error: token serialization failed, not draining\r\n", i);
+            continue;
+        }
 
         nucula_console_write(serialized.c_str());
         nucula_console_write("\r\n");
