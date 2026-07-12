@@ -105,7 +105,9 @@ private:
     bool load_proofs();
     bool save_keysets();
     bool load_keysets_nvs();
-    void merge_keysets(const std::vector<Keyset>& fresh);
+    // Returns true when the merge changed anything (new keyset, changed
+    // metadata, or newly filled keys) — i.e. when a save is warranted.
+    bool merge_keysets(const std::vector<Keyset>& fresh);
 
     // Mint public key (compressed hex) for a given amount in a keyset. Returned
     // as hex so callers can hand it to the byte-oriented crypto suite, keeping

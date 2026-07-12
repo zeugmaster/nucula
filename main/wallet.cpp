@@ -514,24 +514,35 @@ bool Wallet::load_keysets_nvs()
     return true;
 }
 
-void Wallet::merge_keysets(const std::vector<Keyset>& fresh)
+bool Wallet::merge_keysets(const std::vector<Keyset>& fresh)
 {
+    bool changed = false;
     for (const auto& fk : fresh) {
         bool found = false;
         for (auto& existing : keysets_) {
             if (existing.id == fk.id) {
-                existing.active = fk.active;
-                existing.input_fee_ppk = fk.input_fee_ppk;
-                existing.final_expiry = fk.final_expiry;
-                if (existing.keys.empty())
+                if (existing.active != fk.active ||
+                    existing.input_fee_ppk != fk.input_fee_ppk ||
+                    existing.final_expiry != fk.final_expiry) {
+                    existing.active = fk.active;
+                    existing.input_fee_ppk = fk.input_fee_ppk;
+                    existing.final_expiry = fk.final_expiry;
+                    changed = true;
+                }
+                if (existing.keys.empty() && !fk.keys.empty()) {
                     existing.keys = fk.keys;
+                    changed = true;
+                }
                 found = true;
                 break;
             }
         }
-        if (!found)
+        if (!found) {
             keysets_.push_back(fk);
+            changed = true;
+        }
     }
+    return changed;
 }
 
 bool Wallet::load_from_nvs()
@@ -694,7 +705,7 @@ bool Wallet::load_keysets()
         }
     }
 
-    merge_keysets(result);
+    bool changed = merge_keysets(result);
     ESP_LOGI(TAG, "loaded %d keyset(s) from %s (total %d after merge)",
              (int)result.size(), mint_url_.c_str(), (int)keysets_.size());
 
@@ -704,7 +715,10 @@ bool Wallet::load_keysets()
                  (int)k.keys.size(), k.input_fee_ppk);
     }
 
-    save_keysets();
+    // Each refresh used to rewrite every keyset blob (~16 KB of flash
+    // writes) even when nothing changed — which is the common case.
+    if (changed)
+        save_keysets();
     return true;
 }
 
