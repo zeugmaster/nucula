@@ -116,6 +116,17 @@ extern const cashu_suite_t cashu_suite_bls;
  * Lives here so the keyset-id codec can hash without pulling in secp256k1.h. */
 int cashu_sha256(const unsigned char *data, size_t len, unsigned char out[32]);
 
+/* NUT-13 KDF: HMAC_SHA256(seed, "Cashu_KDF_HMAC_SHA256" || keyset_id_bytes ||
+ * counter_be64 || type_byte || suffix). suffix may be NULL/0 (v1/v2); the BLS
+ * v3 blinding factor passes u32_BE(attempt) for rejection sampling. Declared
+ * here (implemented in crypto.c over mbedtls) so crypto_bls.c shares the KDF
+ * without pulling in secp256k1 headers. Returns 1/0. */
+int cashu_nut13_hmac(const unsigned char *seed, size_t seed_len,
+                     const char *keyset_id, uint32_t counter,
+                     unsigned char type_byte,
+                     const unsigned char *suffix, size_t suffix_len,
+                     unsigned char digest[32]);
+
 #ifdef __cplusplus
 }
 #endif

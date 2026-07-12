@@ -260,11 +260,19 @@ static void sub256(const unsigned char a[32], const unsigned char b[32],
 /*
  * Build the NUT-13 HMAC-SHA256 KDF message and compute the digest.
  *
- * message = "Cashu_KDF_HMAC_SHA256" || keyset_id_bytes || counter_be64 || type_byte
+ * message = "Cashu_KDF_HMAC_SHA256" || keyset_id_bytes || counter_be64 ||
+ *           type_byte || suffix
+ *
+ * The suffix is empty for the secp v1/v2 derivations; the BLS v3 blinding
+ * factor appends u32_BE(attempt) for its rejection-sampling loop. Exported
+ * (declared in cashu_suite.h) so crypto_bls.c shares the KDF without
+ * pulling in secp256k1 headers.
  */
-static int nut13_hmac(const unsigned char *seed, size_t seed_len,
-                      const char *keyset_id, uint32_t counter,
-                      unsigned char type_byte, unsigned char digest[32])
+int cashu_nut13_hmac(const unsigned char *seed, size_t seed_len,
+                     const char *keyset_id, uint32_t counter,
+                     unsigned char type_byte,
+                     const unsigned char *suffix, size_t suffix_len,
+                     unsigned char digest[32])
 {
     /* Decode keyset_id from hex to bytes */
     size_t id_hex_len = strlen(keyset_id);
@@ -301,6 +309,13 @@ static int nut13_hmac(const unsigned char *seed, size_t seed_len,
     /* derivation type */
     msg[pos++] = type_byte;
 
+    if (suffix_len > 0) {
+        if (!suffix || pos + suffix_len > sizeof(msg))
+            return 0;
+        memcpy(msg + pos, suffix, suffix_len);
+        pos += suffix_len;
+    }
+
     /* HMAC-SHA256 */
     const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
     if (!md_info)
@@ -313,7 +328,8 @@ int cashu_derive_secret(const unsigned char *seed, size_t seed_len,
                         const char *keyset_id, uint32_t counter,
                         unsigned char secret_out[32])
 {
-    return nut13_hmac(seed, seed_len, keyset_id, counter, 0x00, secret_out);
+    return cashu_nut13_hmac(seed, seed_len, keyset_id, counter, 0x00,
+                            NULL, 0, secret_out);
 }
 
 int cashu_derive_r(const unsigned char *seed, size_t seed_len,
@@ -321,7 +337,8 @@ int cashu_derive_r(const unsigned char *seed, size_t seed_len,
                    unsigned char r_out[32])
 {
     unsigned char digest[32];
-    if (!nut13_hmac(seed, seed_len, keyset_id, counter, 0x01, digest))
+    if (!cashu_nut13_hmac(seed, seed_len, keyset_id, counter, 0x01,
+                          NULL, 0, digest))
         return 0;
 
     /* Reduce mod N */
