@@ -6,6 +6,7 @@
 #include "hex.h"
 #include "http.h"
 #include "nut10.hpp"
+#include "unit.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -809,6 +810,9 @@ const Keyset* Wallet::active_keyset_for_mint(const std::string& unit) const
 // Fee calculation (NUT-02)
 // -------------------------------------------------------------------------
 
+// NUT-02 input fees, summed per proof over each proof's keyset ppk.
+// Callers guarantee single-unit inputs (proofs_unit / select_proofs):
+// a ppk sum across different units would be meaningless.
 int Wallet::calculate_fee(const std::vector<Proof>& inputs) const
 {
     int sum_ppk = 0;
@@ -1058,9 +1062,18 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
         return false;
     }
 
-    const Keyset* ks = active_keyset_for_mint();
+    // NUT-03 transactions are single-unit (mint error 11009) and outputs
+    // must match the inputs' unit (11010) — derive it from the inputs'
+    // keysets rather than trusting any caller-supplied value.
+    std::string unit;
+    if (!proofs_unit(inputs, unit)) {
+        ESP_LOGE(TAG, "swap: mixed-unit or unknown-keyset inputs");
+        return false;
+    }
+
+    const Keyset* ks = active_keyset_for_mint(unit);
     if (!ks) {
-        ESP_LOGE(TAG, "swap: no mintable keyset");
+        ESP_LOGE(TAG, "swap: no mintable %s keyset", unit.c_str());
         return false;
     }
 
@@ -1225,6 +1238,22 @@ bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
         return false;
     }
 
+    // Unit checks: all proofs must share one unit (mint error 11009) and
+    // the token's declared unit must match the keyset-resolved one (11010).
+    // The swap below then picks the same-unit active keyset, so any unit
+    // the mint actively backs is accepted — not just the default.
+    std::string unit;
+    if (!proofs_unit(inputs, unit)) {
+        ESP_LOGE(TAG, "receive: mixed-unit proofs in token");
+        return false;
+    }
+    const std::string declared = normalize_unit(token.unit);
+    if (!declared.empty() && declared != unit) {
+        ESP_LOGE(TAG, "receive: token says '%s' but proofs are '%s'",
+                 declared.c_str(), unit.c_str());
+        return false;
+    }
+
     // NUT-12 (Carol-side): if a transferred proof carries a DLEQ with the
     // sender's blinding factor `r`, verify it against the keyset's pubkey for
     // that amount before swapping. A missing DLEQ is allowed (warn only) since
@@ -1295,8 +1324,9 @@ bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
     for (const auto& p : proofs_out)
         proofs_.push_back(p);
 
-    ESP_LOGI(TAG, "received %lld sat (%d proofs)",
-             (long long)proofs_sum(proofs_out), (int)proofs_out.size());
+    char amt[48];
+    format_amount(amt, sizeof(amt), proofs_sum(proofs_out), unit.c_str());
+    ESP_LOGI(TAG, "received %s (%d proofs)", amt, (int)proofs_out.size());
     save_proofs();
     return true;
 }
