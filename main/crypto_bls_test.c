@@ -2,6 +2,7 @@
 #include "sdkconfig.h"
 #endif
 #include "crypto_bls_test.h"
+#include "cashu_suite.h"
 #include "hex.h"
 #include <blst.h>
 #include <blst_aux.h>
@@ -510,6 +511,128 @@ static int test_bls_point_validation(void)
 }
 
 /* --------------------------------------------------------------------------
+ * Suite-level tests: drive cashu_suite_bls through the byte-oriented vtable
+ * exactly as the wallet does. The suite ops manage the MPI lock internally,
+ * so these must run OUTSIDE any blst_hw_acquire window (the lock is not
+ * recursive).
+ * ------------------------------------------------------------------------ */
+
+static int test_bls_suite(void)
+{
+    const cashu_suite_t *s = &cashu_suite_bls;
+    const unsigned char *secret = (const unsigned char *)"test_message";
+    int pass = 1;
+
+    unsigned char r_be[32] = {0};
+    r_be[31] = 3;
+
+    /* blind: B_ = r*Y against the NUT-00 vector */
+    unsigned char B[CASHU_MAX_POINT_LEN];
+    size_t B_len = sizeof(B);
+    if (!s->blind(NULL, secret, 12, r_be, 32, B, &B_len) || B_len != 48) {
+        ESP_LOGE(TAG, "suite blind: failed");
+        pass = 0;
+    } else {
+        pass &= check_hex(B, 48, V3_B_HEX, "suite blind");
+    }
+
+    /* unblind: C = r^-1*C_ against the vector (K is unused for BLS) */
+    unsigned char C_blind[48], K[96];
+    hex_to_bytes(V3_CBLIND_HEX, C_blind, 48);
+    hex_to_bytes(V3_K_HEX, K, 96);
+    unsigned char C[CASHU_MAX_POINT_LEN];
+    size_t C_len = sizeof(C);
+    if (!s->unblind(NULL, C_blind, 48, r_be, 32, K, 96, C, &C_len) || C_len != 48) {
+        ESP_LOGE(TAG, "suite unblind: failed");
+        pass = 0;
+    } else {
+        pass &= check_hex(C, 48, V3_C_HEX, "suite unblind");
+    }
+
+    /* verify_proofs n=1: the intrinsic pairing check */
+    const unsigned char *sec1[1] = { secret };
+    const size_t slen1[1] = { 12 };
+    if (s->verify_proofs(NULL, 1, K, C, sec1, slen1) != 1) {
+        ESP_LOGE(TAG, "suite verify_proofs n=1: rejected a valid proof");
+        pass = 0;
+    }
+    const unsigned char *bad1[1] = { (const unsigned char *)"test_messagf" };
+    if (s->verify_proofs(NULL, 1, K, C, bad1, slen1) != 0) {
+        ESP_LOGE(TAG, "suite verify_proofs n=1: accepted a tampered secret");
+        pass = 0;
+    }
+
+    /* verify_proofs n=2: the batch vector */
+    unsigned char ks2[2 * 96], cs2[2 * 48];
+    memcpy(ks2, K, 96);
+    memcpy(ks2 + 96, K, 96);
+    hex_to_bytes(BATCH_C1_HEX, cs2, 48);
+    hex_to_bytes(BATCH_C2_HEX, cs2 + 48, 48);
+    const unsigned char *sec2[2] = {
+        (const unsigned char *)"batch_proof_1",
+        (const unsigned char *)"batch_proof_2",
+    };
+    const size_t slen2[2] = { 13, 13 };
+    if (s->verify_proofs(NULL, 2, ks2, cs2, sec2, slen2) != 1) {
+        ESP_LOGE(TAG, "suite verify_proofs n=2: rejected a valid batch");
+        pass = 0;
+    }
+    const unsigned char *bad2[2] = { sec2[0], (const unsigned char *)"batch_proof_x" };
+    if (s->verify_proofs(NULL, 2, ks2, cs2, bad2, slen2) != 0) {
+        ESP_LOGE(TAG, "suite verify_proofs n=2: accepted a tampered batch");
+        pass = 0;
+    }
+    if (pass)
+        ESP_LOGI(TAG, "suite verify_proofs: OK");
+
+    /* invalid inputs fail closed */
+    unsigned char zero_r[32] = {0};
+    B_len = sizeof(B);
+    if (s->blind(NULL, secret, 12, zero_r, 32, B, &B_len) != 0) {
+        ESP_LOGE(TAG, "suite blind: accepted r = 0");
+        pass = 0;
+    }
+    B_len = sizeof(B);
+    if (s->blind(NULL, secret, 12, FR_ORDER_BE, 32, B, &B_len) != 0) {
+        ESP_LOGE(TAG, "suite blind: accepted r = Fr order");
+        pass = 0;
+    }
+    unsigned char zero_c[48] = {0};
+    C_len = sizeof(C);
+    if (s->unblind(NULL, zero_c, 48, r_be, 32, K, 96, C, &C_len) != 0) {
+        ESP_LOGE(TAG, "suite unblind: accepted a malformed C_");
+        pass = 0;
+    }
+    if (pass)
+        ESP_LOGI(TAG, "suite input validation: OK");
+
+    /* NUT-13 v3 vector (tests/13-tests.md): counter 3, attempt 0 rejected,
+     * attempt 1 accepted — proves the rejection loop and u32_BE framing. */
+    const unsigned char *seed = (const unsigned char *)"nut13 v3 test seed";
+    const char *ks_id =
+        "02abd02ebc1ff44652153375162407deaf0b30e590844cca0b6e4894a08a8828dd";
+    unsigned char out32[32];
+    if (!s->derive_secret(seed, 18, ks_id, 3, out32)) {
+        ESP_LOGE(TAG, "suite derive_secret: failed");
+        pass = 0;
+    } else {
+        pass &= check_hex(out32, 32,
+            "7a45e04943504b25273e9569ab7019ab62f814dade23998c12f5f4cb1bb7978a",
+            "NUT-13 v3 secret");
+    }
+    if (!s->derive_r(seed, 18, ks_id, 3, out32)) {
+        ESP_LOGE(TAG, "suite derive_r: failed");
+        pass = 0;
+    } else {
+        pass &= check_hex(out32, 32,
+            "236dbcb12fc064ceeae6c5e2de7f79258374dccbf23ac0afdf72cf9eb53540c9",
+            "NUT-13 v3 r (attempt=1)");
+    }
+
+    return pass;
+}
+
+/* --------------------------------------------------------------------------
  * MPI peripheral vs software Montgomery multiply — bit-exactness (C3 only)
  * ------------------------------------------------------------------------ */
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
@@ -617,6 +740,10 @@ int crypto_bls_run_tests(void)
     blst_hw_acquire();
     pass &= test_bls_point_validation();
     blst_hw_release();
+    vTaskDelay(1);
+    /* Outside any hold window: the suite ops acquire the (non-recursive)
+     * MPI lock themselves. */
+    pass &= test_bls_suite();
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
     vTaskDelay(1);
     pass &= test_mpi_bit_exact();
