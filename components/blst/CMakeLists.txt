@@ -14,7 +14,6 @@ idf_component_register(
 # no_asm.h (the define blst's own build.rs uses for non-x86_64/aarch64).
 target_compile_definitions(${COMPONENT_LIB} PRIVATE __BLST_NO_ASM__)
 
-# -O2 on top of the project-wide -Os, matching the mbedtls/crypto.c precedent.
-# NOTE: bench before trusting this — secp256k1 measured SLOWER at -O2 on the
-# C3 (icache thrashing, see eb53f21); blst may or may not behave the same.
-target_compile_options(${COMPONENT_LIB} PRIVATE -O2 -Wno-unused-function)
+# -O3: measured on-device against -O2 — see the commit message for numbers.
+# (secp256k1's -Os-beats-O2 icache result, eb53f21, does NOT repeat here.)
+target_compile_options(${COMPONENT_LIB} PRIVATE -O3 -Wno-unused-function)
