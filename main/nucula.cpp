@@ -967,6 +967,8 @@ static void cmd_selftest(const char *arg)
         ok = false;
     if (!cashu::cashu_json_run_tests())
         ok = false;
+    if (!cashu::cashu_cbor_run_tests())
+        ok = false;
     console_printf("self-tests %s\r\n", ok ? "PASSED" : "FAILED");
 }
 
@@ -1076,6 +1078,8 @@ extern "C" void app_main(void)
         ESP_LOGE(TAG, "unit formatter self-test FAILED");
     if (!cashu::cashu_json_run_tests())
         ESP_LOGE(TAG, "quote/mint-info JSON self-test FAILED");
+    if (!cashu::cashu_cbor_run_tests())
+        ESP_LOGE(TAG, "v4 token CBOR self-test FAILED");
 #endif
 
     cashu::Wallet::load_seed();
