@@ -5,7 +5,7 @@
 #include "cashu_cbor.hpp"
 #include "wallet.hpp"
 #include "wallet_store.hpp"
-#include "display.h"
+#include "ui.h"
 #include "wifi.h"
 
 #include <cstring>
@@ -27,9 +27,6 @@ static bool s_hw_init = false;
 static std::atomic<NfcState> s_state{NfcState::off};
 static std::atomic<bool> s_stop_flag{false};
 static TaskHandle_t s_task_handle = nullptr;
-
-extern void display_refresh();
-extern void display_nfc_status(const char *line1, const char *line2);
 
 // -------------------------------------------------------------------------
 // Token redemption
