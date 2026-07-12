@@ -46,4 +46,8 @@ void wallet_store_remove_all();
 
 int wallet_store_count();
 long long wallet_store_total_balance();
+long long wallet_store_balance_for_unit(const char *unit);
+// Distinct units held across all wallets, deduped, in discovery order.
+// Proofs whose keyset is unknown contribute "?".
+void wallet_store_collect_units(std::vector<std::string> &out);
 int wallet_store_total_pending();

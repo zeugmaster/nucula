@@ -287,6 +287,48 @@ bool Wallet::save_counter(const std::string& keyset_id, uint32_t counter)
 }
 
 // -------------------------------------------------------------------------
+// Default unit (global UX setting)
+// -------------------------------------------------------------------------
+
+std::string Wallet::s_default_unit;
+bool        Wallet::s_default_unit_loaded = false;
+
+std::string Wallet::default_unit()
+{
+    if (!s_default_unit_loaded) {
+        s_default_unit = "sat";
+        nvs_handle_t handle;
+        if (nvs_open(NVS_NS, NVS_READONLY, &handle) == ESP_OK) {
+            char buf[32] = {};
+            size_t len = sizeof(buf);
+            if (nvs_get_str(handle, "def_unit", buf, &len) == ESP_OK && buf[0])
+                s_default_unit = buf;
+            nvs_close(handle);
+        }
+        s_default_unit_loaded = true;
+    }
+    return s_default_unit;
+}
+
+bool Wallet::set_default_unit(const std::string& unit)
+{
+    if (unit.empty() || unit.size() > 31)
+        return false;
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &handle) != ESP_OK)
+        return false;
+    esp_err_t err = nvs_set_str(handle, "def_unit", unit.c_str());
+    if (err == ESP_OK)
+        err = nvs_commit(handle);
+    nvs_close(handle);
+    if (err != ESP_OK)
+        return false;
+    s_default_unit = unit;
+    s_default_unit_loaded = true;
+    return true;
+}
+
+// -------------------------------------------------------------------------
 // NVS persistence (existing)
 // -------------------------------------------------------------------------
 
@@ -1269,27 +1311,84 @@ int64_t Wallet::balance() const
 }
 
 // -------------------------------------------------------------------------
-// Proof selection (greedy, largest first)
+// Per-unit views (a proof's unit lives on its keyset)
 // -------------------------------------------------------------------------
 
-bool Wallet::select_proofs(int amount_needed,
+const std::string* Wallet::unit_for_proof(const Proof& p) const
+{
+    bool amb = false;
+    const Keyset* ks = resolve_keyset(keysets_, p.id, &amb);
+    return (ks && !amb) ? &ks->unit : nullptr;
+}
+
+bool Wallet::proofs_unit(const std::vector<Proof>& proofs,
+                         std::string& unit_out) const
+{
+    if (proofs.empty())
+        return false;
+    unit_out.clear();
+    for (const auto& p : proofs) {
+        const std::string* u = unit_for_proof(p);
+        if (!u)
+            return false;
+        if (unit_out.empty())
+            unit_out = *u;
+        else if (unit_out != *u)
+            return false;
+    }
+    return true;
+}
+
+int64_t Wallet::balance_for_unit(const std::string& unit) const
+{
+    int64_t total = 0;
+    for (const auto& p : proofs_) {
+        const std::string* u = unit_for_proof(p);
+        if (u && *u == unit)
+            total += p.amount;
+    }
+    return total;
+}
+
+void Wallet::collect_units(std::vector<std::string>& out) const
+{
+    for (const auto& p : proofs_) {
+        const std::string* u = unit_for_proof(p);
+        const char* name = u ? u->c_str() : "?";
+        if (std::find(out.begin(), out.end(), name) == out.end())
+            out.push_back(name);
+    }
+}
+
+// -------------------------------------------------------------------------
+// Proof selection (greedy, largest first, single unit)
+// -------------------------------------------------------------------------
+
+bool Wallet::select_proofs(int amount_needed, const std::string& unit,
                            std::vector<Proof>& selected,
                            std::vector<Proof>& remaining)
 {
     selected.clear();
     remaining.clear();
 
-    std::vector<size_t> indices(proofs_.size());
-    for (size_t i = 0; i < indices.size(); i++)
-        indices[i] = i;
+    // Only same-unit proofs are candidates; everything else goes straight
+    // to `remaining` (see the fund-safety contract in wallet.hpp).
+    std::vector<size_t> candidates;
+    for (size_t i = 0; i < proofs_.size(); i++) {
+        const std::string* u = unit_for_proof(proofs_[i]);
+        if (u && *u == unit)
+            candidates.push_back(i);
+        else
+            remaining.push_back(proofs_[i]);
+    }
 
-    std::sort(indices.begin(), indices.end(), [&](size_t a, size_t b) {
+    std::sort(candidates.begin(), candidates.end(), [&](size_t a, size_t b) {
         return proofs_[a].amount > proofs_[b].amount;
     });
 
     int sum = 0;
     bool enough = false;
-    for (size_t idx : indices) {
+    for (size_t idx : candidates) {
         if (!enough) {
             selected.push_back(proofs_[idx]);
             sum += proofs_[idx].amount;
@@ -1302,8 +1401,8 @@ bool Wallet::select_proofs(int amount_needed,
     }
 
     if (!enough) {
-        ESP_LOGE(TAG, "select_proofs: insufficient balance (%d < %d)",
-                 sum, amount_needed);
+        ESP_LOGE(TAG, "select_proofs: insufficient %s balance (%d < %d)",
+                 unit.c_str(), sum, amount_needed);
         selected.clear();
         remaining.clear();
         return false;
@@ -1532,7 +1631,7 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
 
     int needed = quote.amount + quote.fee_reserve;
     std::vector<Proof> selected, leftover;
-    if (!select_proofs(needed, selected, leftover))
+    if (!select_proofs(needed, "sat", selected, leftover))
         return false;
 
     int input_sum = 0;

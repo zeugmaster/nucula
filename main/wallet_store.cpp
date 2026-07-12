@@ -132,6 +132,24 @@ long long wallet_store_total_balance()
     return total;
 }
 
+long long wallet_store_balance_for_unit(const char *unit)
+{
+    if (!unit)
+        return 0;
+    wallet_store_guard guard;
+    long long total = 0;
+    for (int i = 0; i < MAX_MINTS; i++)
+        if (s_wallets[i]) total += s_wallets[i]->balance_for_unit(unit);
+    return total;
+}
+
+void wallet_store_collect_units(std::vector<std::string> &out)
+{
+    wallet_store_guard guard;
+    for (int i = 0; i < MAX_MINTS; i++)
+        if (s_wallets[i]) s_wallets[i]->collect_units(out);
+}
+
 int wallet_store_total_pending()
 {
     wallet_store_guard guard;

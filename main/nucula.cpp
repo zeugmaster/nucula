@@ -796,6 +796,9 @@ extern "C" void app_main(void)
 
     cashu::Wallet::load_seed();
     cashu::Wallet::ensure_p2pk_keypair(wallet_store_ctx());
+    // Warm the cache before the keypad/UI tasks exist so later reads
+    // from other tasks never hit the lazy NVS load.
+    cashu::Wallet::default_unit();
 
     if (wifi_is_connected()) {
         for (int i = 0; i < MAX_MINTS; i++) {
