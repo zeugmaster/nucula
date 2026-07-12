@@ -17,6 +17,7 @@
 #include "keyset.hpp"
 #include "console.h"
 #include "display.h"
+#include "i2c_bus.h"
 #include "nfc.hpp"
 #include "keypad.h"
 #include "bip39.h"
@@ -1079,24 +1080,21 @@ extern "C" void app_main(void)
         }
     }, "wifi_drain", 8192, NULL, 4, NULL);
 
-    // NFC creates the shared I2C bus; display and keypad join it
-    if (!nfc_init())
-        ESP_LOGW(TAG, "PN7160 init failed, NFC disabled");
+    // Shared I2C bus for display, keypad, and NFC. Each driver probes for
+    // its device and disables itself when absent, so a bare module still
+    // boots into a fully working console + wallet.
+    if (i2c_bus_init() != ESP_OK)
+        ESP_LOGW(TAG, "I2C bus init failed; display/keypad/NFC disabled");
 
-    i2c_master_bus_handle_t i2c_bus = nfc_get_i2c_bus();
+    display_init(i2c_bus_get());
 
-    display_init(i2c_bus);
-
-    if (i2c_bus) {
-        if (keypad_init(i2c_bus) == ESP_OK) {
-            keypad_start_task();
-            xTaskCreate(keypad_ui_task, "keypad_ui", 4096, NULL, 3, NULL);
-        } else {
-            ESP_LOGW(TAG, "keypad init failed");
-        }
-    } else {
-        ESP_LOGW(TAG, "no I2C bus for keypad (NFC init failed?)");
+    if (keypad_init(i2c_bus_get()) == ESP_OK) {
+        keypad_start_task();
+        xTaskCreate(keypad_ui_task, "keypad_ui", 4096, NULL, 3, NULL);
     }
+
+    if (!nfc_init(i2c_bus_get()))
+        ESP_LOGW(TAG, "PN7160 init failed, NFC disabled");
 
     display_refresh();
 }

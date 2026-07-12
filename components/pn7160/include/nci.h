@@ -5,13 +5,12 @@
 #include "driver/i2c_master.h"
 #include "driver/gpio.h"
 
-// PN7160 pin definitions (XIAO ESP32-C3, shared I2C bus)
+// PN7160 control pins (XIAO ESP32-C3). The I2C bus itself is owned by the
+// application and passed into nci_init().
 // VEN is on GPIO 2 (a boot strapping pin) — empirically OK at boot because
 // the ESP weak internal pull-up wins over the PN7160 VEN input leakage.
 // DWL is left on an unused output (no external wire); PN7160 defaults to
 // NCI mode when DWL is undriven.
-#define PN7160_SDA_PIN   GPIO_NUM_6    // D4
-#define PN7160_SCL_PIN   GPIO_NUM_7    // D5
 #define PN7160_IRQ_PIN   GPIO_NUM_3    // D1
 #define PN7160_VEN_PIN   GPIO_NUM_2    // D0
 #define PN7160_DWL_PIN   GPIO_NUM_4    // D2 (dangling)
@@ -76,9 +75,11 @@ typedef struct {
 extern "C" {
 #endif
 
-// Initialize I2C bus + GPIO, hardware-reset PN7160.
-// If ctx->i2c_bus is already set only the HW reset is performed.
-esp_err_t nci_init(nci_context_t *ctx);
+// Configure GPIOs, hardware-reset the PN7160, probe it on the given bus and
+// add it as an I2C device. Returns ESP_ERR_NOT_FOUND when the chip does not
+// respond to its address (absent hardware) — callers should not retry then.
+// On repeat calls with an already-added device only the HW reset + probe run.
+esp_err_t nci_init(nci_context_t *ctx, i2c_master_bus_handle_t bus);
 
 // Low-level I2C primitives
 esp_err_t nci_write(nci_context_t *ctx, const uint8_t *data, uint32_t len);
@@ -99,7 +100,7 @@ esp_err_t nci_configure_cardemu_mode(nci_context_t *ctx);
 esp_err_t nci_start_discovery_cardemu(nci_context_t *ctx);
 
 // Run the full init + card-emulation config sequence
-esp_err_t nci_setup_cardemu(nci_context_t *ctx);
+esp_err_t nci_setup_cardemu(nci_context_t *ctx, i2c_master_bus_handle_t bus);
 
 #ifdef __cplusplus
 }

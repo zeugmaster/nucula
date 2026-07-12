@@ -335,23 +335,28 @@ static void nfc_task(void *arg)
 // Public API
 // -------------------------------------------------------------------------
 
-bool nfc_init()
+bool nfc_init(i2c_master_bus_handle_t bus)
 {
     memset(&s_nci, 0, sizeof(s_nci));
 
     int retries = 3;
     while (retries-- > 0) {
-        if (nci_setup_cardemu(&s_nci) == ESP_OK) {
+        esp_err_t err = nci_setup_cardemu(&s_nci, bus);
+        if (err == ESP_OK) {
             s_hw_init = true;
             s_state.store(NfcState::idle);
             ESP_LOGI(TAG, "PN7160 ready");
             return true;
         }
+        if (err == ESP_ERR_NOT_FOUND || err == ESP_ERR_INVALID_ARG) {
+            // Chip absent (or no bus) — retrying won't make it appear.
+            break;
+        }
         ESP_LOGW(TAG, "NCI setup failed, retrying... (%d left)", retries);
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
-    ESP_LOGE(TAG, "PN7160 not responding");
+    ESP_LOGW(TAG, "PN7160 unavailable, NFC disabled");
     s_state.store(NfcState::off);
     return false;
 }
@@ -398,9 +403,4 @@ const char *nfc_status_str()
         case NfcState::error:     return "error";
     }
     return "?";
-}
-
-i2c_master_bus_handle_t nfc_get_i2c_bus()
-{
-    return s_nci.i2c_bus;
 }

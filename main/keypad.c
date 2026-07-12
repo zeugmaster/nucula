@@ -1,4 +1,5 @@
 #include "keypad.h"
+#include "board.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -30,9 +31,19 @@ static const char s_keymap[4][3] = {
 
 esp_err_t keypad_init(i2c_master_bus_handle_t bus)
 {
+    if (!bus)
+        return ESP_ERR_INVALID_ARG;
+
+    // Probe first: without the expander every 20 ms scan would NACK and the
+    // driver's error logging alone once overflowed the keypad task stack.
+    if (i2c_master_probe(bus, BOARD_KEYPAD_ADDR, 50) != ESP_OK) {
+        ESP_LOGW(TAG, "no PCF8574 at 0x%02X, keypad disabled", BOARD_KEYPAD_ADDR);
+        return ESP_ERR_NOT_FOUND;
+    }
+
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address  = KEYPAD_I2C_ADDR,
+        .device_address  = BOARD_KEYPAD_ADDR,
         .scl_speed_hz    = 100000,
     };
     esp_err_t ret = i2c_master_bus_add_device(bus, &dev_cfg, &s_dev);
@@ -41,8 +52,14 @@ esp_err_t keypad_init(i2c_master_bus_handle_t bus)
         return ret;
     }
     uint8_t idle = 0xFF;
-    i2c_master_transmit(s_dev, &idle, 1, 100);
-    ESP_LOGI(TAG, "PCF8574 keypad ready (addr=0x%02X)", KEYPAD_I2C_ADDR);
+    ret = i2c_master_transmit(s_dev, &idle, 1, 100);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "PCF8574 write failed: %s", esp_err_to_name(ret));
+        i2c_master_bus_rm_device(s_dev);
+        s_dev = NULL;
+        return ret;
+    }
+    ESP_LOGI(TAG, "PCF8574 keypad ready (addr=0x%02X)", BOARD_KEYPAD_ADDR);
     return ESP_OK;
 }
 
@@ -148,7 +165,9 @@ esp_err_t keypad_start_task(void)
         return ESP_ERR_NO_MEM;
     }
 
-    if (xTaskCreate(keypad_task, "keypad", 2048, NULL, 4, NULL) != pdPASS) {
+    // 3072: the I2C driver's error-logging path alone can burn >1 KB of
+    // stack, which overflowed the previous 2048-byte allocation.
+    if (xTaskCreate(keypad_task, "keypad", 3072, NULL, 4, NULL) != pdPASS) {
         ESP_LOGE(TAG, "task create failed");
         vQueueDelete(s_queue);
         s_queue = NULL;

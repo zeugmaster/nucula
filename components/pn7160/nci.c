@@ -16,24 +16,19 @@ static void log_hex(const char *prefix, const uint8_t *data, uint32_t len)
     ESP_LOGD(TAG, "%s [%lu]: %s", prefix, (unsigned long)len, buf);
 }
 
-static void i2c_scan(nci_context_t *ctx)
+esp_err_t nci_init(nci_context_t *ctx, i2c_master_bus_handle_t bus)
 {
-    ESP_LOGI(TAG, "I2C scan:");
-    for (uint8_t addr = 0x08; addr < 0x78; addr++) {
-        if (i2c_master_probe(ctx->i2c_bus, addr, 50) == ESP_OK)
-            ESP_LOGI(TAG, "  0x%02X", addr);
-    }
-    ESP_LOGI(TAG, "I2C scan done");
-}
-
-esp_err_t nci_init(nci_context_t *ctx)
-{
-    if (ctx->i2c_bus != NULL) {
-        ESP_LOGI(TAG, "I2C already up, HW reset only");
+    if (ctx->i2c_dev != NULL) {
+        ESP_LOGI(TAG, "device already added, HW reset only");
         goto hw_reset;
     }
 
     memset(ctx, 0, sizeof(nci_context_t));
+    ctx->i2c_bus = bus;
+    if (ctx->i2c_bus == NULL) {
+        ESP_LOGW(TAG, "no I2C bus");
+        return ESP_ERR_INVALID_ARG;
+    }
 
     // IRQ: input with pull-down (PN7160 drives HIGH when data ready)
     gpio_config_t irq_cfg = {
@@ -58,26 +53,6 @@ esp_err_t nci_init(nci_context_t *ctx)
     // DWL low = NCI mode (not firmware-download mode)
     gpio_set_level(PN7160_DWL_PIN, 0);
 
-    // I2C master bus
-    i2c_master_bus_config_t bus_cfg = {
-        .i2c_port            = I2C_NUM_0,
-        .sda_io_num          = PN7160_SDA_PIN,
-        .scl_io_num          = PN7160_SCL_PIN,
-        .clk_source          = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt   = 7,
-        .flags.enable_internal_pullup = true,
-    };
-    ESP_RETURN_ON_ERROR(i2c_new_master_bus(&bus_cfg, &ctx->i2c_bus), TAG, "i2c_new_master_bus");
-
-    // PN7160 device on the bus
-    i2c_device_config_t dev_cfg = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address  = PN7160_I2C_ADDR,
-        .scl_speed_hz    = 100000,
-    };
-    ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(ctx->i2c_bus, &dev_cfg, &ctx->i2c_dev),
-                        TAG, "i2c_master_bus_add_device");
-
 hw_reset:
     // VEN power cycle
     gpio_set_level(PN7160_VEN_PIN, 1);
@@ -88,7 +63,23 @@ hw_reset:
     vTaskDelay(pdMS_TO_TICKS(50));
 
     ESP_LOGI(TAG, "PN7160 HW reset done (IRQ=%d)", gpio_get_level(PN7160_IRQ_PIN));
-    i2c_scan(ctx);
+
+    // Probe before adding the device so absent hardware fails fast and
+    // callers can tell "not there" from "there but misbehaving".
+    if (i2c_master_probe(ctx->i2c_bus, PN7160_I2C_ADDR, 50) != ESP_OK) {
+        ESP_LOGW(TAG, "no PN7160 at 0x%02X", PN7160_I2C_ADDR);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    if (ctx->i2c_dev == NULL) {
+        i2c_device_config_t dev_cfg = {
+            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+            .device_address  = PN7160_I2C_ADDR,
+            .scl_speed_hz    = 100000,
+        };
+        ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(ctx->i2c_bus, &dev_cfg, &ctx->i2c_dev),
+                            TAG, "i2c_master_bus_add_device");
+    }
     return ESP_OK;
 }
 
@@ -318,10 +309,10 @@ esp_err_t nci_start_discovery_cardemu(nci_context_t *ctx)
     return ESP_OK;
 }
 
-esp_err_t nci_setup_cardemu(nci_context_t *ctx)
+esp_err_t nci_setup_cardemu(nci_context_t *ctx, i2c_master_bus_handle_t bus)
 {
     esp_err_t ret;
-    if ((ret = nci_init(ctx))                  != ESP_OK) return ret;
+    if ((ret = nci_init(ctx, bus))             != ESP_OK) return ret;
     if ((ret = nci_core_reset(ctx))            != ESP_OK) return ret;
     if ((ret = nci_core_init(ctx))             != ESP_OK) return ret;
     if ((ret = nci_configure_settings(ctx))    != ESP_OK) return ret;
