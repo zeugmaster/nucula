@@ -7,6 +7,21 @@
 
 static const char *TAG = "nci";
 
+// Single waiter (the nfc task) parked in nci_wait_for_irq.
+static TaskHandle_t s_irq_waiter;
+
+// The PN7160 holds IRQ HIGH while data is pending (level-driven), so the
+// ISR must quench the interrupt itself; nci_wait_for_irq re-enables it.
+static void IRAM_ATTR nci_irq_isr(void *arg)
+{
+    (void)arg;
+    gpio_intr_disable(PN7160_IRQ_PIN);
+    BaseType_t woken = pdFALSE;
+    if (s_irq_waiter)
+        vTaskNotifyGiveFromISR(s_irq_waiter, &woken);
+    portYIELD_FROM_ISR(woken);
+}
+
 static void log_hex(const char *prefix, const uint8_t *data, uint32_t len)
 {
     char buf[NCI_MAX_FRAME_SIZE * 3 + 1];
@@ -30,15 +45,24 @@ esp_err_t nci_init(nci_context_t *ctx, i2c_master_bus_handle_t bus)
         return ESP_ERR_INVALID_ARG;
     }
 
-    // IRQ: input with pull-down (PN7160 drives HIGH when data ready)
+    // IRQ: input with pull-down (PN7160 drives HIGH when data ready).
+    // Level-triggered interrupt; installed disabled, armed only while a
+    // task waits in nci_wait_for_irq.
     gpio_config_t irq_cfg = {
         .pin_bit_mask   = (1ULL << PN7160_IRQ_PIN),
         .mode           = GPIO_MODE_INPUT,
         .pull_up_en     = GPIO_PULLUP_DISABLE,
         .pull_down_en   = GPIO_PULLDOWN_ENABLE,
-        .intr_type      = GPIO_INTR_DISABLE,
+        .intr_type      = GPIO_INTR_HIGH_LEVEL,
     };
     ESP_RETURN_ON_ERROR(gpio_config(&irq_cfg), TAG, "IRQ gpio_config");
+
+    esp_err_t isr_err = gpio_install_isr_service(0);
+    if (isr_err != ESP_OK && isr_err != ESP_ERR_INVALID_STATE)  // may exist already
+        ESP_RETURN_ON_ERROR(isr_err, TAG, "gpio_install_isr_service");
+    ESP_RETURN_ON_ERROR(gpio_isr_handler_add(PN7160_IRQ_PIN, nci_irq_isr, NULL),
+                        TAG, "gpio_isr_handler_add");
+    gpio_intr_disable(PN7160_IRQ_PIN);
 
     // VEN + DWL: outputs
     gpio_config_t out_cfg = {
@@ -85,14 +109,22 @@ hw_reset:
 
 bool nci_wait_for_irq(uint32_t timeout_ms)
 {
-    uint32_t elapsed = 0;
-    while (gpio_get_level(PN7160_IRQ_PIN) == 0) {
-        vTaskDelay(pdMS_TO_TICKS(10));
-        elapsed += 10;
-        if (timeout_ms > 0 && elapsed >= timeout_ms)
-            return false;
-    }
-    return true;
+    // TODO(hw-verify): interrupt-driven wait replaces the 10 ms GPIO poll
+    // (~100 wakeups/s for the whole 120 s payment window, up to 10 ms
+    // added latency per NCI exchange). Validate against a PN7160.
+    if (gpio_get_level(PN7160_IRQ_PIN))
+        return true;
+
+    s_irq_waiter = xTaskGetCurrentTaskHandle();
+    ulTaskNotifyTake(pdTRUE, 0);            // clear any stale notification
+    gpio_intr_enable(PN7160_IRQ_PIN);       // level-trigger closes the race:
+                                            // line already high -> ISR fires now
+    uint32_t got = ulTaskNotifyTake(pdTRUE,
+                                    timeout_ms > 0 ? pdMS_TO_TICKS(timeout_ms)
+                                                   : portMAX_DELAY);
+    gpio_intr_disable(PN7160_IRQ_PIN);
+    s_irq_waiter = NULL;
+    return got > 0 || gpio_get_level(PN7160_IRQ_PIN);
 }
 
 static esp_err_t nci_wait_and_read(nci_context_t *ctx, uint32_t timeout_ms)
