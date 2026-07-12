@@ -7,6 +7,7 @@
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <nvs_flash.h>
 #include "secp256k1.h"
 #include "crypto.h"
 #include "crypto_test.h"
@@ -1012,6 +1013,19 @@ static void cmd_keypad(const char *arg)
 extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "nucula cashu wallet");
+
+    // NVS backs the wallet itself (proofs, seed, keysets) — bring it up
+    // first and independently of WiFi.
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES ||
+        nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "NVS needs erase (%s)", esp_err_to_name(nvs_err));
+        if (nvs_flash_erase() == ESP_OK)
+            nvs_err = nvs_flash_init();
+    }
+    if (nvs_err != ESP_OK)
+        ESP_LOGE(TAG, "NVS init failed: %s — wallet persistence disabled",
+                 esp_err_to_name(nvs_err));
 
     if (wifi_init() != ESP_OK)
         ESP_LOGE(TAG, "wifi failed, continuing offline");
