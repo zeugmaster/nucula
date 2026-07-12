@@ -1050,6 +1050,42 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
 }
 
 // -------------------------------------------------------------------------
+// Mint error decoding
+// -------------------------------------------------------------------------
+
+// Decode a non-200 mint response ({"detail","code"}, see the NUTs error
+// code registry) into one friendly log line. Returns the code, 0 when the
+// body carries none.
+static int log_mint_error(const char* op, const http_response_t& resp)
+{
+    int code = 0;
+    std::string detail;
+    if (resp.body && resp.body_len > 0) {
+        cJSON* j = cJSON_ParseWithLength(resp.body, resp.body_len);
+        if (j) {
+            const cJSON* c = cJSON_GetObjectItemCaseSensitive(j, "code");
+            if (cJSON_IsNumber(c))
+                code = c->valueint;
+            const cJSON* d = cJSON_GetObjectItemCaseSensitive(j, "detail");
+            if (cJSON_IsString(d) && d->valuestring)
+                detail = d->valuestring;
+            cJSON_Delete(j);
+        }
+    }
+    const char* hint = "";
+    switch (code) {
+        case 11006: hint = " (amount outside mint's min/max)"; break;
+        case 11009: hint = " (inputs/outputs of multiple units)"; break;
+        case 11010: hint = " (input and output units differ)"; break;
+        case 11013: hint = " (unit or method not supported)"; break;
+        default: break;
+    }
+    ESP_LOGE(TAG, "%s: mint returned %d code=%d %s%s",
+             op, resp.status, code, detail.c_str(), hint);
+    return code;
+}
+
+// -------------------------------------------------------------------------
 // Swap (NUT-03)
 // -------------------------------------------------------------------------
 
@@ -1159,8 +1195,7 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
     }
 
     if (resp.status != 200) {
-        ESP_LOGE(TAG, "swap: mint returned %d: %.*s",
-                 resp.status, (int)resp.body_len, resp.body);
+        log_mint_error("swap", resp);
         http_response_free(&resp);
         return false;
     }
@@ -1441,14 +1476,23 @@ bool Wallet::select_proofs(int amount_needed, const std::string& unit,
 }
 
 // -------------------------------------------------------------------------
-// NUT-04: Mint tokens (bolt11)
+// NUT-04: Mint tokens (method-generic)
 // -------------------------------------------------------------------------
 
-bool Wallet::request_mint_quote(int amount, MintQuote& quote_out)
+bool Wallet::request_mint_quote(int amount, const std::string& unit,
+                                const std::string& method, MintQuote& quote_out)
 {
+    // Both strings reach the URL/body — enforce the NUT-04 charset before
+    // interpolation (console input flows through here).
+    if (!unit_token_valid(unit.c_str()) || !unit_token_valid(method.c_str())) {
+        ESP_LOGE(TAG, "mint quote: invalid unit '%s' or method '%s'",
+                 unit.c_str(), method.c_str());
+        return false;
+    }
+
     cJSON* body = cJSON_CreateObject();
     cJSON_AddNumberToObject(body, "amount", amount);
-    cJSON_AddStringToObject(body, "unit", "sat");
+    cJSON_AddStringToObject(body, "unit", unit.c_str());
     char* body_str = cJSON_PrintUnformatted(body);
     cJSON_Delete(body);
     if (!body_str) {
@@ -1456,7 +1500,7 @@ bool Wallet::request_mint_quote(int amount, MintQuote& quote_out)
         return false;
     }
 
-    std::string url = mint_url_ + "/v1/mint/quote/bolt11";
+    std::string url = mint_url_ + "/v1/mint/quote/" + method;
     http_response_t resp = {};
     esp_err_t err = http_post_json(url.c_str(), body_str, &resp);
     cJSON_free(body_str);
@@ -1467,8 +1511,7 @@ bool Wallet::request_mint_quote(int amount, MintQuote& quote_out)
         return false;
     }
     if (resp.status != 200) {
-        ESP_LOGE(TAG, "mint quote: mint returned %d: %.*s",
-                 resp.status, (int)resp.body_len, resp.body);
+        log_mint_error("mint quote", resp);
         http_response_free(&resp);
         return false;
     }
@@ -1480,14 +1523,28 @@ bool Wallet::request_mint_quote(int amount, MintQuote& quote_out)
         return false;
     }
 
-    ESP_LOGI(TAG, "mint quote: id=%s amount=%d state=%s",
-             quote_out.quote.c_str(), quote_out.amount, quote_out.state.c_str());
+    // Stamp what we asked for when the mint omits the echo, so mint_tokens
+    // targets the right keyset and endpoint.
+    if (quote_out.unit.empty())
+        quote_out.unit = unit;
+    if (quote_out.method.empty())
+        quote_out.method = method;
+
+    ESP_LOGI(TAG, "mint quote: id=%s amount=%d unit=%s method=%s state=%s",
+             quote_out.quote.c_str(), quote_out.amount, quote_out.unit.c_str(),
+             quote_out.method.c_str(), quote_out.state.c_str());
     return true;
 }
 
-bool Wallet::check_mint_quote(const std::string& quote_id, MintQuote& quote_out)
+bool Wallet::check_mint_quote(const std::string& quote_id,
+                              const std::string& method, MintQuote& quote_out)
 {
-    std::string url = mint_url_ + "/v1/mint/quote/bolt11/" + quote_id;
+    if (!unit_token_valid(method.c_str())) {
+        ESP_LOGE(TAG, "check mint quote: invalid method '%s'", method.c_str());
+        return false;
+    }
+
+    std::string url = mint_url_ + "/v1/mint/quote/" + method + "/" + quote_id;
     http_response_t resp = {};
     esp_err_t err = http_get(url.c_str(), &resp);
 
@@ -1509,16 +1566,28 @@ bool Wallet::check_mint_quote(const std::string& quote_id, MintQuote& quote_out)
         return false;
     }
 
-    ESP_LOGI(TAG, "mint quote %s: state=%s amount=%d",
-             quote_id.c_str(), quote_out.state.c_str(), quote_out.amount);
+    if (quote_out.method.empty())
+        quote_out.method = method;
+
+    ESP_LOGI(TAG, "mint quote %s: state=%s amount=%d mintable=%d",
+             quote_id.c_str(), quote_out.state.c_str(), quote_out.amount,
+             quote_out.mintable());
     return true;
 }
 
-bool Wallet::mint_tokens(const std::string& quote_id, int amount)
+bool Wallet::mint_tokens(const MintQuote& quote, int amount)
 {
-    const Keyset* ks = active_keyset_for_mint();
+    const std::string unit = quote.unit.empty() ? std::string("sat") : quote.unit;
+    const std::string method = quote.method.empty() ? std::string("bolt11")
+                                                    : quote.method;
+    if (!unit_token_valid(method.c_str())) {
+        ESP_LOGE(TAG, "mint_tokens: invalid method '%s'", method.c_str());
+        return false;
+    }
+
+    const Keyset* ks = active_keyset_for_mint(unit);
     if (!ks) {
-        ESP_LOGE(TAG, "mint_tokens: no mintable keyset");
+        ESP_LOGE(TAG, "mint_tokens: no mintable %s keyset", unit.c_str());
         return false;
     }
 
@@ -1527,14 +1596,14 @@ bool Wallet::mint_tokens(const std::string& quote_id, int amount)
     if (!generate_outputs(amounts, ks->id, blinding))
         return false;
 
-    MintRequest req{quote_id, blinding.outputs};
+    MintRequest req{quote.quote, blinding.outputs};
     std::string body = serialize(req);
     if (body.empty()) {
         ESP_LOGE(TAG, "mint: request serialization failed");
         return false;
     }
 
-    std::string url = mint_url_ + "/v1/mint/bolt11";
+    std::string url = mint_url_ + "/v1/mint/" + method;
     http_response_t resp = {};
     esp_err_t err = http_post_json(url.c_str(), body.c_str(), &resp);
     if (err != ESP_OK || !resp.body) {
@@ -1543,8 +1612,7 @@ bool Wallet::mint_tokens(const std::string& quote_id, int amount)
         return false;
     }
     if (resp.status != 200) {
-        ESP_LOGE(TAG, "mint: mint returned %d: %.*s",
-                 resp.status, (int)resp.body_len, resp.body);
+        log_mint_error("mint", resp);
         http_response_free(&resp);
         return false;
     }
@@ -1568,21 +1636,32 @@ bool Wallet::mint_tokens(const std::string& quote_id, int amount)
     for (const auto& p : new_proofs)
         proofs_.push_back(p);
 
-    ESP_LOGI(TAG, "minted %lld sat (%d proofs)",
-             (long long)proofs_sum(new_proofs), (int)new_proofs.size());
+    char amt[48];
+    format_amount(amt, sizeof(amt), proofs_sum(new_proofs), unit.c_str());
+    ESP_LOGI(TAG, "minted %s (%d proofs)", amt, (int)new_proofs.size());
     save_proofs();
     return true;
 }
 
 // -------------------------------------------------------------------------
-// NUT-05: Melt tokens (bolt11)
+// NUT-05: Melt tokens (method-generic)
 // -------------------------------------------------------------------------
 
-bool Wallet::request_melt_quote(const std::string& bolt11, MeltQuote& quote_out)
+bool Wallet::request_melt_quote(const std::string& request, const std::string& unit,
+                                const std::string& method, MeltQuote& quote_out,
+                                std::optional<int> amount)
 {
+    if (!unit_token_valid(unit.c_str()) || !unit_token_valid(method.c_str())) {
+        ESP_LOGE(TAG, "melt quote: invalid unit '%s' or method '%s'",
+                 unit.c_str(), method.c_str());
+        return false;
+    }
+
     cJSON* body = cJSON_CreateObject();
-    cJSON_AddStringToObject(body, "request", bolt11.c_str());
-    cJSON_AddStringToObject(body, "unit", "sat");
+    cJSON_AddStringToObject(body, "request", request.c_str());
+    cJSON_AddStringToObject(body, "unit", unit.c_str());
+    if (amount)   // PR#382: amountless payment targets (custom methods)
+        cJSON_AddNumberToObject(body, "amount", *amount);
     char* body_str = cJSON_PrintUnformatted(body);
     cJSON_Delete(body);
     if (!body_str) {
@@ -1590,7 +1669,7 @@ bool Wallet::request_melt_quote(const std::string& bolt11, MeltQuote& quote_out)
         return false;
     }
 
-    std::string url = mint_url_ + "/v1/melt/quote/bolt11";
+    std::string url = mint_url_ + "/v1/melt/quote/" + method;
     http_response_t resp = {};
     esp_err_t err = http_post_json(url.c_str(), body_str, &resp);
     cJSON_free(body_str);
@@ -1601,8 +1680,7 @@ bool Wallet::request_melt_quote(const std::string& bolt11, MeltQuote& quote_out)
         return false;
     }
     if (resp.status != 200) {
-        ESP_LOGE(TAG, "melt quote: mint returned %d: %.*s",
-                 resp.status, (int)resp.body_len, resp.body);
+        log_mint_error("melt quote", resp);
         http_response_free(&resp);
         return false;
     }
@@ -1614,15 +1692,27 @@ bool Wallet::request_melt_quote(const std::string& bolt11, MeltQuote& quote_out)
         return false;
     }
 
-    ESP_LOGI(TAG, "melt quote: id=%s amount=%d fee_reserve=%d state=%s",
-             quote_out.quote.c_str(), quote_out.amount,
-             quote_out.fee_reserve, quote_out.state.c_str());
+    if (quote_out.unit.empty())
+        quote_out.unit = unit;
+    if (quote_out.method.empty())
+        quote_out.method = method;
+
+    ESP_LOGI(TAG, "melt quote: id=%s amount=%d fee_reserve=%d unit=%s method=%s state=%s",
+             quote_out.quote.c_str(), quote_out.amount, quote_out.fee_reserve,
+             quote_out.unit.c_str(), quote_out.method.c_str(),
+             quote_out.state.c_str());
     return true;
 }
 
-bool Wallet::check_melt_quote(const std::string& quote_id, MeltQuote& quote_out)
+bool Wallet::check_melt_quote(const std::string& quote_id,
+                              const std::string& method, MeltQuote& quote_out)
 {
-    std::string url = mint_url_ + "/v1/melt/quote/bolt11/" + quote_id;
+    if (!unit_token_valid(method.c_str())) {
+        ESP_LOGE(TAG, "check melt quote: invalid method '%s'", method.c_str());
+        return false;
+    }
+
+    std::string url = mint_url_ + "/v1/melt/quote/" + method + "/" + quote_id;
     http_response_t resp = {};
     esp_err_t err = http_get(url.c_str(), &resp);
 
@@ -1645,6 +1735,9 @@ bool Wallet::check_melt_quote(const std::string& quote_id, MeltQuote& quote_out)
         return false;
     }
 
+    if (quote_out.method.empty())
+        quote_out.method = method;
+
     ESP_LOGI(TAG, "melt quote %s: state=%s", quote_id.c_str(), quote_out.state.c_str());
     return true;
 }
@@ -1653,15 +1746,23 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
 {
     change_amount = 0;
 
-    const Keyset* ks = active_keyset_for_mint();
+    const std::string unit = quote.unit.empty() ? std::string("sat") : quote.unit;
+    const std::string method = quote.method.empty() ? std::string("bolt11")
+                                                    : quote.method;
+    if (!unit_token_valid(method.c_str())) {
+        ESP_LOGE(TAG, "melt: invalid method '%s'", method.c_str());
+        return false;
+    }
+
+    const Keyset* ks = active_keyset_for_mint(unit);
     if (!ks) {
-        ESP_LOGE(TAG, "melt: no mintable keyset");
+        ESP_LOGE(TAG, "melt: no mintable %s keyset", unit.c_str());
         return false;
     }
 
     int needed = quote.amount + quote.fee_reserve;
     std::vector<Proof> selected, leftover;
-    if (!select_proofs(needed, "sat", selected, leftover))
+    if (!select_proofs(needed, unit, selected, leftover))
         return false;
 
     int input_sum = 0;
@@ -1707,7 +1808,7 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
         return false;
     }
 
-    std::string url = mint_url_ + "/v1/melt/bolt11";
+    std::string url = mint_url_ + "/v1/melt/" + method;
     http_response_t resp = {};
     esp_err_t err = http_post_json_timeout(url.c_str(), body.c_str(), &resp, 120000);
     if (err != ESP_OK || !resp.body) {
@@ -1716,8 +1817,7 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
         return false;
     }
     if (resp.status != 200) {
-        ESP_LOGE(TAG, "melt: mint returned %d: %.*s",
-                 resp.status, (int)resp.body_len, resp.body);
+        log_mint_error("melt", resp);
         http_response_free(&resp);
         return false;
     }
@@ -1755,8 +1855,10 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
                 change_amount += p.amount;
                 proofs_.push_back(p);
             }
-            ESP_LOGI(TAG, "melt: received %d sat change (%d proofs)",
-                     change_amount, (int)change_proofs.size());
+            char amt[48];
+            format_amount(amt, sizeof(amt), change_amount, unit.c_str());
+            ESP_LOGI(TAG, "melt: received %s change (%d proofs)",
+                     amt, (int)change_proofs.size());
         } else {
             ESP_LOGW(TAG, "melt: failed to unblind change signatures");
         }

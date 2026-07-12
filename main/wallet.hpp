@@ -74,14 +74,25 @@ public:
     bool drain_pending_tokens(int& accepted, int& failed);
     int  pending_count() const;
 
-    // NUT-04: Mint tokens (bolt11)
-    bool request_mint_quote(int amount, MintQuote& quote_out);
-    bool check_mint_quote(const std::string& quote_id, MintQuote& quote_out);
-    bool mint_tokens(const std::string& quote_id, int amount);
+    // NUT-04: Mint tokens, method-generic (bolt11/NUT-23, custom methods
+    // per nuts PR#382). `unit` and `method` must pass unit_token_valid();
+    // the parsed quote is stamped with both so the later mint/claim calls
+    // carry the right unit and endpoint even when the mint omits the echo.
+    bool request_mint_quote(int amount, const std::string& unit,
+                            const std::string& method, MintQuote& quote_out);
+    bool check_mint_quote(const std::string& quote_id, const std::string& method,
+                          MintQuote& quote_out);
+    // Mints `amount` against quote.unit's active keyset via /v1/mint/{quote.method}.
+    bool mint_tokens(const MintQuote& quote, int amount);
 
-    // NUT-05: Melt tokens (bolt11)
-    bool request_melt_quote(const std::string& bolt11, MeltQuote& quote_out);
-    bool check_melt_quote(const std::string& quote_id, MeltQuote& quote_out);
+    // NUT-05: Melt tokens, method-generic. `amount` is the PR#382 optional
+    // request amount for amountless payment targets (custom methods);
+    // bolt11 callers leave it unset.
+    bool request_melt_quote(const std::string& request, const std::string& unit,
+                            const std::string& method, MeltQuote& quote_out,
+                            std::optional<int> amount = std::nullopt);
+    bool check_melt_quote(const std::string& quote_id, const std::string& method,
+                          MeltQuote& quote_out);
     bool melt_tokens(const MeltQuote& quote, int& change_amount);
 
     int64_t balance() const;

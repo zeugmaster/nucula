@@ -314,7 +314,7 @@ static void cmd_invoice(const char *arg)
 
     nucula_console_write("requesting mint quote...\r\n");
     cashu::MintQuote quote;
-    if (!w->request_mint_quote(amount, quote)) {
+    if (!w->request_mint_quote(amount, "sat", "bolt11", quote)) {
         nucula_console_write("error: failed to get mint quote\r\n");
         return;
     }
@@ -358,14 +358,14 @@ static void cmd_claim(const char *arg)
     if (idx_str) {
         w = resolve_wallet(idx_str);
         if (!w) return;
-        if (!w->check_mint_quote(quote_id, quote)) {
+        if (!w->check_mint_quote(quote_id, "bolt11", quote)) {
             nucula_console_write("error: quote not found on this mint\r\n");
             return;
         }
     } else {
         for (int i = 0; i < MAX_MINTS; i++) {
             if (!wallet_store_get(i)) continue;
-            if (wallet_store_get(i)->check_mint_quote(quote_id, quote)) {
+            if (wallet_store_get(i)->check_mint_quote(quote_id, "bolt11", quote)) {
                 w = wallet_store_get(i);
                 break;
             }
@@ -377,16 +377,18 @@ static void cmd_claim(const char *arg)
         return;
     }
 
-    if (quote.state == "UNPAID") {
-        nucula_console_write("invoice not paid yet\r\n");
-        return;
-    }
-    if (quote.state == "ISSUED") {
-        nucula_console_write("tokens already claimed\r\n");
-        return;
-    }
-    if (quote.state != "PAID") {
-        console_printf("unexpected state: %s\r\n", quote.state.c_str());
+    // Claimable = amount_paid - amount_issued on current mints; legacy
+    // bolt11 mints only expose state, where PAID means the full amount.
+    int claimable = quote.mintable();
+    if (claimable <= 0) {
+        if (quote.state == "UNPAID")
+            nucula_console_write("invoice not paid yet\r\n");
+        else if (quote.state == "ISSUED")
+            nucula_console_write("tokens already claimed\r\n");
+        else if (quote.amount_paid && quote.amount_issued)
+            nucula_console_write("nothing mintable (paid amount fully issued)\r\n");
+        else
+            console_printf("unexpected state: %s\r\n", quote.state.c_str());
         return;
     }
 
@@ -399,12 +401,15 @@ static void cmd_claim(const char *arg)
     }
 
     nucula_console_write("minting tokens...\r\n");
-    if (!w->mint_tokens(quote.quote, quote.amount)) {
+    if (!w->mint_tokens(quote, claimable)) {
         nucula_console_write("error: minting failed\r\n");
         return;
     }
 
-    console_printf("minted %d sat\r\n", quote.amount);
+    char amt[48];
+    cashu::format_amount(amt, sizeof(amt), claimable,
+                         quote.unit.empty() ? "sat" : quote.unit.c_str());
+    console_printf("minted %s\r\n", amt);
     display_refresh();
 }
 
@@ -446,7 +451,7 @@ static void cmd_melt(const char *arg)
 
     nucula_console_write("requesting melt quote...\r\n");
     cashu::MeltQuote quote;
-    if (!w->request_melt_quote(bolt11, quote)) {
+    if (!w->request_melt_quote(bolt11, "sat", "bolt11", quote)) {
         nucula_console_write("error: failed to get melt quote\r\n");
         return;
     }
