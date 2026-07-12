@@ -96,5 +96,9 @@ bool keysets_from_json(const char* json_str, std::vector<Keyset>& out);
 std::string serialize_token_v3(const Token& token);
 bool deserialize_token_v3(const char* token_str, Token& out);
 
+// Decode either token format by its prefix (cashuB -> V4, cashuA -> V3).
+// Returns false for anything else.
+bool deserialize_token(const char* token_str, Token& out);
+
 } // namespace cashu
 

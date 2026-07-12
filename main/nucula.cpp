@@ -380,13 +380,7 @@ static void cmd_receive(const char *arg)
     }
 
     cashu::Token token;
-    bool decoded = false;
-    if (strncmp(arg, "cashuB", 6) == 0)
-        decoded = cashu::deserialize_token_v4(arg, token);
-    else if (strncmp(arg, "cashuA", 6) == 0)
-        decoded = cashu::deserialize_token_v3(arg, token);
-
-    if (!decoded) {
+    if (!cashu::deserialize_token(arg, token)) {
         nucula_console_write("error: failed to decode token\r\n");
         return;
     }

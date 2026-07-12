@@ -70,13 +70,7 @@ static cashu::Wallet *wallet_for_token(const cashu::Token &token)
 static int redeem_or_stash_token(const std::string &token_str)
 {
     cashu::Token token;
-    bool decoded = false;
-    if (token_str.compare(0, 6, "cashuB") == 0)
-        decoded = cashu::deserialize_token_v4(token_str.c_str(), token);
-    else if (token_str.compare(0, 6, "cashuA") == 0)
-        decoded = cashu::deserialize_token_v3(token_str.c_str(), token);
-
-    if (!decoded) {
+    if (!cashu::deserialize_token(token_str.c_str(), token)) {
         ESP_LOGE(TAG, "token decode failed");
         return -1;
     }

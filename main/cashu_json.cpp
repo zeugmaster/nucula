@@ -1,4 +1,5 @@
 #include "cashu_json.hpp"
+#include "cashu_cbor.hpp"
 #include "base64url.hpp"
 #include <cstdlib>
 #include <cstring>
@@ -490,6 +491,15 @@ bool deserialize_token_v3(const char *token_str, Token &out) {
         return false;
 
     return deserialize(json_str.c_str(), out);
+}
+
+bool deserialize_token(const char *token_str, Token &out) {
+    if (!token_str) return false;
+    if (strncmp(token_str, "cashuB", 6) == 0)
+        return deserialize_token_v4(token_str, out);
+    if (strncmp(token_str, "cashuA", 6) == 0)
+        return deserialize_token_v3(token_str, out);
+    return false;
 }
 
 } // namespace cashu

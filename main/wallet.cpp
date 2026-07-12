@@ -1727,13 +1727,7 @@ bool Wallet::drain_pending_tokens(int& accepted, int& failed)
     for (size_t i = 0; i < items.size(); i++) {
         const std::string& raw = items[i];
         Token tok;
-        bool decoded = false;
-        if (raw.compare(0, 6, "cashuB") == 0)
-            decoded = deserialize_token_v4(raw.c_str(), tok);
-        else if (raw.compare(0, 6, "cashuA") == 0)
-            decoded = deserialize_token_v3(raw.c_str(), tok);
-
-        if (!decoded) {
+        if (!deserialize_token(raw.c_str(), tok)) {
             ESP_LOGW(TAG, "pending[%d]: decode failed, dropping", (int)i);
             failed++;
             continue;
