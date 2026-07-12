@@ -1,5 +1,4 @@
-#ifndef CASHU_HPP
-#define CASHU_HPP
+#pragma once
 
 #include <string>
 #include <vector>
@@ -173,4 +172,3 @@ struct PaymentRequest {
 
 } // namespace cashu
 
-#endif

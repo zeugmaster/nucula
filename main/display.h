@@ -1,5 +1,4 @@
-#ifndef NUCULA_DISPLAY_H
-#define NUCULA_DISPLAY_H
+#pragma once
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -42,4 +41,3 @@ void display_pixel(int x, int y, bool on);
 }
 #endif
 
-#endif

@@ -1,5 +1,4 @@
-#ifndef NUCULA_BIP39_H
-#define NUCULA_BIP39_H
+#pragma once
 
 #include <stddef.h>
 #include <stdint.h>
@@ -39,4 +38,3 @@ int bip39_to_seed(const char *mnemonic, unsigned char seed[64]);
 }
 #endif
 
-#endif

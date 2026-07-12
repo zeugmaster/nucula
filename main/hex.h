@@ -1,5 +1,4 @@
-#ifndef NUCULA_HEX_H
-#define NUCULA_HEX_H
+#pragma once
 
 #include <stddef.h>
 
@@ -28,4 +27,3 @@ void bytes_to_hex(const unsigned char *bytes, size_t len, char *hex);
 }
 #endif
 
-#endif

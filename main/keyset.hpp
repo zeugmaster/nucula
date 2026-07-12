@@ -1,5 +1,4 @@
-#ifndef KEYSET_HPP
-#define KEYSET_HPP
+#pragma once
 
 #include <string>
 #include <vector>
@@ -65,4 +64,3 @@ bool keyset_run_tests();
 
 } // namespace cashu
 
-#endif // KEYSET_HPP

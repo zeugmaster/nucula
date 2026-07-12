@@ -1,5 +1,4 @@
-#ifndef NUCULA_CONSOLE_H
-#define NUCULA_CONSOLE_H
+#pragma once
 
 #include <stddef.h>
 
@@ -35,4 +34,3 @@ void console_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 }
 #endif
 
-#endif

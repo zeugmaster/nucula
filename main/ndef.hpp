@@ -1,5 +1,4 @@
-#ifndef NDEF_HPP
-#define NDEF_HPP
+#pragma once
 
 #include <cstdint>
 #include <cstddef>
@@ -46,4 +45,3 @@ bool ndef_parse_message(const uint8_t *data, size_t len, std::string &text_out);
 // Returns the bare token string, or empty string if not found.
 std::string ndef_extract_cashu_token(const std::string &text);
 
-#endif

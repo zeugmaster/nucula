@@ -1,5 +1,4 @@
-#ifndef CASHU_WALLET_HPP
-#define CASHU_WALLET_HPP
+#pragma once
 
 #include "cashu.hpp"
 #include "secp256k1.h"
@@ -126,4 +125,3 @@ private:
 
 } // namespace cashu
 
-#endif

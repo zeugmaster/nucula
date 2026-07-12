@@ -1,5 +1,4 @@
-#ifndef NUCULA_HTTP_H
-#define NUCULA_HTTP_H
+#pragma once
 
 #include "esp_err.h"
 #include <stddef.h>
@@ -46,4 +45,3 @@ void http_response_free(http_response_t *resp);
 }
 #endif
 
-#endif

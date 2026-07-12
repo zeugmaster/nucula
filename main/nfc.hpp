@@ -1,5 +1,4 @@
-#ifndef NFC_HPP
-#define NFC_HPP
+#pragma once
 
 #include <cstdint>
 #include "driver/i2c_master.h"
@@ -23,4 +22,3 @@ void        nfc_request_stop();
 NfcState    nfc_state();
 const char *nfc_status_str();
 
-#endif

@@ -1,5 +1,4 @@
-#ifndef CASHU_NUT10_HPP
-#define CASHU_NUT10_HPP
+#pragma once
 
 #include "cashu.hpp"
 #include <string>
@@ -19,4 +18,3 @@ bool parse_nut10_secret(const std::string& s, NUT10Secret& out);
 
 } // namespace cashu
 
-#endif

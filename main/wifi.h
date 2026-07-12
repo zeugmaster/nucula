@@ -1,5 +1,4 @@
-#ifndef NUCULA_WIFI_H
-#define NUCULA_WIFI_H
+#pragma once
 
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
@@ -42,4 +41,3 @@ EventGroupHandle_t wifi_get_event_group(void);
 }
 #endif
 
-#endif

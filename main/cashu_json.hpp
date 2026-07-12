@@ -1,5 +1,4 @@
-#ifndef CASHU_JSON_HPP
-#define CASHU_JSON_HPP
+#pragma once
 
 #include "cashu.hpp"
 #include "cJSON.h"
@@ -97,4 +96,3 @@ bool deserialize_token_v3(const char* token_str, Token& out);
 
 } // namespace cashu
 
-#endif

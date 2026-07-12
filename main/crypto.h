@@ -1,5 +1,4 @@
-#ifndef CASHU_CRYPTO_H
-#define CASHU_CRYPTO_H
+#pragma once
 
 #include <stdint.h>
 #include <stddef.h>
@@ -192,4 +191,3 @@ int cashu_schnorr_sign_secret(const secp256k1_context *ctx,
 }
 #endif
 
-#endif
