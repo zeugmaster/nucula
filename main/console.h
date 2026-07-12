@@ -20,7 +20,7 @@ typedef struct {
 #define CONSOLE_DEFAULT_CONFIG() { \
     .max_line_length = 4096, \
     .tx_buffer_size = 4096, \
-    .rx_buffer_size = 256, \
+    .rx_buffer_size = 1024, \
     .task_stack_size = 24576, \
     .task_priority = 5, \
 }
