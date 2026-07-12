@@ -18,6 +18,7 @@
 #include "cashu_cbor.hpp"
 #include "wallet.hpp"
 #include "keyset.hpp"
+#include "unit.hpp"
 #include "console.h"
 #include "display.h"
 #include "i2c_bus.h"
@@ -685,6 +686,8 @@ static void cmd_selftest(const char *arg)
     bool ok = crypto_run_tests(wallet_store_ctx()) != 0;
     if (!cashu::keyset_run_tests())
         ok = false;
+    if (!cashu::unit_run_tests())
+        ok = false;
     console_printf("self-tests %s\r\n", ok ? "PASSED" : "FAILED");
 }
 
@@ -787,6 +790,8 @@ extern "C" void app_main(void)
     crypto_run_tests(ctx);
     if (!cashu::keyset_run_tests())
         ESP_LOGE(TAG, "keyset id derivation self-test FAILED");
+    if (!cashu::unit_run_tests())
+        ESP_LOGE(TAG, "unit formatter self-test FAILED");
 #endif
 
     cashu::Wallet::load_seed();
