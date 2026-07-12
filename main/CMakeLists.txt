@@ -4,7 +4,7 @@ idf_component_register(SRCS "nucula.cpp" "crypto.c" "crypto_bls.c" "crypto_test.
                             "bip39.c" "nut10.cpp" "base64url.cpp" "wallet_store.cpp" "ui.cpp"
                             "unit.cpp"
                     INCLUDE_DIRS "."
-                    REQUIRES secp256k1 pn7160
+                    REQUIRES secp256k1 pn7160 blst
                     PRIV_REQUIRES log mbedtls esp_timer json cbor esp_wifi esp_event
                                  esp_netif nvs_flash esp_http_client
                                  esp_driver_usb_serial_jtag vfs
