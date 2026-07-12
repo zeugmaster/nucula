@@ -108,8 +108,8 @@ struct cashu_suite {
 /* The secp256k1 BDHKE suite (NUT-00/11/12/13). Defined in crypto.c. */
 extern const cashu_suite_t cashu_suite_secp256k1;
 
-/* BLS12-381 suite (keyset v3). SCAFFOLD ONLY — defined in crypto_bls.c; all
- * ops are stubs and can_mint is 0 until a future session implements them. */
+/* BLS12-381 suite (keyset v3), defined in crypto_bls.c over the blst
+ * component. Verification is intrinsic (verify_proofs); no NUT-12 DLEQ. */
 extern const cashu_suite_t cashu_suite_bls;
 
 /* One-shot SHA-256 (mbedtls wrapper). out must hold 32 bytes. Returns 1/0.

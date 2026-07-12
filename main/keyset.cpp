@@ -48,7 +48,9 @@ KeysetProfile keyset_profile(KeysetVersion v)
     case KeysetVersion::v2:
         return {KeysetVersion::v2, /*can_mint=*/true, /*has_dleq=*/true};
     case KeysetVersion::v3:
-        return {KeysetVersion::v3, /*can_mint=*/false, /*has_dleq=*/false}; // scaffold
+        // BLS12-381: no NUT-12 DLEQ — verification is the intrinsic pairing
+        // check (cashu_suite_bls.verify_proofs).
+        return {KeysetVersion::v3, /*can_mint=*/true, /*has_dleq=*/false};
     default:
         // Legacy/unrecognized ids: secp BDHKE, so DLEQ may apply, but we can't
         // re-derive the id, so never mint with them (only spend existing proofs).

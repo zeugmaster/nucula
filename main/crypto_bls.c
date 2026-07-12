@@ -23,9 +23,6 @@
  * Every operation runs inside a blst_hw_acquire()/release() window so the
  * C3's RSA/MPI peripheral accelerates the field arithmetic (~4x); on other
  * targets those are no-ops and blst computes in software.
- *
- * can_mint stays 0 until the wallet-side verification paths land; flipping
- * it is the single enable switch for v3 minting.
  */
 
 /* NUT-00: hash-to-curve DST for the v3 G1 random-oracle suite. */
@@ -382,7 +379,7 @@ const cashu_suite_t cashu_suite_bls = {
     .point_len = G1_LEN,    /* compressed G1: Y, B_, C_, C */
     .mint_key_len = G2_LEN, /* compressed G2: mint keys K  */
     .scalar_len = 32,
-    .can_mint = 0,          /* flipped by the v3 enable commit */
+    .can_mint = 1,
     .has_dleq = 0,          /* NUT-12 does not apply to v3 — pairing verify instead */
     .blind = bls_blind,
     .unblind = bls_unblind,

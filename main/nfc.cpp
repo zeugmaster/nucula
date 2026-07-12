@@ -418,7 +418,10 @@ bool nfc_request_start(int amount, const char *unit, const char *mint_url)
 
     s_stop_flag.store(false);
     s_token_received = false;
-    if (xTaskCreate(nfc_task, "nfc", 16384, p, 5, &s_task_handle) != pdPASS) {
+    // 24 KB provisional: tap-time verify_incoming_proofs runs BLS pairings
+    // here (blst keeps miller-loop/final-exp temporaries on the stack).
+    // Re-trim from measured high-water marks like 600eb63.
+    if (xTaskCreate(nfc_task, "nfc", 24576, p, 5, &s_task_handle) != pdPASS) {
         delete p;
         return false;
     }

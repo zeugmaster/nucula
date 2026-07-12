@@ -720,16 +720,12 @@ bool Wallet::load_keysets()
         ks.keys = std::move(*keys);
 
         // NUT-02: re-derive the keyset id from its keys (+unit/fee/expiry for
-        // v2) and reject a mint whose claimed id does not match — closing the
-        // gap where the mint's claimed id was trusted verbatim. Only v1/v2 ids
-        // can be re-derived: v3/BLS crypto is not implemented yet (skip), and
+        // v2/v3) and reject a mint whose claimed id does not match — closing
+        // the gap where the mint's claimed id was trusted verbatim. Only
         // legacy pre-NUT-02 ids cannot be re-derived (accept unvalidated, secp).
         KeysetVersion ver = keyset_version(ks.id);
-        if (ver == KeysetVersion::v3) {
-            ESP_LOGW(TAG, "keyset %s: v3/BLS not supported yet, skipping", ks.id.c_str());
-            continue;
-        }
-        if (ver == KeysetVersion::v1 || ver == KeysetVersion::v2) {
+        if (ver == KeysetVersion::v1 || ver == KeysetVersion::v2 ||
+            ver == KeysetVersion::v3) {
             if (!verify_keyset_id(ks)) {
 #if CASHU_REQUIRE_VALID_KEYSET_ID
                 ESP_LOGE(TAG, "keyset %s: id != derived %s, rejecting",
@@ -739,6 +735,13 @@ bool Wallet::load_keysets()
                 ESP_LOGW(TAG, "keyset %s: id != derived %s, accepting (validation off)",
                          ks.id.c_str(), derive_keyset_id(ks).c_str());
 #endif
+            }
+            // A BLS signature does not bind the amount, so a v3 keyset
+            // reusing a key across amounts could confuse denominations.
+            if (ver == KeysetVersion::v3 && !keyset_keys_distinct(ks)) {
+                ESP_LOGE(TAG, "keyset %s: duplicate key across amounts, rejecting",
+                         ks.id.c_str());
+                continue;
             }
         } else {
             ESP_LOGI(TAG, "keyset %s: legacy/unrecognized id, accepting unvalidated",
