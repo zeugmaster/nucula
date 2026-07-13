@@ -18,14 +18,15 @@ typedef struct {
 
 /* task_stack_size: command handlers run TLS on this stack (receive/melt),
  * and `bench bls`/`selftest` run BLS12-381 pairings here (blst keeps its
- * miller-loop/final-exp temporaries on the stack). Measured HWM ~13.6 KB
- * across the full BLS selftest + bench + v3 mint/receive/melt E2E — 20 KB
- * leaves ~6.9 KB margin (previous TLS-only HWM was ~7.1 KB). */
+ * miller-loop/final-exp temporaries on the stack). Measured HWM ~16.5 KB
+ * across the full BLS selftest + bench with the chunked multi-miller
+ * verification (each 4-pair chunk holds ~3 KB of affine points and blst
+ * per-pair accumulators) — 24 KB leaves ~7.5 KB margin. */
 #define CONSOLE_DEFAULT_CONFIG() { \
     .max_line_length = 4096, \
     .tx_buffer_size = 4096, \
     .rx_buffer_size = 1024, \
-    .task_stack_size = 20480, \
+    .task_stack_size = 24576, \
     .task_priority = 5, \
 }
 

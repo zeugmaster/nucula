@@ -510,6 +510,54 @@ static int test_bls_point_validation(void)
     return pass;
 }
 
+/* K_i = (2+i)*g2, precomputed on the host (g2mul over the same blst):
+ * blst's G2 scalar mult keeps a ~9 KB window table on the stack and is
+ * a mint-side op the device must never run — deriving these on-device blew
+ * the console stack. Entry 0 doubles as the NUT-00 vector K = 2*g2. Used by
+ * the distinct-key suite tests and the swap benchmark. */
+static const char *BENCH_K_HEX[10] = {
+        /*  2*g2 */
+        "aa4edef9c1ed7f729f520e47730a124fd70662a904ba1074728114d1031e1572"
+        "c6c886f6b57ec72a6178288c47c335771638533957d540a9d2370f17cc7ed586"
+        "3bc0b995b8825e0ee1ea1e1e4d00dbae81f14b0bf3611b78c952aacab827a053",
+        /*  3*g2 */
+        "89380275bbc8e5dcea7dc4dd7e0550ff2ac480905396eda55062650f8d251c96"
+        "eb480673937cc6d9d6a44aaa56ca66dc122915c824a0857e2ee414a3dccb23ae"
+        "691ae54329781315a0c75df1c04d6d7a50a030fc866f09d516020ef82324afae",
+        /*  4*g2 */
+        "870227d3f13684fdb7ce31b8065ba3acb35f7bde6fe2ddfefa359f8b35d08a9a"
+        "b9537b43e24f4ffb720b5a0bda2a82f20e7a30979a8853a077454eb63b8dcee7"
+        "5f106221b262886bb8e01b0abb043368da82f60899cc1412e33e4120195fc557",
+        /*  5*g2 */
+        "80fb837804dba8213329db46608b6c121d973363c1234a86dd183baff112709c"
+        "f97096c5e9a1a770ee9d7dc641a894d60411a5de6730ffece671a9f21d65028c"
+        "c0f1102378de124562cb1ff49db6f004fcd14d683024b0548eff3d1468df2688",
+        /*  6*g2 */
+        "83f4b4e761936d90fd5f55f99087138a07a69755ad4a46e4dd1c2cfe6d11371e"
+        "1cc033111a0595e3bba98d0f538db45119e384121b7d70927c49e6d044fd8517"
+        "c36bc6ed2813a8956dd64f049869e8a77f7e46930240e6984abe26fa6a89658f",
+        /*  7*g2 */
+        "8d0273f6bf31ed37c3b8d68083ec3d8e20b5f2cc170fa24b9b5be35b34ed013f"
+        "9a921f1cad1644d4bdb14674247234c8049cd1dbb2d2c3581e54c088135fef36"
+        "505a6823d61b859437bfc79b617030dc8b40e32bad1fa85b9c0f368af6d38d3c",
+        /*  8*g2 */
+        "92be651a5fa620340d418834526d37a8c932652345400b4cd9d43c8f41c080f4"
+        "1a6d9558118ebeab9d4268bb73e850e102142a58bae275564a6d63cb6bd6266c"
+        "a66bef07a6ab8ca37b9d0ba2d4effbccfd89c169649f7d0e8a3eb006846579ad",
+        /*  9*g2 */
+        "ac48e0d4f9404ae0a7f10774c55a9e838bb09d3bae85b5eaa6b16b0f4dc23543"
+        "68117f3799c37f3f7126d8b54d3f8393018405e4b67f957b6465ead9f5afc478"
+        "32d45643dc3aa03af7314c6cf980fa23dd3bb8db3358693ad06011f6a6b1a5ff",
+        /* 10*g2 */
+        "afb665f5a7559cb0fa1300048a0e6f1ab5547226e86f8e752dd13c28eda41684"
+        "92e3d3bf2f8a6b230dd57f79b1afa9911796abe0d9e4a703962be528e6a5cb65"
+        "c60725886f925db0e2a89107ec248bb39fa332bc63bd91d28ae66e0dfce8f754",
+        /* 11*g2 */
+        "a190be857d602284393305bfe0a29e29a6982ed3f04ccaabafb7e59cdc7eda85"
+        "c22bc3e8690355c7a0fb7590ae40f1b009303f04d568e289a35102b6df883d5e"
+        "d620355c0eb5d02236718cdaf99fba6e19ef5cee2996268eb9a53ae1ee09bce3",
+};
+
 /* --------------------------------------------------------------------------
  * Suite-level tests: drive cashu_suite_bls through the byte-oriented vtable
  * exactly as the wallet does. The suite ops manage the MPI lock internally,
@@ -657,6 +705,48 @@ static int test_bls_suite(void)
     }
     if (pass)
         ESP_LOGI(TAG, "suite input validation: OK");
+
+    /* Chunk-boundary coverage for the multi-miller batching: 10 proofs under
+     * 10 distinct keys crosses the MILLER_CHUNK=8 boundary (one full chunk +
+     * a partial one carrying the folded left side). Tampering the first and
+     * the last proof exercises both chunks. Keys/proofs from the bench table. */
+    {
+        static unsigned char ks10[10 * 96], cs10[10 * 48];
+        static char sbufs[10][16];
+        const unsigned char *sec10[10];
+        size_t slen10[10];
+        blst_hw_acquire();
+        for (int i = 0; i < 10; i++) {
+            int sl = snprintf(sbufs[i], sizeof(sbufs[i]), "chunk_%d", i);
+            sec10[i] = (const unsigned char *)sbufs[i];
+            slen10[i] = (size_t)sl;
+            hex_to_bytes(BENCH_K_HEX[i], ks10 + i * 96, 96);
+            blst_scalar a;
+            small_scalar(&a, (unsigned char)(2 + i));
+            blst_p1 y, c;
+            hash_to_g1(&y, sec10[i], slen10[i]);
+            p1_mul(&c, &y, &a);
+            blst_p1_compress(cs10 + i * 48, &c);
+        }
+        blst_hw_release();
+        if (s->verify_proofs(NULL, 10, ks10, cs10, sec10, slen10) != 1) {
+            ESP_LOGE(TAG, "suite verify_proofs n=10: rejected a valid batch");
+            pass = 0;
+        }
+        vTaskDelay(1);
+        const unsigned char *bad_first[10], *bad_last[10];
+        memcpy(bad_first, sec10, sizeof(bad_first));
+        memcpy(bad_last, sec10, sizeof(bad_last));
+        bad_first[0] = (const unsigned char *)"chunk_x";
+        bad_last[9] = (const unsigned char *)"chunk_y";
+        if (s->verify_proofs(NULL, 10, ks10, cs10, bad_first, slen10) != 0 ||
+            s->verify_proofs(NULL, 10, ks10, cs10, bad_last, slen10) != 0) {
+            ESP_LOGE(TAG, "suite verify_proofs n=10: accepted a tampered batch");
+            pass = 0;
+        }
+        if (pass)
+            ESP_LOGI(TAG, "suite verify_proofs n=10 (chunk boundary): OK");
+    }
 
     /* NUT-13 v3 vector (tests/13-tests.md): counter 3, attempt 0 rejected,
      * attempt 1 accepted — proves the rejection loop and u32_BE framing. */
@@ -916,6 +1006,7 @@ static void bench_rows(void)
     });
 }
 
+
 /* Wallet-side crypto of a REAL 10-proof swap through the production suite:
  * verify the 10 incoming proofs, blind 10 outputs, unblind the 10 returned
  * signatures, verify the 10 new proofs. Every proof sits under a DISTINCT
@@ -926,52 +1017,6 @@ static void bench_rows(void)
 static void bench_suite_swap(void)
 {
     enum { N = 10 };
-    /* K_i = (2+i)*g2, precomputed on the host (g2mul over the same blst):
-     * blst's G2 scalar mult keeps a ~9 KB window table on the stack and is
-     * a mint-side op the device must never run — deriving these here blew
-     * the console stack. Entry 0 doubles as the NUT-00 vector K = 2*g2. */
-    static const char *BENCH_K_HEX[N] = {
-        /*  2*g2 */
-        "aa4edef9c1ed7f729f520e47730a124fd70662a904ba1074728114d1031e1572"
-        "c6c886f6b57ec72a6178288c47c335771638533957d540a9d2370f17cc7ed586"
-        "3bc0b995b8825e0ee1ea1e1e4d00dbae81f14b0bf3611b78c952aacab827a053",
-        /*  3*g2 */
-        "89380275bbc8e5dcea7dc4dd7e0550ff2ac480905396eda55062650f8d251c96"
-        "eb480673937cc6d9d6a44aaa56ca66dc122915c824a0857e2ee414a3dccb23ae"
-        "691ae54329781315a0c75df1c04d6d7a50a030fc866f09d516020ef82324afae",
-        /*  4*g2 */
-        "870227d3f13684fdb7ce31b8065ba3acb35f7bde6fe2ddfefa359f8b35d08a9a"
-        "b9537b43e24f4ffb720b5a0bda2a82f20e7a30979a8853a077454eb63b8dcee7"
-        "5f106221b262886bb8e01b0abb043368da82f60899cc1412e33e4120195fc557",
-        /*  5*g2 */
-        "80fb837804dba8213329db46608b6c121d973363c1234a86dd183baff112709c"
-        "f97096c5e9a1a770ee9d7dc641a894d60411a5de6730ffece671a9f21d65028c"
-        "c0f1102378de124562cb1ff49db6f004fcd14d683024b0548eff3d1468df2688",
-        /*  6*g2 */
-        "83f4b4e761936d90fd5f55f99087138a07a69755ad4a46e4dd1c2cfe6d11371e"
-        "1cc033111a0595e3bba98d0f538db45119e384121b7d70927c49e6d044fd8517"
-        "c36bc6ed2813a8956dd64f049869e8a77f7e46930240e6984abe26fa6a89658f",
-        /*  7*g2 */
-        "8d0273f6bf31ed37c3b8d68083ec3d8e20b5f2cc170fa24b9b5be35b34ed013f"
-        "9a921f1cad1644d4bdb14674247234c8049cd1dbb2d2c3581e54c088135fef36"
-        "505a6823d61b859437bfc79b617030dc8b40e32bad1fa85b9c0f368af6d38d3c",
-        /*  8*g2 */
-        "92be651a5fa620340d418834526d37a8c932652345400b4cd9d43c8f41c080f4"
-        "1a6d9558118ebeab9d4268bb73e850e102142a58bae275564a6d63cb6bd6266c"
-        "a66bef07a6ab8ca37b9d0ba2d4effbccfd89c169649f7d0e8a3eb006846579ad",
-        /*  9*g2 */
-        "ac48e0d4f9404ae0a7f10774c55a9e838bb09d3bae85b5eaa6b16b0f4dc23543"
-        "68117f3799c37f3f7126d8b54d3f8393018405e4b67f957b6465ead9f5afc478"
-        "32d45643dc3aa03af7314c6cf980fa23dd3bb8db3358693ad06011f6a6b1a5ff",
-        /* 10*g2 */
-        "afb665f5a7559cb0fa1300048a0e6f1ab5547226e86f8e752dd13c28eda41684"
-        "92e3d3bf2f8a6b230dd57f79b1afa9911796abe0d9e4a703962be528e6a5cb65"
-        "c60725886f925db0e2a89107ec248bb39fa332bc63bd91d28ae66e0dfce8f754",
-        /* 11*g2 */
-        "a190be857d602284393305bfe0a29e29a6982ed3f04ccaabafb7e59cdc7eda85"
-        "c22bc3e8690355c7a0fb7590ae40f1b009303f04d568e289a35102b6df883d5e"
-        "d620355c0eb5d02236718cdaf99fba6e19ef5cee2996268eb9a53ae1ee09bce3",
-    };
     static unsigned char Ks[N * 96], Cin[N * 48], Cblind[N * 48];
     static char in_secret_bufs[N][16], out_secret_bufs[N][16];
     const unsigned char *in_secrets[N], *out_secrets[N];

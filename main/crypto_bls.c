@@ -1,5 +1,6 @@
 #include "cashu_suite.h"
 
+#include <stdbool.h>
 #include <string.h>
 
 #include <blst.h>
@@ -194,21 +195,43 @@ static void derive_batch_weight(blst_scalar *w, const unsigned char challenge[32
     }
 }
 
+/* Pairings held per multi-miller call. Within one blst_miller_loop_n the
+ * expensive fp12 accumulator squarings are shared across all pairings (the
+ * spec's "single multi-miller loop" SHOULD); chunking bounds the stack.
+ * Each slot costs ~0.7 KB: our affine copies (288 B) plus blst's internal
+ * per-pair G2 accumulator VLA and line temporaries — chunks of 8 left only
+ * 1.7 KB of console-stack margin. 4 keeps ~90% of the sharing (the saving
+ * scales with sum(len-1)/n) at half the stack. */
+#define MILLER_CHUNK 4
+
+static void miller_flush(blst_fp12 *acc,
+                         const blst_p2_affine *const qs[],
+                         const blst_p1_affine *const ps[],
+                         size_t len)
+{
+    if (len == 0)
+        return;
+    blst_fp12 ml;
+    blst_miller_loop_n(&ml, qs, ps, len);
+    blst_fp12_mul(acc, acc, &ml);
+}
+
 /*
  * NUT-00 batch verification:
  *
  *   e( sum_i w_i*C_i , g2 ) == prod_i e( w_i*Y_i , K_i )
  *
- * evaluated as one miller loop per proof, multiplied in GT under one shared
- * final exponentiation (blst_fp12_finalverify). n == 1 degenerates to the
- * plain pairing check with w = 1 (the weight is skipped entirely).
+ * folded as  e( -sum_i w_i*C_i , g2 ) * prod_i e( w_i*Y_i , K_i ) == 1,
+ * evaluated in chunked multi-miller loops under one final exponentiation.
+ * n == 1 degenerates to the plain pairing check with w = 1 (the weight is
+ * skipped entirely) — a single 2-pair multi-miller.
  *
  * The spec groups the right side by distinct mint key — but every AMOUNT has
  * a distinct key within a keyset (NUT-01 requires it), so a typical token's
  * keys are nearly all distinct and grouping saves close to nothing while
- * needing per-group accumulators. Per-proof accumulation is constant-memory
- * for any batch size and computes the identical GT product; the last
- * validated K is cached so repeated denominations skip re-validation.
+ * needing per-group accumulators. Per-proof pairs are constant-memory for
+ * any batch size and compute the identical GT product; the last validated K
+ * is cached so repeated denominations skip re-validation.
  *
  * The transcript challenge is streamed through mbedTLS SHA-256 so batches of
  * any size use constant memory; weights are consumed as they are derived.
@@ -257,12 +280,17 @@ static int bls_verify_proofs(void *ctx, size_t n,
     int ok = 0;
     blst_hw_acquire();
 
-    /* One pass: validate C_i, accumulate sum_C += w_i*C_i in G1, and fold
-     * e(w_i*Y_i, K_i) into the right-side GT product. */
+    /* One pass: validate C_i, accumulate sum_C += w_i*C_i in G1, and queue
+     * the (K_i, w_i*Y_i) pair for the chunked multi-miller product. */
     blst_p2_affine k_aff;
     const unsigned char *k_valid = NULL; /* last validated K (into Ks) */
     blst_p1 sum_c;
-    blst_fp12 right = *blst_fp12_one();
+    blst_fp12 acc = *blst_fp12_one();
+    blst_p2_affine chunk_q[MILLER_CHUNK];
+    blst_p1_affine chunk_p[MILLER_CHUNK];
+    const blst_p2_affine *chunk_qp[MILLER_CHUNK];
+    const blst_p1_affine *chunk_pp[MILLER_CHUNK];
+    size_t chunk_len = 0;
 
     for (size_t i = 0; i < n; i++) {
         blst_p1_affine c_aff;
@@ -298,22 +326,30 @@ static int bls_verify_proofs(void *ctx, size_t n,
             k_valid = k_comp;
         }
 
-        blst_p1_affine wy_aff;
-        blst_p1_to_affine(&wy_aff, &wy);
-        blst_fp12 ml;
-        blst_miller_loop(&ml, &k_aff, &wy_aff);
-        blst_fp12_mul(&right, &right, &ml);
+        chunk_q[chunk_len] = k_aff; /* copy: k_aff is a reused cache slot */
+        blst_p1_to_affine(&chunk_p[chunk_len], &wy);
+        chunk_qp[chunk_len] = &chunk_q[chunk_len];
+        chunk_pp[chunk_len] = &chunk_p[chunk_len];
+        if (++chunk_len == MILLER_CHUNK) {
+            miller_flush(&acc, chunk_qp, chunk_pp, chunk_len);
+            chunk_len = 0;
+        }
     }
 
     {
-        blst_p2_affine g2_aff;
-        blst_p2_to_affine(&g2_aff, blst_p2_generator());
-        blst_p1_affine sum_c_aff;
-        blst_p1_to_affine(&sum_c_aff, &sum_c);
-        blst_fp12 left;
-        blst_miller_loop(&left, &g2_aff, &sum_c_aff);
+        /* Fold the left side into the product as e(-sum_C, g2) and check
+         * the whole thing final-exponentiates to one. */
+        blst_p1_cneg(&sum_c, true);
+        chunk_q[chunk_len] = *blst_p2_affine_generator();
+        blst_p1_to_affine(&chunk_p[chunk_len], &sum_c);
+        chunk_qp[chunk_len] = &chunk_q[chunk_len];
+        chunk_pp[chunk_len] = &chunk_p[chunk_len];
+        chunk_len++;
+        miller_flush(&acc, chunk_qp, chunk_pp, chunk_len);
 
-        ok = blst_fp12_finalverify(&left, &right) ? 1 : 0;
+        blst_fp12 gt;
+        blst_final_exp(&gt, &acc);
+        ok = blst_fp12_is_one(&gt) ? 1 : 0;
     }
 
 out:

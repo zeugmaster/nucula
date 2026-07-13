@@ -1103,8 +1103,9 @@ extern "C" void app_main(void)
     // few seconds after GOT_IP, and a link that stays up never produces
     // another edge. So once connected we retry with an exponential backoff
     // until everything is redeemed (or the link drops), then re-arm on the
-    // next reconnect. 16 KB stack (provisional): draining v3 tokens runs the
-    // BLS pairing batch in receive(); re-trim from measured high-water marks.
+    // next reconnect. 20 KB stack: draining v3 tokens runs the chunked
+    // multi-miller pairing batch in receive() (console measured ~16.5 KB
+    // peak on the same verification frames).
     xTaskCreate([](void *) {
         EventGroupHandle_t eg = wifi_get_event_group();
         for (;;) {
@@ -1156,7 +1157,7 @@ extern "C" void app_main(void)
             while (xEventGroupGetBits(eg) & WIFI_CONNECTED_BIT)
                 vTaskDelay(pdMS_TO_TICKS(5000));
         }
-    }, "wifi_drain", 16384, NULL, 4, NULL);
+    }, "wifi_drain", 20480, NULL, 4, NULL);
 
     // Shared I2C bus for display, keypad, and NFC. Each driver probes for
     // its device and disables itself when absent, so a bare module still
