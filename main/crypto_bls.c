@@ -36,11 +36,6 @@ static const unsigned char BATCH_DST[] = "Cashu_BLS_Batch_v1";
 #define G1_LEN 48
 #define G2_LEN 96
 
-/* A single token realistically spans a handful of keysets; cap the distinct
- * mint keys per batch so the per-key pairing accumulators stay on the stack.
- * More distinct keys than this fails closed (callers can split the batch). */
-#define BLS_MAX_DISTINCT_KEYS 8
-
 /* BLS12-381 Fr order, big-endian. A 32-byte value is a valid scalar iff
  * 0 < OS2IP(x) < this, compared on the raw bytes: blst_scalar_from_be_bytes
  * REDUCES out-of-range inputs (reporting success), so its return value
@@ -200,13 +195,20 @@ static void derive_batch_weight(blst_scalar *w, const unsigned char challenge[32
 }
 
 /*
- * NUT-00 batch verification, grouped by distinct mint key:
+ * NUT-00 batch verification:
  *
- *   e( sum_i w_i*C_i , g2 ) == prod_k e( sum_{i: K_i=K_k} w_i*Y_i , K_k )
+ *   e( sum_i w_i*C_i , g2 ) == prod_i e( w_i*Y_i , K_i )
  *
- * evaluated as miller loops multiplied in GT with one shared final
- * exponentiation (blst_fp12_finalverify). n == 1 degenerates to the plain
- * pairing check with w = 1 (the weight is skipped entirely).
+ * evaluated as one miller loop per proof, multiplied in GT under one shared
+ * final exponentiation (blst_fp12_finalverify). n == 1 degenerates to the
+ * plain pairing check with w = 1 (the weight is skipped entirely).
+ *
+ * The spec groups the right side by distinct mint key — but every AMOUNT has
+ * a distinct key within a keyset (NUT-01 requires it), so a typical token's
+ * keys are nearly all distinct and grouping saves close to nothing while
+ * needing per-group accumulators. Per-proof accumulation is constant-memory
+ * for any batch size and computes the identical GT product; the last
+ * validated K is cached so repeated denominations skip re-validation.
  *
  * The transcript challenge is streamed through mbedTLS SHA-256 so batches of
  * any size use constant memory; weights are consumed as they are derived.
@@ -255,15 +257,12 @@ static int bls_verify_proofs(void *ctx, size_t n,
     int ok = 0;
     blst_hw_acquire();
 
-    /* One pass: validate C_i, accumulate sum_C += w_i*C_i, and per distinct
-     * mint key accumulate sum_wY += w_i*Y_i (each new key fully validated). */
-    struct {
-        const unsigned char *k_comp;
-        blst_p2_affine k_aff;
-        blst_p1 sum_wy;
-    } groups[BLS_MAX_DISTINCT_KEYS];
-    size_t n_groups = 0;
+    /* One pass: validate C_i, accumulate sum_C += w_i*C_i in G1, and fold
+     * e(w_i*Y_i, K_i) into the right-side GT product. */
+    blst_p2_affine k_aff;
+    const unsigned char *k_valid = NULL; /* last validated K (into Ks) */
     blst_p1 sum_c;
+    blst_fp12 right = *blst_fp12_one();
 
     for (size_t i = 0; i < n; i++) {
         blst_p1_affine c_aff;
@@ -293,22 +292,17 @@ static int bls_verify_proofs(void *ctx, size_t n,
             wy = y;
 
         const unsigned char *k_comp = Ks + i * G2_LEN;
-        size_t g;
-        for (g = 0; g < n_groups; g++) {
-            if (memcmp(groups[g].k_comp, k_comp, G2_LEN) == 0) {
-                blst_p1_add(&groups[g].sum_wy, &groups[g].sum_wy, &wy);
-                break;
-            }
-        }
-        if (g == n_groups) {
-            if (n_groups == BLS_MAX_DISTINCT_KEYS)
-                goto out; /* fail closed; callers can split such a batch */
-            if (!validate_g2(&groups[g].k_aff, k_comp))
+        if (!k_valid || memcmp(k_valid, k_comp, G2_LEN) != 0) {
+            if (!validate_g2(&k_aff, k_comp))
                 goto out;
-            groups[g].k_comp = k_comp;
-            groups[g].sum_wy = wy;
-            n_groups++;
+            k_valid = k_comp;
         }
+
+        blst_p1_affine wy_aff;
+        blst_p1_to_affine(&wy_aff, &wy);
+        blst_fp12 ml;
+        blst_miller_loop(&ml, &k_aff, &wy_aff);
+        blst_fp12_mul(&right, &right, &ml);
     }
 
     {
@@ -318,15 +312,6 @@ static int bls_verify_proofs(void *ctx, size_t n,
         blst_p1_to_affine(&sum_c_aff, &sum_c);
         blst_fp12 left;
         blst_miller_loop(&left, &g2_aff, &sum_c_aff);
-
-        blst_fp12 right = *blst_fp12_one();
-        for (size_t g = 0; g < n_groups; g++) {
-            blst_p1_affine wy_aff;
-            blst_p1_to_affine(&wy_aff, &groups[g].sum_wy);
-            blst_fp12 ml;
-            blst_miller_loop(&ml, &groups[g].k_aff, &wy_aff);
-            blst_fp12_mul(&right, &right, &ml);
-        }
 
         ok = blst_fp12_finalverify(&left, &right) ? 1 : 0;
     }
