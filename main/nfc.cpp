@@ -3,6 +3,7 @@
 #include "cashu.hpp"
 #include "cashu_json.hpp"
 #include "cashu_cbor.hpp"
+#include "keyset.hpp"
 #include "wallet.hpp"
 #include "wallet_store.hpp"
 #include "unit.hpp"
@@ -70,15 +71,35 @@ static int redeem_or_stash_token(const std::string &token_str,
 
     if (!wifi_is_connected()) {
         // Offline: only accept a token from a mint we already hold keysets
-        // for. Verifying the proofs' DLEQ (NUT-12) requires that mint's
-        // public keys; without them a forged token is indistinguishable from
-        // real ecash, and there is no online swap to fall back on. Refuse —
-        // and do NOT create a new mint slot for an unknown mint.
+        // for. Verifying the proofs requires that mint's public keys (DLEQ
+        // for secp, the pairing check for v3); without them a forged token
+        // is indistinguishable from real ecash, and there is no online swap
+        // to fall back on. Refuse — and do NOT create a new mint slot for an
+        // unknown mint.
         cashu::Wallet *w = wallet_store_find(token.mint.c_str());
         if (!w || w->keysets().empty()) {
             ESP_LOGE(TAG, "offline: refusing token from unknown mint %s "
-                          "(no keysets, cannot verify DLEQ)",
+                          "(no keysets, cannot verify proofs)",
                      token.mint.c_str());
+            return -1;
+        }
+        // Verify at TAP time, not just at drain: v3 proofs verify fully
+        // offline against the cached keys (secp proofs verify a forwarded
+        // DLEQ if present), so a forged token is rejected here instead of
+        // being displayed as received and silently failing later.
+        std::vector<cashu::Proof> inputs = token.proofs;
+        for (auto &p : inputs) {
+            bool amb = false;
+            const cashu::Keyset *ks = cashu::resolve_keyset(w->keysets(), p.id, &amb);
+            if (!ks || amb) {
+                ESP_LOGE(TAG, "offline: %s keyset %.16s, refusing",
+                         amb ? "ambiguous" : "unknown", p.id.c_str());
+                return -1;
+            }
+            p.id = ks->id;
+        }
+        if (!w->verify_incoming_proofs(inputs)) {
+            ESP_LOGE(TAG, "offline: proof verification failed, refusing token");
             return -1;
         }
         if (!w->stash_pending_token(token_str)) {
@@ -397,7 +418,11 @@ bool nfc_request_start(int amount, const char *unit, const char *mint_url)
 
     s_stop_flag.store(false);
     s_token_received = false;
-    if (xTaskCreate(nfc_task, "nfc", 16384, p, 5, &s_task_handle) != pdPASS) {
+    // 24 KB provisional: tap-time verify_incoming_proofs runs BLS pairings
+    // here (blst keeps miller-loop/final-exp temporaries on the stack; the
+    // console task measured ~13.6 KB peak on the same paths). TODO(hw-verify):
+    // re-trim from this task's HWM after a real v3 NFC tap, like 600eb63.
+    if (xTaskCreate(nfc_task, "nfc", 24576, p, 5, &s_task_handle) != pdPASS) {
         delete p;
         return false;
     }

@@ -11,6 +11,7 @@
 #include "secp256k1.h"
 #include "crypto.h"
 #include "crypto_test.h"
+#include "crypto_bls_test.h"
 #include "wifi.h"
 #include "http.h"
 #include "cashu.hpp"
@@ -943,9 +944,13 @@ usage:
 
 static void cmd_bench(const char *arg)
 {
-    (void)arg;
-    nucula_console_write("benchmarking crypto primitives...\r\n");
-    crypto_run_benchmark(wallet_store_ctx());
+    if (arg && strncmp(arg, "bls", 3) == 0) {
+        nucula_console_write("benchmarking BLS12-381 primitives (slow on the portable path)...\r\n");
+        crypto_bls_run_benchmark();
+    } else {
+        nucula_console_write("benchmarking crypto primitives...\r\n");
+        crypto_run_benchmark(wallet_store_ctx());
+    }
     nucula_console_write("done (results logged at info level)\r\n");
 }
 
@@ -954,11 +959,15 @@ static void cmd_selftest(const char *arg)
     (void)arg;
     nucula_console_write("running self-tests (details logged at info level)...\r\n");
     bool ok = crypto_run_tests(wallet_store_ctx()) != 0;
+    if (!crypto_bls_run_tests())
+        ok = false;
     if (!cashu::keyset_run_tests())
         ok = false;
     if (!cashu::unit_run_tests())
         ok = false;
     if (!cashu::cashu_json_run_tests())
+        ok = false;
+    if (!cashu::cashu_cbor_run_tests())
         ok = false;
     console_printf("self-tests %s\r\n", ok ? "PASSED" : "FAILED");
 }
@@ -1038,7 +1047,7 @@ extern "C" void app_main(void)
     console_register_cmd("heap",    cmd_heap,     "show heap usage");
     console_register_cmd("tasks",   cmd_tasks,    "show task stack high-water marks");
     console_register_cmd("log",     cmd_log,      "log <e|w|i|d> [tag] — set log level");
-    console_register_cmd("bench",   cmd_bench,    "benchmark crypto primitives");
+    console_register_cmd("bench",   cmd_bench,    "bench [bls] — benchmark crypto primitives");
     console_register_cmd("selftest", cmd_selftest, "run crypto/keyset self-tests");
     console_start();
 
@@ -1061,12 +1070,16 @@ extern "C" void app_main(void)
 
 #if CONFIG_NUCULA_SELFTEST_ON_BOOT
     crypto_run_tests(ctx);
+    if (!crypto_bls_run_tests())
+        ESP_LOGE(TAG, "BLS crypto self-test FAILED");
     if (!cashu::keyset_run_tests())
         ESP_LOGE(TAG, "keyset id derivation self-test FAILED");
     if (!cashu::unit_run_tests())
         ESP_LOGE(TAG, "unit formatter self-test FAILED");
     if (!cashu::cashu_json_run_tests())
         ESP_LOGE(TAG, "quote/mint-info JSON self-test FAILED");
+    if (!cashu::cashu_cbor_run_tests())
+        ESP_LOGE(TAG, "v4 token CBOR self-test FAILED");
 #endif
 
     cashu::Wallet::load_seed();
@@ -1090,7 +1103,9 @@ extern "C" void app_main(void)
     // few seconds after GOT_IP, and a link that stays up never produces
     // another edge. So once connected we retry with an exponential backoff
     // until everything is redeemed (or the link drops), then re-arm on the
-    // next reconnect.
+    // next reconnect. 20 KB stack: draining v3 tokens runs the chunked
+    // multi-miller pairing batch in receive() (console measured ~16.5 KB
+    // peak on the same verification frames).
     xTaskCreate([](void *) {
         EventGroupHandle_t eg = wifi_get_event_group();
         for (;;) {
@@ -1142,7 +1157,7 @@ extern "C" void app_main(void)
             while (xEventGroupGetBits(eg) & WIFI_CONNECTED_BIT)
                 vTaskDelay(pdMS_TO_TICKS(5000));
         }
-    }, "wifi_drain", 8192, NULL, 4, NULL);
+    }, "wifi_drain", 20480, NULL, 4, NULL);
 
     // Shared I2C bus for display, keypad, and NFC. Each driver probes for
     // its device and disables itself when absent, so a bare module still

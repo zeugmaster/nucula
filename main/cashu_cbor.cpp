@@ -1,5 +1,6 @@
 #include "cashu_cbor.hpp"
 #include "base64url.hpp"
+#include "cashu_suite.h"
 #include "hex.h"
 
 #include <cstring>
@@ -237,7 +238,7 @@ bool deserialize_token_v4(const char *token_str, Token &out)
 static bool encode_hex_bytes(CborEncoder *enc, const std::string &hex,
                              size_t max_bytes)
 {
-    uint8_t bytes[33];
+    uint8_t bytes[CASHU_MAX_POINT_LEN]; /* covers points (<= 48) and ids (33) */
     size_t len = hex.size() / 2;
     if ((hex.size() % 2) != 0 || len > max_bytes || max_bytes > sizeof(bytes))
         return false;
@@ -310,9 +311,9 @@ static bool encode_token_v4(const Token &token,
             cbor_encode_text_stringz(&p_map, "s");
             cbor_encode_text_stringz(&p_map, p->secret.c_str());
 
-            // "c": signature (byte string)
+            // "c": signature (byte string; 33 secp / 48 BLS G1)
             cbor_encode_text_stringz(&p_map, "c");
-            if (!encode_hex_bytes(&p_map, p->C, 33))
+            if (!encode_hex_bytes(&p_map, p->C, CASHU_MAX_POINT_LEN))
                 return false;
 
             if (p->dleq) {
@@ -670,6 +671,95 @@ std::string serialize_payment_request(const PaymentRequest &req)
     size_t cbor_len = cbor_encoder_get_buffer_size(&enc, buf);
     std::string encoded = base64url_encode(buf, cbor_len);
     return std::string("creqA") + encoded;
+}
+
+// -------------------------------------------------------------------------
+// Self-test: V4 token round-trip with mixed v2 (33-byte C + dleq) and
+// v3 (48-byte C, no dleq) proofs.
+// -------------------------------------------------------------------------
+
+bool cashu_cbor_run_tests()
+{
+    bool ok = true;
+
+    Token t;
+    t.mint = "https://mint.example.com";
+    t.unit = "sat";
+    t.memo = "cbor self-test";
+
+    Proof p2; // secp v2: 33-byte C, forwarded DLEQ
+    p2.id = "018fa0e10e36d5d1d5bb784c8081c2dac0dcd022d9d188e96c320e5a7016c9883c";
+    p2.amount = 2;
+    p2.secret = "407915bc212be61a77e3e6d2aeb4c727980bda51cd06a6afc29e2861768a7837";
+    p2.C = "02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea";
+    p2.dleq = DLEQ{
+        "9818e061ee51d5c8edc3342369a554998ff7b4381c8652d724cdf46429be73d9",
+        "9818e061ee51d5c8edc3342369a554998ff7b4381c8652d724cdf46429be73da",
+        std::optional<std::string>(
+            "a6d13fcd7a18442e6076f5e1e7c887ad5de40a019824bdfa9fe740d302e8d861"),
+    };
+    t.proofs.push_back(p2);
+
+    Proof p3; // BLS v3: 48-byte C (the NUT-00 vector's unblinded C), no dleq
+    p3.id = "02abd02ebc1ff44652153375162407deaf0b30e590844cca0b6e4894a08a8828dd";
+    p3.amount = 8;
+    p3.secret = "test_message";
+    p3.C = "b7a4881059133fd91a8753600d9a5e524c65d6224f6fe2d5aef9e59f1507fdad"
+           "90b3b4d48ee46da5c8dfaa0b88e28b69";
+    t.proofs.push_back(p3);
+
+    const std::string ser = serialize_token_v4(t);
+    if (ser.empty() || ser.compare(0, 6, "cashuB") != 0) {
+        ESP_LOGE(TAG, "self-test: serialize_token_v4 failed");
+        return false;
+    }
+
+    Token back;
+    if (!deserialize_token_v4(ser.c_str(), back)) {
+        ESP_LOGE(TAG, "self-test: deserialize_token_v4 failed");
+        return false;
+    }
+    if (back.mint != t.mint || back.unit != t.unit ||
+        !back.memo || *back.memo != *t.memo || back.proofs.size() != 2) {
+        ESP_LOGE(TAG, "self-test: token metadata mismatch");
+        ok = false;
+    }
+    for (const auto &want : t.proofs) {
+        const Proof *got = nullptr;
+        for (const auto &p : back.proofs)
+            if (p.secret == want.secret)
+                got = &p;
+        if (!got || got->id != want.id || got->amount != want.amount ||
+            got->C != want.C) {
+            ESP_LOGE(TAG, "self-test: proof mismatch (amount=%d)", want.amount);
+            ok = false;
+            continue;
+        }
+        if (want.dleq) {
+            if (!got->dleq || got->dleq->e != want.dleq->e ||
+                got->dleq->s != want.dleq->s || !got->dleq->r ||
+                *got->dleq->r != *want.dleq->r) {
+                ESP_LOGE(TAG, "self-test: dleq not preserved");
+                ok = false;
+            }
+        } else if (got->dleq) {
+            ESP_LOGE(TAG, "self-test: phantom dleq on v3 proof");
+            ok = false;
+        }
+    }
+
+    { // an oversized point (49 bytes) must fail encode, not truncate
+        Token bad = t;
+        bad.proofs[1].C += "ff";
+        if (!serialize_token_v4(bad).empty()) {
+            ESP_LOGE(TAG, "self-test: oversized C was not rejected");
+            ok = false;
+        }
+    }
+
+    if (ok)
+        ESP_LOGI(TAG, "v4 token round-trip (v2+v3 proofs): OK");
+    return ok;
 }
 
 } // namespace cashu

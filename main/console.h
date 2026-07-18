@@ -16,14 +16,17 @@ typedef struct {
     int task_priority;
 } console_config_t;
 
-/* task_stack_size: command handlers run TLS on this stack (receive/melt).
- * Measured high-water mark after a full receive + bench + selftest pass:
- * ~7.1 KB used — 12 KB leaves ~5 KB margin. */
+/* task_stack_size: command handlers run TLS on this stack (receive/melt),
+ * and `bench bls`/`selftest` run BLS12-381 pairings here (blst keeps its
+ * miller-loop/final-exp temporaries on the stack). Measured HWM ~16.5 KB
+ * across the full BLS selftest + bench with the chunked multi-miller
+ * verification (each 4-pair chunk holds ~3 KB of affine points and blst
+ * per-pair accumulators) — 24 KB leaves ~7.5 KB margin. */
 #define CONSOLE_DEFAULT_CONFIG() { \
     .max_line_length = 4096, \
     .tx_buffer_size = 4096, \
     .rx_buffer_size = 1024, \
-    .task_stack_size = 12288, \
+    .task_stack_size = 24576, \
     .task_priority = 5, \
 }
 

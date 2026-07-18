@@ -18,7 +18,7 @@ enum class KeysetVersion {
     unknown = -1,
     v1 = 0x00,   // deprecated: "00" + 14 hex of sha256(sorted pubkeys); 8 bytes / 16 hex
     v2 = 0x01,   // current:    "01" + sha256(amt:pk,...|unit|fee|expiry); 33 bytes / 66 hex
-    v3 = 0x02,   // scaffold:   BLS12-381 (crypto_bls.c); id codec not yet implemented
+    v3 = 0x02,   // BLS12-381:  "02" + sha256(same preimage as v2, G2 keys); 33 bytes / 66 hex
 };
 
 // Per-version policy. Independent of the crypto suite, which v1 and v2 share.
@@ -47,6 +47,13 @@ std::string derive_keyset_id(const Keyset &ks);
 // (case-insensitive). Closes the NUT-02 gap where the mint's claimed ID was
 // trusted verbatim.
 bool verify_keyset_id(const Keyset &ks);
+
+// True iff every amount maps to a distinct pubkey. A BLS signature does not
+// bind the amount — verification only checks e(C, g2) == e(Y, K) against the
+// amount's key — so a key shared across amounts would let denominations be
+// confused. Must be checked separately from the id (a keyset with duplicate
+// keys still derives a valid id). Enforced for v3 keysets at load time.
+bool keyset_keys_distinct(const Keyset &ks);
 
 // The 8-byte (16-hex) short form of a keyset ID, as used in cashuB (V4) tokens.
 std::string keyset_id_short(const std::string &id);

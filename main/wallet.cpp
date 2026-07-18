@@ -720,16 +720,12 @@ bool Wallet::load_keysets()
         ks.keys = std::move(*keys);
 
         // NUT-02: re-derive the keyset id from its keys (+unit/fee/expiry for
-        // v2) and reject a mint whose claimed id does not match — closing the
-        // gap where the mint's claimed id was trusted verbatim. Only v1/v2 ids
-        // can be re-derived: v3/BLS crypto is not implemented yet (skip), and
+        // v2/v3) and reject a mint whose claimed id does not match — closing
+        // the gap where the mint's claimed id was trusted verbatim. Only
         // legacy pre-NUT-02 ids cannot be re-derived (accept unvalidated, secp).
         KeysetVersion ver = keyset_version(ks.id);
-        if (ver == KeysetVersion::v3) {
-            ESP_LOGW(TAG, "keyset %s: v3/BLS not supported yet, skipping", ks.id.c_str());
-            continue;
-        }
-        if (ver == KeysetVersion::v1 || ver == KeysetVersion::v2) {
+        if (ver == KeysetVersion::v1 || ver == KeysetVersion::v2 ||
+            ver == KeysetVersion::v3) {
             if (!verify_keyset_id(ks)) {
 #if CASHU_REQUIRE_VALID_KEYSET_ID
                 ESP_LOGE(TAG, "keyset %s: id != derived %s, rejecting",
@@ -739,6 +735,13 @@ bool Wallet::load_keysets()
                 ESP_LOGW(TAG, "keyset %s: id != derived %s, accepting (validation off)",
                          ks.id.c_str(), derive_keyset_id(ks).c_str());
 #endif
+            }
+            // A BLS signature does not bind the amount, so a v3 keyset
+            // reusing a key across amounts could confuse denominations.
+            if (ver == KeysetVersion::v3 && !keyset_keys_distinct(ks)) {
+                ESP_LOGE(TAG, "keyset %s: duplicate key across amounts, rejecting",
+                         ks.id.c_str());
+                continue;
             }
         } else {
             ESP_LOGI(TAG, "keyset %s: legacy/unrecognized id, accepting unvalidated",
@@ -896,17 +899,28 @@ bool Wallet::generate_outputs(const std::vector<int>& amounts,
         bytes_to_hex(secret_bytes, 32, secret_hex);
         std::string secret(secret_hex);
 
-        char r_hex[65];
-        bytes_to_hex(r_bytes, 32, r_hex);
-
         unsigned char B_ser[CASHU_MAX_POINT_LEN];
         size_t B_len = sizeof(B_ser);
-        if (!suite->blind((void*)ctx_,
-                          (const unsigned char*)secret.c_str(), secret.size(),
-                          r_bytes, 32, B_ser, &B_len)) {
+        bool blinded = suite->blind((void*)ctx_,
+                                    (const unsigned char*)secret.c_str(),
+                                    secret.size(), r_bytes, 32, B_ser, &B_len);
+        // A random r can fall outside the suite's scalar range (~55% odds
+        // against the BLS12-381 Fr order); the deterministic path already
+        // rejection-samples inside derive_r, so only random r retries here.
+        for (int retry = 0; !blinded && !deterministic && retry < 16; retry++) {
+            esp_fill_random(r_bytes, 32);
+            B_len = sizeof(B_ser);
+            blinded = suite->blind((void*)ctx_,
+                                   (const unsigned char*)secret.c_str(),
+                                   secret.size(), r_bytes, 32, B_ser, &B_len);
+        }
+        if (!blinded) {
             ESP_LOGE(TAG, "blind_message failed");
             return false;
         }
+
+        char r_hex[65];
+        bytes_to_hex(r_bytes, 32, r_hex);
         char B_hex[CASHU_MAX_POINT_LEN * 2 + 1];
         bytes_to_hex(B_ser, B_len, B_hex);
 
@@ -957,10 +971,25 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
         ESP_LOGE(TAG, "unblind: no crypto suite for keyset %s", keyset.id.c_str());
         return false;
     }
-    const size_t plen = suite->pubkey_len;
-    if (plen > CASHU_MAX_POINT_LEN) {
-        ESP_LOGE(TAG, "unblind: suite pubkey_len %d too large", (int)plen);
+    const size_t plen = suite->point_len;
+    const size_t klen = suite->mint_key_len;
+    if (plen > CASHU_MAX_POINT_LEN || klen > CASHU_MAX_MINTKEY_LEN) {
+        ESP_LOGE(TAG, "unblind: suite point/key length too large");
         return false;
+    }
+
+    // For suites with intrinsic verification (v3 pairing): collect
+    // (K, unblinded C, secret) per signature and verify the whole mint
+    // response in ONE batch call after the loop — the Alice-side
+    // equivalent of the per-signature DLEQ check.
+    std::vector<unsigned char> batch_Ks, batch_Cs;
+    std::vector<const unsigned char*> batch_secrets;
+    std::vector<size_t> batch_secret_lens;
+    if (suite->verify_proofs) {
+        batch_Ks.reserve(signatures.size() * klen);
+        batch_Cs.reserve(signatures.size() * plen);
+        batch_secrets.reserve(signatures.size());
+        batch_secret_lens.reserve(signatures.size());
     }
 
     for (size_t i = 0; i < signatures.size(); i++) {
@@ -970,8 +999,8 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
         std::string K_hex;
         if (!keyset_key_hex_for_amount(keyset, amt, K_hex))
             return false;
-        unsigned char K_bytes[CASHU_MAX_POINT_LEN];
-        if (K_hex.size() != plen * 2 || !hex_to_bytes(K_hex.c_str(), K_bytes, plen)) {
+        unsigned char K_bytes[CASHU_MAX_MINTKEY_LEN];
+        if (K_hex.size() != klen * 2 || !hex_to_bytes(K_hex.c_str(), K_bytes, klen)) {
             ESP_LOGE(TAG, "invalid mint key hex");
             return false;
         }
@@ -990,7 +1019,16 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
 
         // NUT-12: verify the DLEQ proof on the BlindSignature before we trust C_.
         if (sig.dleq) {
-            if (suite->has_dleq) {
+            if (!suite->has_dleq) {
+                // v3 spec: the mint MUST NOT include a dleq. nutshell PR #999
+                // (the reference v3 mint) currently sends a dummy e=s=1 anyway,
+                // so tolerate it: warn, never verify against it, never store or
+                // forward it. Security is unaffected — v3 verification is
+                // always the pairing batch below, and a has_dleq=0 suite can
+                // never be tricked into DLEQ-verifying attacker-chosen (e, s).
+                ESP_LOGW(TAG, "sig[%d]: mint sent a dleq on a %s signature "
+                              "(spec violation, ignoring)", (int)i, suite->name);
+            } else {
                 unsigned char e_b[32], s_b[32];
                 if (!hex_to_bytes(sig.dleq->e.c_str(), e_b, 32) ||
                     !hex_to_bytes(sig.dleq->s.c_str(), s_b, 32)) {
@@ -1003,14 +1041,16 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
                     ESP_LOGE(TAG, "dleq: invalid B_ hex on sig[%d]", (int)i);
                     return false;
                 }
-                if (!suite->verify_dleq((void*)ctx_, K_bytes, plen, B__bytes, plen,
+                if (!suite->verify_dleq((void*)ctx_, K_bytes, klen, B__bytes, plen,
                                         C__bytes, plen, e_b, s_b)) {
                     ESP_LOGE(TAG, "dleq verification failed for sig[%d] amount=%d",
                              (int)i, sig.amount);
                     return false;
                 }
             }
-        } else {
+        } else if (suite->has_dleq) {
+            // Only DLEQ suites can "omit" anything — v3 verification is
+            // intrinsic (the batch pairing check below) and carries no dleq.
 #if CASHU_REQUIRE_DLEQ_FROM_MINT
             ESP_LOGE(TAG, "mint omitted DLEQ on sig[%d] amount=%d (rejecting)",
                      (int)i, sig.amount);
@@ -1024,19 +1064,30 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
         unsigned char C_ser[CASHU_MAX_POINT_LEN];
         size_t C_len = sizeof(C_ser);
         if (!suite->unblind((void*)ctx_, C__bytes, plen, r_bytes, 32,
-                            K_bytes, plen, C_ser, &C_len)) {
+                            K_bytes, klen, C_ser, &C_len)) {
             ESP_LOGE(TAG, "unblind failed");
             return false;
         }
         char C_hex[CASHU_MAX_POINT_LEN * 2 + 1];
         bytes_to_hex(C_ser, C_len, C_hex);
 
+        if (suite->verify_proofs) {
+            batch_Ks.insert(batch_Ks.end(), K_bytes, K_bytes + klen);
+            batch_Cs.insert(batch_Cs.end(), C_ser, C_ser + C_len);
+            batch_secrets.push_back(
+                (const unsigned char*)blinding.secrets[i].data());
+            batch_secret_lens.push_back(blinding.secrets[i].size());
+        }
+
         Proof proof;
         proof.id = keyset.id;
         proof.amount = sig.amount;
         proof.secret = blinding.secrets[i];
         proof.C = std::string(C_hex);
-        if (sig.dleq && blinding.blinding_factors[i].size() == 64) {
+        // Attach the DLEQ for later forwarding (NUT-12 Carol-mode) — only for
+        // DLEQ suites: a spurious v3 dleq must not end up in our tokens.
+        if (suite->has_dleq && sig.dleq &&
+            blinding.blinding_factors[i].size() == 64) {
             proof.dleq = DLEQ{
                 sig.dleq->e,
                 sig.dleq->s,
@@ -1044,6 +1095,22 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
             };
         }
         proofs_out.push_back(std::move(proof));
+    }
+
+    if (suite->verify_proofs && !batch_secrets.empty()) {
+        if (!suite->verify_proofs((void*)ctx_, batch_secrets.size(),
+                                  batch_Ks.data(), batch_Cs.data(),
+                                  batch_secrets.data(),
+                                  batch_secret_lens.data())) {
+#if CASHU_REQUIRE_PROOF_VERIFY
+            ESP_LOGE(TAG, "proof verification failed (%d unblinded sigs)",
+                     (int)batch_secrets.size());
+            return false;
+#else
+            ESP_LOGW(TAG, "proof verification failed (%d unblinded sigs)",
+                     (int)batch_secrets.size());
+#endif
+        }
     }
 
     return true;
@@ -1313,6 +1380,128 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
 // Receive (swap a token for new proofs)
 // -------------------------------------------------------------------------
 
+bool Wallet::verify_incoming_proofs(const std::vector<Proof>& inputs)
+{
+    // Batch accumulator for suites with intrinsic verification (v3): one
+    // pairing-batch call per token covers every such proof.
+    std::vector<unsigned char> batch_Ks, batch_Cs;
+    std::vector<const unsigned char*> batch_secrets;
+    std::vector<size_t> batch_secret_lens;
+    const cashu_suite_t* batch_suite = nullptr;
+
+    for (size_t i = 0; i < inputs.size(); i++) {
+        const auto& p = inputs[i];
+        const cashu_suite_t* suite = suite_for_id(p.id);
+        const Keyset* ks = keyset_for_id(p.id);
+        if (!suite || !ks) {
+            ESP_LOGE(TAG, "verify: no suite/keyset for id %s on proof[%d]",
+                     p.id.c_str(), (int)i);
+            return false;
+        }
+
+        if (p.dleq && !suite->has_dleq) {
+            // v3 spec: a Proof MUST NOT carry a dleq — but wallets built on
+            // nutshell PR #999 may forward its dummy one. Warn and ignore:
+            // the proof still has to pass the pairing batch below, which is
+            // the only verification a has_dleq=0 suite ever runs.
+            ESP_LOGW(TAG, "verify: spurious dleq on %s proof[%d] (ignoring)",
+                     suite->name, (int)i);
+        }
+
+        if (suite->verify_proofs) {
+            if (batch_suite && batch_suite != suite) {
+                // Only one intrinsic-verify suite exists (BLS); refuse odd mixes
+                // rather than mis-batching across schemes.
+                ESP_LOGE(TAG, "verify: mixed verify_proofs suites in one token");
+                return false;
+            }
+            batch_suite = suite;
+            const size_t plen = suite->point_len;
+            const size_t klen = suite->mint_key_len;
+            if (plen > CASHU_MAX_POINT_LEN || klen > CASHU_MAX_MINTKEY_LEN)
+                return false;
+            std::string K_hex;
+            if (!keyset_key_hex_for_amount(*ks, (uint64_t)p.amount, K_hex))
+                return false;
+            const size_t koff = batch_Ks.size(), coff = batch_Cs.size();
+            batch_Ks.resize(koff + klen);
+            batch_Cs.resize(coff + plen);
+            if (K_hex.size() != klen * 2 ||
+                !hex_to_bytes(K_hex.c_str(), batch_Ks.data() + koff, klen)) {
+                ESP_LOGE(TAG, "verify: invalid mint key hex on proof[%d]", (int)i);
+                return false;
+            }
+            if (p.C.size() != plen * 2 ||
+                !hex_to_bytes(p.C.c_str(), batch_Cs.data() + coff, plen)) {
+                ESP_LOGE(TAG, "verify: invalid C hex on proof[%d]", (int)i);
+                return false;
+            }
+            batch_secrets.push_back((const unsigned char*)p.secret.data());
+            batch_secret_lens.push_back(p.secret.size());
+            continue;
+        }
+
+        // NUT-12 (Carol-side): if a transferred secp proof carries a DLEQ with
+        // the sender's blinding factor `r`, verify it against the keyset's
+        // pubkey for that amount. A missing DLEQ is allowed (warn only) since
+        // senders are not required to forward it.
+        if (!p.dleq || !p.dleq->r) {
+            ESP_LOGW(TAG, "verify: proof[%d] has no DLEQ (accepting)", (int)i);
+            continue;
+        }
+        const size_t plen = suite->point_len;
+        const size_t klen = suite->mint_key_len;
+        if (plen > CASHU_MAX_POINT_LEN || klen > CASHU_MAX_MINTKEY_LEN)
+            return false;
+
+        std::string A_hex;
+        if (!keyset_key_hex_for_amount(*ks, (uint64_t)p.amount, A_hex))
+            return false;
+        unsigned char A_bytes[CASHU_MAX_MINTKEY_LEN];
+        if (A_hex.size() != klen * 2 || !hex_to_bytes(A_hex.c_str(), A_bytes, klen)) {
+            ESP_LOGE(TAG, "verify: invalid mint key hex on proof[%d]", (int)i);
+            return false;
+        }
+        unsigned char C_bytes[CASHU_MAX_POINT_LEN];
+        if (p.C.size() != plen * 2 || !hex_to_bytes(p.C.c_str(), C_bytes, plen)) {
+            ESP_LOGE(TAG, "verify: invalid C hex on proof[%d]", (int)i);
+            return false;
+        }
+        unsigned char e_b[32], s_b[32], r_b[32];
+        if (!hex_to_bytes(p.dleq->e.c_str(), e_b, 32) ||
+            !hex_to_bytes(p.dleq->s.c_str(), s_b, 32) ||
+            !hex_to_bytes(p.dleq->r->c_str(), r_b, 32)) {
+            ESP_LOGE(TAG, "verify: invalid dleq hex on proof[%d]", (int)i);
+            return false;
+        }
+        if (!suite->verify_dleq_unblinded((void*)ctx_, A_bytes, klen,
+                                          C_bytes, plen,
+                                          (const unsigned char*)p.secret.c_str(),
+                                          p.secret.size(), e_b, s_b, r_b)) {
+            ESP_LOGE(TAG, "dleq verification failed for proof[%d] amount=%d",
+                     (int)i, p.amount);
+            return false;
+        }
+    }
+
+    if (batch_suite && !batch_secrets.empty()) {
+        if (!batch_suite->verify_proofs((void*)ctx_, batch_secrets.size(),
+                                        batch_Ks.data(), batch_Cs.data(),
+                                        batch_secrets.data(),
+                                        batch_secret_lens.data())) {
+#if CASHU_REQUIRE_PROOF_VERIFY
+            ESP_LOGE(TAG, "incoming proof verification failed (%d proofs)",
+                     (int)batch_secrets.size());
+            return false;
+#else
+            ESP_LOGW(TAG, "incoming proof verification failed (%d proofs)",
+                     (int)batch_secrets.size());
+#endif
+        }
+    }
+    return true;
+}
+
 bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
 {
     if (token.proofs.empty()) {
@@ -1363,58 +1552,10 @@ bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
         return false;
     }
 
-    // NUT-12 (Carol-side): if a transferred proof carries a DLEQ with the
-    // sender's blinding factor `r`, verify it against the keyset's pubkey for
-    // that amount before swapping. A missing DLEQ is allowed (warn only) since
-    // senders are not required to forward it.
-    for (size_t i = 0; i < inputs.size(); i++) {
-        const auto& p = inputs[i];
-        if (!p.dleq || !p.dleq->r) {
-            ESP_LOGW(TAG, "receive: proof[%d] has no DLEQ (accepting)", (int)i);
-            continue;
-        }
-        const cashu_suite_t* suite = suite_for_id(p.id);
-        const Keyset* ks = keyset_for_id(p.id);
-        if (!suite || !ks) {
-            ESP_LOGE(TAG, "receive: no suite/keyset for id %s on proof[%d]",
-                     p.id.c_str(), (int)i);
-            return false;
-        }
-        if (!suite->has_dleq)
-            continue;  // scheme carries no DLEQ to verify
-        const size_t plen = suite->pubkey_len;
-        if (plen > CASHU_MAX_POINT_LEN)
-            return false;
-
-        std::string A_hex;
-        if (!keyset_key_hex_for_amount(*ks, (uint64_t)p.amount, A_hex))
-            return false;
-        unsigned char A_bytes[CASHU_MAX_POINT_LEN];
-        if (A_hex.size() != plen * 2 || !hex_to_bytes(A_hex.c_str(), A_bytes, plen)) {
-            ESP_LOGE(TAG, "receive: invalid mint key hex on proof[%d]", (int)i);
-            return false;
-        }
-        unsigned char C_bytes[CASHU_MAX_POINT_LEN];
-        if (p.C.size() != plen * 2 || !hex_to_bytes(p.C.c_str(), C_bytes, plen)) {
-            ESP_LOGE(TAG, "receive: invalid C hex on proof[%d]", (int)i);
-            return false;
-        }
-        unsigned char e_b[32], s_b[32], r_b[32];
-        if (!hex_to_bytes(p.dleq->e.c_str(), e_b, 32) ||
-            !hex_to_bytes(p.dleq->s.c_str(), s_b, 32) ||
-            !hex_to_bytes(p.dleq->r->c_str(), r_b, 32)) {
-            ESP_LOGE(TAG, "receive: invalid dleq hex on proof[%d]", (int)i);
-            return false;
-        }
-        if (!suite->verify_dleq_unblinded((void*)ctx_, A_bytes, plen,
-                                          C_bytes, plen,
-                                          (const unsigned char*)p.secret.c_str(),
-                                          p.secret.size(), e_b, s_b, r_b)) {
-            ESP_LOGE(TAG, "dleq verification failed for proof[%d] amount=%d",
-                     (int)i, p.amount);
-            return false;
-        }
-    }
+    // Verify what is verifiable offline before swapping: forwarded DLEQs on
+    // secp proofs, the intrinsic pairing batch on v3 proofs.
+    if (!verify_incoming_proofs(inputs))
+        return false;
 
     std::vector<Proof> new_proofs, change;
     if (!swap(inputs, -1, new_proofs, change))
