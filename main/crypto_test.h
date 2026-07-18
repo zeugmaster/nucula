@@ -1,5 +1,4 @@
-#ifndef CASHU_CRYPTO_TEST_H
-#define CASHU_CRYPTO_TEST_H
+#pragma once
 
 #include "secp256k1.h"
 
@@ -14,4 +13,3 @@ void crypto_run_benchmark(const secp256k1_context *ctx);
 }
 #endif
 
-#endif

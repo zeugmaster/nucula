@@ -100,30 +100,53 @@ static void console_task(void *arg)
     vTaskDelay(pdMS_TO_TICKS(500));
     nucula_console_write("\r\nnucula> ");
 
+    // Read in chunks and batch the echo of printable runs: with per-byte
+    // reads and a blocking 1-byte echo write each, a full-speed paste of a
+    // ~1 KB token outran the task and overflowed the RX ring, silently
+    // dropping bytes mid-token.
     while (1) {
-        uint8_t c;
-        int len = usb_serial_jtag_read_bytes(&c, 1, 20 / portTICK_PERIOD_MS);
+        uint8_t buf[64];
+        int len = usb_serial_jtag_read_bytes(buf, sizeof(buf),
+                                             20 / portTICK_PERIOD_MS);
         if (len <= 0) continue;
 
-        if (c == '\r' || c == '\n') {
-            nucula_console_write("\r\n");
-            s_con.line_buffer[pos] = '\0';
-            parse_and_run(s_con.line_buffer);
-            pos = 0;
-            nucula_console_write("nucula> ");
-        } else if (c == 127 || c == '\b') {
-            if (pos > 0) {
-                pos--;
-                nucula_console_write("\b \b");
+        int echo_from = -1;  // start of the unechoed printable run in buf
+        auto flush_echo = [&](int upto) {
+            if (echo_from >= 0 && upto > echo_from)
+                usb_serial_jtag_write_bytes(&buf[echo_from],
+                                            upto - echo_from, portMAX_DELAY);
+            echo_from = -1;
+        };
+
+        for (int i = 0; i < len; i++) {
+            uint8_t c = buf[i];
+            if (c == '\r' || c == '\n') {
+                flush_echo(i);
+                nucula_console_write("\r\n");
+                s_con.line_buffer[pos] = '\0';
+                parse_and_run(s_con.line_buffer);
+                pos = 0;
+                nucula_console_write("nucula> ");
+            } else if (c == 127 || c == '\b') {
+                flush_echo(i);
+                if (pos > 0) {
+                    pos--;
+                    nucula_console_write("\b \b");
+                }
+            } else if (c == 0x03) {
+                flush_echo(i);
+                nucula_console_write("^C\r\n");
+                pos = 0;
+                nucula_console_write("nucula> ");
+            } else if (pos < (int)s_con.max_line_length - 1) {
+                s_con.line_buffer[pos++] = c;
+                if (echo_from < 0)
+                    echo_from = i;
+            } else {
+                flush_echo(i);  // line full: swallow without echo
             }
-        } else if (c == 0x03) {
-            nucula_console_write("^C\r\n");
-            pos = 0;
-            nucula_console_write("nucula> ");
-        } else if (pos < (int)s_con.max_line_length - 1) {
-            s_con.line_buffer[pos++] = c;
-            usb_serial_jtag_write_bytes(&c, 1, portMAX_DELAY);
         }
+        flush_echo(len);
     }
 }
 

@@ -1,5 +1,4 @@
-#ifndef NUCULA_HTTP_H
-#define NUCULA_HTTP_H
+#pragma once
 
 #include "esp_err.h"
 #include <stddef.h>
@@ -13,6 +12,25 @@ typedef struct {
     char *body;
     size_t body_len;
 } http_response_t;
+
+/**
+ * Create the connection-cache mutex. Call once from app_main before any
+ * task can issue requests.
+ */
+void http_init(void);
+
+/**
+ * Warm up the TLS connection to a mint (fire-and-forget background task
+ * fetching <base_url>/v1/info). Call at the start of an NFC payment window
+ * so the post-tap swap reuses an established connection.
+ */
+void http_prewarm(const char *base_url);
+
+/**
+ * Drop all cached connections (e.g. when WiFi disconnects). Safe from any
+ * task; blocks until in-flight requests finish.
+ */
+void http_close_all(void);
 
 /**
  * Perform an HTTP GET request. Response body is heap-allocated.
@@ -46,4 +64,3 @@ void http_response_free(http_response_t *resp);
 }
 #endif
 
-#endif

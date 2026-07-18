@@ -152,13 +152,20 @@ bool Wallet::erase_seed()
     nvs_handle_t handle;
     if (nvs_open(NVS_NS, NVS_READWRITE, &handle) != ESP_OK)
         return false;
-    nvs_erase_key(handle, "seed");
-    nvs_erase_key(handle, "mnemonic");
-    nvs_commit(handle);
+    esp_err_t e1 = nvs_erase_key(handle, "seed");
+    esp_err_t e2 = nvs_erase_key(handle, "mnemonic");
+    esp_err_t ec = nvs_commit(handle);
     nvs_close(handle);
     memset(s_seed, 0, 64);
     s_seed_loaded = false;
     /* P2PK key is independent of the seed and intentionally retained. */
+    bool ok = (e1 == ESP_OK || e1 == ESP_ERR_NVS_NOT_FOUND) &&
+              (e2 == ESP_OK || e2 == ESP_ERR_NVS_NOT_FOUND) &&
+              ec == ESP_OK;
+    if (!ok) {
+        ESP_LOGE(TAG, "seed erase incomplete — it may still be in flash");
+        return false;
+    }
     ESP_LOGI(TAG, "seed erased");
     return true;
 }
@@ -303,8 +310,13 @@ bool Wallet::erase_nvs()
         snprintf(key, sizeof(key), "k_%d_%d", nvs_slot_, i);
         nvs_erase_key(handle, key);
     }
-    nvs_commit(handle);
+    esp_err_t err = nvs_commit(handle);
     nvs_close(handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "erase slot %d: commit failed: %s",
+                 nvs_slot_, esp_err_to_name(err));
+        return false;
+    }
     ESP_LOGI(TAG, "erased NVS slot %d", nvs_slot_);
     return true;
 }
@@ -312,6 +324,13 @@ bool Wallet::erase_nvs()
 bool Wallet::save_proofs()
 {
     std::string blob = proofs_to_json(proofs_);
+    // proofs_to_json returns "" only on allocation failure ("[]" for an
+    // empty wallet). Never let that overwrite stored proofs with nothing —
+    // they are bearer money.
+    if (blob.empty() && !proofs_.empty()) {
+        ESP_LOGE(TAG, "save_proofs: serialization failed, keeping stored proofs");
+        return false;
+    }
 
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &handle);
@@ -398,6 +417,11 @@ bool Wallet::save_keysets()
         char ks_key[16];
         snprintf(ks_key, sizeof(ks_key), "k_%d_%d", nvs_slot_, i);
         std::string blob = serialize(keysets_[i]);
+        if (blob.empty()) {
+            ESP_LOGE(TAG, "save keyset %d: serialization failed", i);
+            nvs_close(handle);
+            return false;
+        }
         err = nvs_set_blob(handle, ks_key, blob.data(), blob.size());
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "save keyset %d failed: %s", i, esp_err_to_name(err));
@@ -490,24 +514,35 @@ bool Wallet::load_keysets_nvs()
     return true;
 }
 
-void Wallet::merge_keysets(const std::vector<Keyset>& fresh)
+bool Wallet::merge_keysets(const std::vector<Keyset>& fresh)
 {
+    bool changed = false;
     for (const auto& fk : fresh) {
         bool found = false;
         for (auto& existing : keysets_) {
             if (existing.id == fk.id) {
-                existing.active = fk.active;
-                existing.input_fee_ppk = fk.input_fee_ppk;
-                existing.final_expiry = fk.final_expiry;
-                if (existing.keys.empty())
+                if (existing.active != fk.active ||
+                    existing.input_fee_ppk != fk.input_fee_ppk ||
+                    existing.final_expiry != fk.final_expiry) {
+                    existing.active = fk.active;
+                    existing.input_fee_ppk = fk.input_fee_ppk;
+                    existing.final_expiry = fk.final_expiry;
+                    changed = true;
+                }
+                if (existing.keys.empty() && !fk.keys.empty()) {
                     existing.keys = fk.keys;
+                    changed = true;
+                }
                 found = true;
                 break;
             }
         }
-        if (!found)
+        if (!found) {
             keysets_.push_back(fk);
+            changed = true;
+        }
     }
+    return changed;
 }
 
 bool Wallet::load_from_nvs()
@@ -670,7 +705,7 @@ bool Wallet::load_keysets()
         }
     }
 
-    merge_keysets(result);
+    bool changed = merge_keysets(result);
     ESP_LOGI(TAG, "loaded %d keyset(s) from %s (total %d after merge)",
              (int)result.size(), mint_url_.c_str(), (int)keysets_.size());
 
@@ -680,7 +715,10 @@ bool Wallet::load_keysets()
                  (int)k.keys.size(), k.input_fee_ppk);
     }
 
-    save_keysets();
+    // Each refresh used to rewrite every keyset blob (~16 KB of flash
+    // writes) even when nothing changed — which is the common case.
+    if (changed)
+        save_keysets();
     return true;
 }
 
@@ -961,21 +999,19 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
     }
 
     int fee = calculate_fee(inputs);
-    int input_sum = 0;
-    for (const auto& p : inputs)
-        input_sum += p.amount;
+    int64_t input_sum = proofs_sum(inputs);
 
     int return_amount, change_amount;
     if (amount >= 0) {
         if (input_sum < amount + fee) {
-            ESP_LOGE(TAG, "swap: insufficient inputs (%d < %d + %d)",
-                     input_sum, amount, fee);
+            ESP_LOGE(TAG, "swap: insufficient inputs (%lld < %d + %d)",
+                     (long long)input_sum, amount, fee);
             return false;
         }
         return_amount = amount;
-        change_amount = input_sum - amount - fee;
+        change_amount = (int)(input_sum - amount - fee);
     } else {
-        return_amount = input_sum - fee;
+        return_amount = (int)(input_sum - fee);
         change_amount = 0;
     }
 
@@ -1029,6 +1065,10 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
 
     SwapRequest req{stripped, blinding.outputs};
     std::string body = serialize(req);
+    if (body.empty()) {
+        ESP_LOGE(TAG, "swap: request serialization failed");
+        return false;
+    }
 
     std::string url = mint_url_ + "/v1/swap";
     http_response_t resp = {};
@@ -1189,11 +1229,8 @@ bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
     for (const auto& p : proofs_out)
         proofs_.push_back(p);
 
-    int total = 0;
-    for (const auto& p : proofs_out)
-        total += p.amount;
-
-    ESP_LOGI(TAG, "received %d sat (%d proofs)", total, (int)proofs_out.size());
+    ESP_LOGI(TAG, "received %lld sat (%d proofs)",
+             (long long)proofs_sum(proofs_out), (int)proofs_out.size());
     save_proofs();
     return true;
 }
@@ -1202,12 +1239,9 @@ bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
 // Balance
 // -------------------------------------------------------------------------
 
-int Wallet::balance() const
+int64_t Wallet::balance() const
 {
-    int sum = 0;
-    for (const auto& p : proofs_)
-        sum += p.amount;
-    return sum;
+    return proofs_sum(proofs_);
 }
 
 // -------------------------------------------------------------------------
@@ -1264,6 +1298,10 @@ bool Wallet::request_mint_quote(int amount, MintQuote& quote_out)
     cJSON_AddStringToObject(body, "unit", "sat");
     char* body_str = cJSON_PrintUnformatted(body);
     cJSON_Delete(body);
+    if (!body_str) {
+        ESP_LOGE(TAG, "mint quote: request serialization failed");
+        return false;
+    }
 
     std::string url = mint_url_ + "/v1/mint/quote/bolt11";
     http_response_t resp = {};
@@ -1338,6 +1376,10 @@ bool Wallet::mint_tokens(const std::string& quote_id, int amount)
 
     MintRequest req{quote_id, blinding.outputs};
     std::string body = serialize(req);
+    if (body.empty()) {
+        ESP_LOGE(TAG, "mint: request serialization failed");
+        return false;
+    }
 
     std::string url = mint_url_ + "/v1/mint/bolt11";
     http_response_t resp = {};
@@ -1373,11 +1415,8 @@ bool Wallet::mint_tokens(const std::string& quote_id, int amount)
     for (const auto& p : new_proofs)
         proofs_.push_back(p);
 
-    int total = 0;
-    for (const auto& p : new_proofs)
-        total += p.amount;
-
-    ESP_LOGI(TAG, "minted %d sat (%d proofs)", total, (int)new_proofs.size());
+    ESP_LOGI(TAG, "minted %lld sat (%d proofs)",
+             (long long)proofs_sum(new_proofs), (int)new_proofs.size());
     save_proofs();
     return true;
 }
@@ -1393,6 +1432,10 @@ bool Wallet::request_melt_quote(const std::string& bolt11, MeltQuote& quote_out)
     cJSON_AddStringToObject(body, "unit", "sat");
     char* body_str = cJSON_PrintUnformatted(body);
     cJSON_Delete(body);
+    if (!body_str) {
+        ESP_LOGE(TAG, "melt quote: request serialization failed");
+        return false;
+    }
 
     std::string url = mint_url_ + "/v1/melt/quote/bolt11";
     http_response_t resp = {};
@@ -1506,6 +1549,10 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
         req.outputs = change_blinding.outputs;
 
     std::string body = serialize(req);
+    if (body.empty()) {
+        ESP_LOGE(TAG, "melt: request serialization failed");
+        return false;
+    }
 
     std::string url = mint_url_ + "/v1/melt/bolt11";
     http_response_t resp = {};
@@ -1646,8 +1693,14 @@ bool Wallet::stash_pending_token(const std::string& raw_token)
         nvs_close(h);
         return false;
     }
-    nvs_commit(h);
+    esp_err_t err = nvs_commit(h);
     nvs_close(h);
+    if (err != ESP_OK) {
+        // Without a durable stash the sender's token would be silently
+        // lost — report failure so the NFC exchange errors out.
+        ESP_LOGE(TAG, "pending: commit failed: %s", esp_err_to_name(err));
+        return false;
+    }
     ESP_LOGI(TAG, "pending: stashed token %d (slot %d)", (int)n - 1, nvs_slot_);
     return true;
 }
@@ -1695,13 +1748,7 @@ bool Wallet::drain_pending_tokens(int& accepted, int& failed)
     for (size_t i = 0; i < items.size(); i++) {
         const std::string& raw = items[i];
         Token tok;
-        bool decoded = false;
-        if (raw.compare(0, 6, "cashuB") == 0)
-            decoded = deserialize_token_v4(raw.c_str(), tok);
-        else if (raw.compare(0, 6, "cashuA") == 0)
-            decoded = deserialize_token_v3(raw.c_str(), tok);
-
-        if (!decoded) {
+        if (!deserialize_token(raw.c_str(), tok)) {
             ESP_LOGW(TAG, "pending[%d]: decode failed, dropping", (int)i);
             failed++;
             continue;
@@ -1748,18 +1795,30 @@ bool Wallet::drain_pending_tokens(int& accepted, int& failed)
     }
     char ck[16];
     pend_count_key(ck, sizeof(ck), nvs_slot_);
+    esp_err_t werr = ESP_OK;
     if (retained.empty()) {
-        nvs_erase_key(h, ck);
+        esp_err_t e = nvs_erase_key(h, ck);
+        if (e != ESP_OK && e != ESP_ERR_NVS_NOT_FOUND)
+            werr = e;
     } else {
         for (size_t i = 0; i < retained.size(); i++) {
             char ik[16];
             pend_item_key(ik, sizeof(ik), nvs_slot_, (int)i);
-            nvs_set_str(h, ik, retained[i].c_str());
+            esp_err_t e = nvs_set_str(h, ik, retained[i].c_str());
+            if (e != ESP_OK)
+                werr = e;
         }
-        nvs_set_u8(h, ck, (uint8_t)retained.size());
+        esp_err_t e = nvs_set_u8(h, ck, (uint8_t)retained.size());
+        if (e != ESP_OK)
+            werr = e;
     }
-    nvs_commit(h);
+    esp_err_t cerr = nvs_commit(h);
     nvs_close(h);
+    if (werr != ESP_OK || cerr != ESP_OK) {
+        ESP_LOGE(TAG, "pending: rewrite failed (%s/%s) — retained tokens may be lost",
+                 esp_err_to_name(werr), esp_err_to_name(cerr));
+        return false;
+    }
 
     ESP_LOGI(TAG, "pending: drain slot %d -> %d ok, %d retained, %d dropped",
              nvs_slot_, accepted, (int)retained.size(), failed);

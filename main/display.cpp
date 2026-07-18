@@ -6,15 +6,15 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include "board.h"
+
 #define TAG "display"
 
-// SSD1309 I2C address (SA0 low = 0x3C, SA0 high = 0x3D)
-#define SSD1309_ADDR  0x3C
+#define SSD1309_ADDR  BOARD_OLED_ADDR
 #define SSD1309_CMD   0x00   // control byte: following bytes are commands
 #define SSD1309_DATA  0x40   // control byte: following bytes are GDDRAM data
 
-// Optional hardware reset pin (D3 on XIAO C3 = GPIO 5). Set to -1 if not wired.
-#define PIN_RST  GPIO_NUM_5
+#define PIN_RST  BOARD_OLED_RST_PIN
 
 static i2c_master_dev_handle_t s_dev = nullptr;
 
@@ -168,6 +168,13 @@ void display_init(i2c_master_bus_handle_t bus)
         vTaskDelay(pdMS_TO_TICKS(10));
         gpio_set_level(PIN_RST, 1);
         vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    // Probe first: on a board without the display every later transmit
+    // would just NACK-spam the shared bus.
+    if (i2c_master_probe(bus, SSD1309_ADDR, 50) != ESP_OK) {
+        ESP_LOGW(TAG, "no display at 0x%02X, display disabled", SSD1309_ADDR);
+        return;
     }
 
     // Add SSD1309 as device on the shared I2C bus

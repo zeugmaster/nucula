@@ -1,5 +1,4 @@
-#ifndef CASHU_CBOR_HPP
-#define CASHU_CBOR_HPP
+#pragma once
 
 #include "cashu.hpp"
 #include <string>
@@ -14,4 +13,3 @@ bool deserialize_payment_request(const char* req_str, PaymentRequest& out);
 
 } // namespace cashu
 
-#endif

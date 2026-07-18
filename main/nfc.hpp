@@ -1,5 +1,4 @@
-#ifndef NFC_HPP
-#define NFC_HPP
+#pragma once
 
 #include <cstdint>
 #include "driver/i2c_master.h"
@@ -15,13 +14,11 @@ enum class NfcState {
     error,
 };
 
-bool        nfc_init();
+// Bring up the PN7160 on the shared I2C bus. Returns false when the chip is
+// absent or unresponsive; NFC commands are disabled then.
+bool        nfc_init(i2c_master_bus_handle_t bus);
 bool        nfc_request_start(int amount, const char *mint_url);
 void        nfc_request_stop();
 NfcState    nfc_state();
 const char *nfc_status_str();
 
-// Expose shared I2C bus handle so other drivers (keypad) can add devices
-i2c_master_bus_handle_t nfc_get_i2c_bus();
-
-#endif

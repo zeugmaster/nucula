@@ -1,5 +1,6 @@
 #include "wifi.h"
 #include "wifi_config.h"
+#include "http.h"
 
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -9,7 +10,6 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
-#include "nvs_flash.h"
 
 /* Number of fast back-to-back retries the event handler will fire on its own
  * before handing off to the periodic supervisor. After this, the supervisor
@@ -25,13 +25,21 @@ static bool s_connected;
 static void wifi_supervisor_task(void *arg)
 {
     (void)arg;
+    bool was_connected = false;
     for (;;) {
         if (!s_connected) {
+            if (was_connected) {
+                /* Falling edge: the cached HTTP connections are dead. Done
+                 * here (not in the event handler) because closing blocks on
+                 * the HTTP mutex until any in-flight request finishes. */
+                http_close_all();
+            }
             ESP_LOGI(TAG, "supervisor: attempting reconnect");
             esp_err_t err = esp_wifi_connect();
             if (err != ESP_OK && err != ESP_ERR_WIFI_CONN)
                 ESP_LOGW(TAG, "esp_wifi_connect() returned %d", err);
         }
+        was_connected = s_connected;
         vTaskDelay(pdMS_TO_TICKS(SUPERVISOR_PERIOD_MS));
     }
 }
@@ -84,28 +92,33 @@ static void event_handler(void *arg, esp_event_base_t base,
     }
 }
 
+/* Log-and-return instead of ESP_ERROR_CHECK: a failed WiFi bring-up must
+ * degrade to offline operation (the app tolerates ESP_FAIL), not abort()
+ * the whole wallet. */
+#define WIFI_RETURN_ON_ERROR(x) do {                                   \
+        esp_err_t err_ = (x);                                          \
+        if (err_ != ESP_OK) {                                          \
+            ESP_LOGE(TAG, "%s failed: %s", #x, esp_err_to_name(err_)); \
+            return err_;                                               \
+        }                                                              \
+    } while (0)
+
 esp_err_t wifi_init(void)
 {
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
-        ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
-
     s_event_group = xEventGroupCreate();
+    if (!s_event_group)
+        return ESP_ERR_NO_MEM;
 
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    WIFI_RETURN_ON_ERROR(esp_netif_init());
+    WIFI_RETURN_ON_ERROR(esp_event_loop_create_default());
     esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    WIFI_RETURN_ON_ERROR(esp_wifi_init(&cfg));
 
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+    WIFI_RETURN_ON_ERROR(esp_event_handler_instance_register(
         WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+    WIFI_RETURN_ON_ERROR(esp_event_handler_instance_register(
         IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL, NULL));
 
     wifi_config_t wifi_config = {
@@ -116,15 +129,17 @@ esp_err_t wifi_init(void)
         },
     };
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    WIFI_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA));
+    WIFI_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    WIFI_RETURN_ON_ERROR(esp_wifi_start());
 
     /* Spawn the supervisor before we even check the initial result. The fast
      * retries from event_handler may already be exhausted by the time we
      * return; the supervisor takes it from there. */
+    /* 4096: the supervisor also runs http_close_all (TLS teardown) now, and
+     * its high-water mark was already down to ~270 bytes at 2048. */
     BaseType_t ok = xTaskCreate(wifi_supervisor_task, "wifi_sup",
-                                2048, NULL, 3, NULL);
+                                4096, NULL, 3, NULL);
     if (ok != pdPASS)
         ESP_LOGE(TAG, "failed to spawn wifi_supervisor_task");
 
@@ -136,7 +151,10 @@ esp_err_t wifi_init(void)
                                            pdMS_TO_TICKS(15000));
 
     if (bits & WIFI_CONNECTED_BIT) {
-        esp_wifi_set_ps(WIFI_PS_NONE);
+        /* Battery device: let the radio doze between DTIM beacons. Costs
+         * ~100-300 ms first-packet latency; wifi_set_low_latency(true)
+         * lifts it for the NFC payment window. */
+        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
         return ESP_OK;
     }
 
@@ -147,6 +165,11 @@ esp_err_t wifi_init(void)
 bool wifi_is_connected(void)
 {
     return s_connected;
+}
+
+void wifi_set_low_latency(bool on)
+{
+    esp_wifi_set_ps(on ? WIFI_PS_NONE : WIFI_PS_MIN_MODEM);
 }
 
 EventGroupHandle_t wifi_get_event_group(void)

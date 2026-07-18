@@ -1,5 +1,4 @@
-#ifndef NUCULA_CONSOLE_H
-#define NUCULA_CONSOLE_H
+#pragma once
 
 #include <stddef.h>
 
@@ -17,11 +16,14 @@ typedef struct {
     int task_priority;
 } console_config_t;
 
+/* task_stack_size: command handlers run TLS on this stack (receive/melt).
+ * Measured high-water mark after a full receive + bench + selftest pass:
+ * ~7.1 KB used — 12 KB leaves ~5 KB margin. */
 #define CONSOLE_DEFAULT_CONFIG() { \
     .max_line_length = 4096, \
     .tx_buffer_size = 4096, \
-    .rx_buffer_size = 256, \
-    .task_stack_size = 24576, \
+    .rx_buffer_size = 1024, \
+    .task_stack_size = 12288, \
     .task_priority = 5, \
 }
 
@@ -35,4 +37,3 @@ void console_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 }
 #endif
 
-#endif

@@ -1,15 +1,18 @@
 #include <cstdio>
 #include <cstring>
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_random.h>
 #include <esp_system.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <nvs_flash.h>
 #include "secp256k1.h"
 #include "crypto.h"
 #include "crypto_test.h"
 #include "wifi.h"
+#include "http.h"
 #include "cashu.hpp"
 #include "cashu_json.hpp"
 #include "cashu_cbor.hpp"
@@ -17,294 +20,14 @@
 #include "keyset.hpp"
 #include "console.h"
 #include "display.h"
+#include "i2c_bus.h"
 #include "nfc.hpp"
 #include "keypad.h"
 #include "bip39.h"
+#include "wallet_store.hpp"
+#include "ui.h"
 
 #define TAG "nucula"
-
-secp256k1_context *g_ctx = nullptr;
-cashu::Wallet *g_wallets[MAX_MINTS] = {};
-
-// -------------------------------------------------------------------------
-// Helpers
-// -------------------------------------------------------------------------
-
-static cashu::Wallet *find_wallet(const char *mint_url)
-{
-    for (int i = 0; i < MAX_MINTS; i++)
-        if (g_wallets[i] && g_wallets[i]->mint_url() == mint_url)
-            return g_wallets[i];
-    return nullptr;
-}
-
-static int find_free_slot()
-{
-    for (int i = 0; i < MAX_MINTS; i++)
-        if (!g_wallets[i])
-            return i;
-    return -1;
-}
-
-static int wallet_count()
-{
-    int n = 0;
-    for (int i = 0; i < MAX_MINTS; i++)
-        if (g_wallets[i]) n++;
-    return n;
-}
-
-// -------------------------------------------------------------------------
-// Display
-// -------------------------------------------------------------------------
-
-static void draw_title_bar(const char *right_label)
-{
-    display_fill_rect(0, 0, LCD_W, 9, COLOR_WHITE);
-    display_text_color(1, 1, "nucula", COLOR_BLACK, COLOR_WHITE, 1);
-    if (right_label && right_label[0]) {
-        int rx = LCD_W - display_text_width(right_label, 1) - 1;
-        display_text_color(rx, 1, right_label, COLOR_BLACK, COLOR_WHITE, 1);
-    }
-}
-
-void display_nfc_status(const char *line1, const char *line2)
-{
-    display_clear();
-    draw_title_bar("nfc");
-
-    // line1 — large, centered (scale 2)
-    if (line1 && line1[0]) {
-        int x = (LCD_W - display_text_width(line1, 2)) / 2;
-        if (x < 0) x = 0;
-        display_text_color(x, 20, line1, COLOR_WHITE, COLOR_BLACK, 2);
-    }
-
-    // line2 — small, centered (scale 1)
-    if (line2 && line2[0]) {
-        int x = (LCD_W - display_text_width(line2, 1)) / 2;
-        if (x < 0) x = 0;
-        display_text_color(x, 40, line2, COLOR_WHITE, COLOR_BLACK, 1);
-    }
-
-    display_update();
-}
-
-void display_refresh()
-{
-    // Layout (64px total, 128px wide):
-    //   y= 0.. 8  title bar (scale 1)
-    //   y=10..25  balance (scale 2, centered)
-    //   y=27..34  "sat" (scale 1, centered)
-    //   y=36      separator
-    //   y=38..45  mint line 0 (scale 1)
-    //   y=46..53  mint line 1 (scale 1)
-    //   y=56..63  status: proof count + heap (scale 1)
-
-    display_clear();
-
-    // ---- Title bar ----
-    int total_pending = 0;
-    for (int i = 0; i < MAX_MINTS; i++) {
-        if (!g_wallets[i]) continue;
-        total_pending += g_wallets[i]->pending_count();
-    }
-    const char *base = wifi_is_connected() ? "wifi" : "----";
-    char wifi_buf[16];
-    if (total_pending > 0) {
-        unsigned p = (total_pending > 99) ? 99 : (unsigned)total_pending;
-        snprintf(wifi_buf, sizeof(wifi_buf), "%s+%u", base, p);
-    } else {
-        snprintf(wifi_buf, sizeof(wifi_buf), "%s", base);
-    }
-    draw_title_bar(wifi_buf);
-
-    // ---- Tally ----
-    int total_balance = 0, total_proofs = 0;
-    for (int i = 0; i < MAX_MINTS; i++) {
-        if (!g_wallets[i]) continue;
-        for (const auto &p : g_wallets[i]->proofs())
-            total_balance += p.amount;
-        total_proofs += (int)g_wallets[i]->proofs().size();
-    }
-
-    // ---- Balance (scale 2, centered) ----
-    char buf[22];
-    snprintf(buf, sizeof(buf), "%d", total_balance);
-    int scale = 2;
-    if (display_text_width(buf, scale) > LCD_W - 4) scale = 1;
-    int bx = (LCD_W - display_text_width(buf, scale)) / 2;
-    if (bx < 0) bx = 0;
-    display_text(bx, 10, buf, scale);
-
-    // ---- "sat" label (scale 1, centered) ----
-    int sat_x = (LCD_W - display_text_width("sat", 1)) / 2;
-    display_text(sat_x, 27, "sat", 1);
-
-    // ---- Separator ----
-    display_hline(0, 36, LCD_W);
-
-    // ---- Mint list (scale 1, up to 2 lines) ----
-    int y = 38;
-    int shown = 0;
-    for (int i = 0; i < MAX_MINTS && shown < 2; i++) {
-        if (!g_wallets[i]) continue;
-        const char *url = g_wallets[i]->mint_url().c_str();
-        if (strncmp(url, "https://", 8) == 0) url += 8;
-        else if (strncmp(url, "http://", 7) == 0) url += 7;
-
-        int bal = 0;
-        for (const auto &p : g_wallets[i]->proofs())
-            bal += p.amount;
-
-        char amount[14];
-        snprintf(amount, sizeof(amount), "%d", bal);
-        int ax = LCD_W - display_text_width(amount, 1) - 1;
-
-        int url_chars = (ax - 2) / 6;
-        char line[32];
-        snprintf(line, sizeof(line), "%.*s", url_chars, url);
-        display_text(1, y, line, 1);
-        display_text(ax, y, amount, 1);
-        y += 8;
-        shown++;
-    }
-
-    // ---- Status bar (scale 1) ----
-    snprintf(buf, sizeof(buf), "%dp heap:%luk",
-             total_proofs, (unsigned long)(esp_get_free_heap_size() / 1024));
-    display_text(1, 56, buf, 1);
-
-    display_update();
-}
-
-// -------------------------------------------------------------------------
-// Keypad UI
-// -------------------------------------------------------------------------
-
-// Amount entry screen: shows digits being typed, * / # hints at the bottom.
-static void show_amount_entry(const char *digits)
-{
-    display_clear();
-    draw_title_bar("amount");
-
-    // Amount (scale 2, centered)
-    const char *show = (digits && digits[0]) ? digits : "0";
-    int scale = 2;
-    if (display_text_width(show, scale) > LCD_W - 4) scale = 1;
-    int ax = (LCD_W - display_text_width(show, scale)) / 2;
-    display_text(ax, 14, show, scale);
-
-    // "sat" label
-    int sat_x = (LCD_W - display_text_width("sat", 1)) / 2;
-    display_text(sat_x, 32, "sat", 1);
-
-    // Hints at bottom
-    display_text(1, 56, "* cancel", 1);
-    const char *confirm_hint = "# ok";
-    display_text(LCD_W - display_text_width(confirm_hint, 1) - 1, 56,
-                 confirm_hint, 1);
-
-    display_update();
-}
-
-static void keypad_ui_task(void *arg)
-{
-    (void)arg;
-
-    enum class UiState { IDLE, ENTERING_AMOUNT, NFC_ACTIVE };
-    UiState ui = UiState::IDLE;
-
-    char amount_buf[10] = {};
-    int  amount_len     = 0;
-    int  nfc_amount     = 0;
-    NfcState last_nfc   = NfcState::off;
-
-    for (;;) {
-        // 200ms timeout: keeps us responsive to key presses and NFC state changes
-        char key = keypad_wait_event(200);
-
-        switch (ui) {
-
-        case UiState::IDLE:
-            if (key >= '1' && key <= '9' && wallet_count() > 0) {
-                amount_len = 0;
-                amount_buf[0] = key;
-                amount_buf[1] = '\0';
-                amount_len = 1;
-                ui = UiState::ENTERING_AMOUNT;
-                show_amount_entry(amount_buf);
-            }
-            break;
-
-        case UiState::ENTERING_AMOUNT:
-            if (key >= '0' && key <= '9') {
-                if (amount_len == 0 && key == '0') break; // no leading zeros
-                if (amount_len < 8) {
-                    amount_buf[amount_len++] = key;
-                    amount_buf[amount_len]   = '\0';
-                    show_amount_entry(amount_buf);
-                }
-            } else if (key == '*') {
-                ui = UiState::IDLE;
-                display_refresh();
-            } else if (key == '#') {
-                nfc_amount = atoi(amount_buf);
-                if (nfc_amount <= 0) break;             // nothing entered yet
-                if (nfc_state() == NfcState::off) break; // NFC unavailable
-                if (!nfc_request_start(nfc_amount, nullptr)) break;
-                ui = UiState::NFC_ACTIVE;
-                last_nfc = NfcState::off;
-                char amt_str[16];
-                snprintf(amt_str, sizeof(amt_str), "%d sat", nfc_amount);
-                display_nfc_status("waiting", amt_str);
-            }
-            break;
-
-        case UiState::NFC_ACTIVE: {
-            if (key == '*') {
-                nfc_request_stop();
-                ui = UiState::IDLE;
-                display_refresh();
-                break;
-            }
-            // Refresh display whenever NFC state changes
-            NfcState cur = nfc_state();
-            if (cur == last_nfc) break;
-            last_nfc = cur;
-
-            char amt_str[16];
-            snprintf(amt_str, sizeof(amt_str), "%d sat", nfc_amount);
-            switch (cur) {
-            case NfcState::waiting:
-                display_nfc_status("waiting", amt_str);   break;
-            case NfcState::active:
-                display_nfc_status("reading...", amt_str); break;
-            case NfcState::received:
-            case NfcState::redeeming:
-                display_nfc_status("redeeming", amt_str);  break;
-            case NfcState::success:
-                display_nfc_status("success!", "");         break;
-            case NfcState::error:
-                display_nfc_status("error", "try again");   break;
-            default:
-                break;
-            }
-
-            // Terminal states: pause so the user sees the result, then return home
-            if (cur == NfcState::success || cur == NfcState::error) {
-                vTaskDelay(pdMS_TO_TICKS(2000));
-                nfc_request_stop();
-                ui = UiState::IDLE;
-                last_nfc = NfcState::off;
-                display_refresh();
-            }
-            break;
-        }
-
-        } // switch
-    } // for
-}
 
 // -------------------------------------------------------------------------
 // Console commands
@@ -312,18 +35,19 @@ static void keypad_ui_task(void *arg)
 
 static void cmd_status(const char *arg)
 {
+    wallet_store_guard guard;
     (void)arg;
     console_printf("wifi:    %s\r\n", wifi_is_connected() ? "connected" : "disconnected");
     console_printf("nfc:     %s\r\n", nfc_status_str());
     console_printf("heap:    %lu bytes free\r\n",
                    (unsigned long)esp_get_free_heap_size());
 
-    int count = wallet_count();
+    int count = wallet_store_count();
     console_printf("mints:   %d/%d\r\n", count, MAX_MINTS);
 
-    int total_balance = 0;
+    long long total_balance = 0;
     for (int i = 0; i < MAX_MINTS; i++) {
-        auto *w = g_wallets[i];
+        auto *w = wallet_store_get(i);
         if (!w) continue;
         const cashu::Keyset *ks = w->active_keyset();
         console_printf("[%d] %s\r\n", i, w->mint_url().c_str());
@@ -331,43 +55,41 @@ static void cmd_status(const char *arg)
             console_printf("    active:  %s (%d keys)\r\n",
                            ks->id.c_str(), (int)ks->keys.size());
         console_printf("    keysets: %d\r\n", (int)w->keysets().size());
-        int bal = 0;
-        for (const auto &p : w->proofs())
-            bal += p.amount;
-        console_printf("    balance: %d sat (%d proofs)\r\n",
+        long long bal = w->balance();
+        console_printf("    balance: %lld sat (%d proofs)\r\n",
                        bal, (int)w->proofs().size());
         total_balance += bal;
     }
     if (count > 0)
-        console_printf("total:   %d sat\r\n", total_balance);
+        console_printf("total:   %lld sat\r\n", (long long)total_balance);
 }
 
 static void cmd_balance(const char *arg)
 {
+    wallet_store_guard guard;
     (void)arg;
-    int total = 0;
+    long long total = 0;
     bool any = false;
-    for (int i = 0; i < MAX_MINTS; i++) { 
-        auto *w = g_wallets[i];
+    for (int i = 0; i < MAX_MINTS; i++) {
+        auto *w = wallet_store_get(i);
         if (!w || w->proofs().empty()) continue;
         any = true;
         console_printf("[%s]\r\n", w->mint_url().c_str());
-        int sub = 0;
-        for (const auto &p : w->proofs()) {
+        for (const auto &p : w->proofs())
             console_printf("  %d sat  (keyset %s)\r\n", p.amount, p.id.c_str());
-            sub += p.amount;
-        }
-        console_printf("  subtotal: %d sat\r\n", sub);
+        long long sub = w->balance();
+        console_printf("  subtotal: %lld sat\r\n", sub);
         total += sub;
     }
     if (!any)
         nucula_console_write("no proofs\r\n");
     else
-        console_printf("total: %d sat\r\n", total);
+        console_printf("total: %lld sat\r\n", total);
 }
 
 static void cmd_receive(const char *arg)
 {
+    wallet_store_guard guard;
     if (!arg || strlen(arg) == 0) {
         nucula_console_write("usage: receive <cashu token>\r\n");
         return;
@@ -378,35 +100,19 @@ static void cmd_receive(const char *arg)
     }
 
     cashu::Token token;
-    bool decoded = false;
-    if (strncmp(arg, "cashuB", 6) == 0)
-        decoded = cashu::deserialize_token_v4(arg, token);
-    else if (strncmp(arg, "cashuA", 6) == 0)
-        decoded = cashu::deserialize_token_v3(arg, token);
-
-    if (!decoded) {
+    if (!cashu::deserialize_token(arg, token)) {
         nucula_console_write("error: failed to decode token\r\n");
         return;
     }
 
-    int input_total = 0;
-    for (const auto &p : token.proofs)
-        input_total += p.amount;
-    console_printf("token: %d sat in %d proofs from %s\r\n",
-                   input_total, (int)token.proofs.size(), token.mint.c_str());
+    console_printf("token: %lld sat in %d proofs from %s\r\n",
+                   (long long)cashu::proofs_sum(token.proofs),
+                   (int)token.proofs.size(), token.mint.c_str());
 
-    cashu::Wallet *w = find_wallet(token.mint.c_str());
-
+    cashu::Wallet *w = wallet_store_get_or_create(token.mint);
     if (!w) {
-        int slot = find_free_slot();
-        if (slot < 0) {
-            console_printf("error: max %d mints, remove one first\r\n", MAX_MINTS);
-            return;
-        }
-        w = new cashu::Wallet(token.mint, g_ctx, slot);
-        g_wallets[slot] = w;
-        w->save_mint_url();
-        console_printf("added mint [%d]: %s\r\n", slot, token.mint.c_str());
+        console_printf("error: max %d mints, remove one first\r\n", MAX_MINTS);
+        return;
     }
 
     if (w->keysets().empty() || !w->active_keyset()) {
@@ -419,35 +125,33 @@ static void cmd_receive(const char *arg)
 
     nucula_console_write("swapping...\r\n");
     std::vector<cashu::Proof> received;
+    int64_t t0 = esp_timer_get_time();
     if (!w->receive(token, received)) {
         nucula_console_write("error: receive failed\r\n");
         return;
     }
+    long long ms = (esp_timer_get_time() - t0) / 1000;
 
-    int output_total = 0;
-    for (const auto &p : received)
-        output_total += p.amount;
-    console_printf("received %d sat in %d proofs\r\n",
-                   output_total, (int)received.size());
+    console_printf("received %lld sat in %d proofs (%lld ms)\r\n",
+                   (long long)cashu::proofs_sum(received), (int)received.size(), ms);
     display_refresh();
 }
 
 static void cmd_mint(const char *arg)
 {
+    wallet_store_guard guard;
     if (!arg || strlen(arg) == 0 || strcmp(arg, "list") == 0) {
-        int count = wallet_count();
+        int count = wallet_store_count();
         if (count == 0) {
             nucula_console_write("no mints configured\r\n");
             return;
         }
         for (int i = 0; i < MAX_MINTS; i++) {
-            if (!g_wallets[i]) continue;
-            int bal = 0;
-            for (const auto &p : g_wallets[i]->proofs())
-                bal += p.amount;
-            console_printf("[%d] %s  (%d keysets, %d sat)\r\n",
-                           i, g_wallets[i]->mint_url().c_str(),
-                           (int)g_wallets[i]->keysets().size(), bal);
+            if (!wallet_store_get(i)) continue;
+            console_printf("[%d] %s  (%d keysets, %lld sat)\r\n",
+                           i, wallet_store_get(i)->mint_url().c_str(),
+                           (int)wallet_store_get(i)->keysets().size(),
+                           (long long)wallet_store_get(i)->balance());
         }
         console_printf("%d/%d slots used\r\n", count, MAX_MINTS);
         return;
@@ -460,19 +164,16 @@ static void cmd_mint(const char *arg)
             nucula_console_write("usage: mint add <url>\r\n");
             return;
         }
-        if (find_wallet(url)) {
+        if (wallet_store_find(url)) {
             nucula_console_write("mint already added\r\n");
             return;
         }
-        int slot = find_free_slot();
-        if (slot < 0) {
+        auto *w = wallet_store_get_or_create(url);
+        if (!w) {
             console_printf("error: max %d mints, remove one first\r\n", MAX_MINTS);
             return;
         }
-        auto *w = new cashu::Wallet(url, g_ctx, slot);
-        g_wallets[slot] = w;
-        w->save_mint_url();
-        console_printf("added mint [%d]: %s\r\n", slot, url);
+        console_printf("added mint [%d]: %s\r\n", w->nvs_slot(), url);
 
         if (wifi_is_connected()) {
             nucula_console_write("loading keysets...\r\n");
@@ -493,17 +194,11 @@ static void cmd_mint(const char *arg)
         if (strlen(id) == 1 && id[0] >= '0' && id[0] < ('0' + MAX_MINTS))
             slot = id[0] - '0';
 
-        cashu::Wallet *w = nullptr;
-        if (slot >= 0 && g_wallets[slot]) {
-            w = g_wallets[slot];
-        } else {
-            for (int i = 0; i < MAX_MINTS; i++) {
-                if (g_wallets[i] && g_wallets[i]->mint_url() == id) {
-                    w = g_wallets[i];
-                    slot = i;
-                    break;
-                }
-            }
+        cashu::Wallet *w = wallet_store_get(slot);
+        if (!w) {
+            w = wallet_store_find(id);
+            if (w)
+                slot = w->nvs_slot();
         }
 
         if (!w) {
@@ -511,15 +206,10 @@ static void cmd_mint(const char *arg)
             return;
         }
 
-        int bal = 0;
-        for (const auto &p : w->proofs())
-            bal += p.amount;
-        console_printf("removing [%d] %s (%d sat, %d proofs erased)\r\n",
+        console_printf("removing [%d] %s (%lld sat, %d proofs erased)\r\n",
                        slot, w->mint_url().c_str(),
-                       bal, (int)w->proofs().size());
-        w->erase_nvs();
-        delete w;
-        g_wallets[slot] = nullptr;
+                       (long long)w->balance(), (int)w->proofs().size());
+        wallet_store_remove(slot);
         display_refresh();
         return;
     }
@@ -540,7 +230,7 @@ static void cmd_nfc(const char *arg)
             return;
         }
         if (nfc_state() == NfcState::off) {
-            nucula_console_write("error: PN532 not initialized\r\n");
+            nucula_console_write("error: NFC not available\r\n");
             return;
         }
         console_printf("requesting %d sat via NFC...\r\n", amount);
@@ -557,34 +247,36 @@ static void cmd_nfc(const char *arg)
     nucula_console_write("usage: nfc [request <amount>|stop]\r\n");
 }
 
+// Caller must hold the wallet_store guard (all cmd_* callers do).
 static cashu::Wallet *resolve_wallet(const char *idx_str)
 {
-    int count = wallet_count();
+    int count = wallet_store_count();
     if (count == 0) {
         nucula_console_write("error: no mints configured\r\n");
         return nullptr;
     }
     if (idx_str && *idx_str) {
         int slot = atoi(idx_str);
-        if (slot >= 0 && slot < MAX_MINTS && g_wallets[slot])
-            return g_wallets[slot];
+        if (slot >= 0 && slot < MAX_MINTS && wallet_store_get(slot))
+            return wallet_store_get(slot);
         nucula_console_write("error: invalid mint index\r\n");
         return nullptr;
     }
     if (count == 1) {
         for (int i = 0; i < MAX_MINTS; i++)
-            if (g_wallets[i]) return g_wallets[i];
+            if (wallet_store_get(i)) return wallet_store_get(i);
     }
     nucula_console_write("error: multiple mints, specify index\r\n");
     for (int i = 0; i < MAX_MINTS; i++) {
-        if (!g_wallets[i]) continue;
-        console_printf("  [%d] %s\r\n", i, g_wallets[i]->mint_url().c_str());
+        if (!wallet_store_get(i)) continue;
+        console_printf("  [%d] %s\r\n", i, wallet_store_get(i)->mint_url().c_str());
     }
     return nullptr;
 }
 
 static void cmd_invoice(const char *arg)
 {
+    wallet_store_guard guard;
     if (!arg || strlen(arg) == 0) {
         nucula_console_write("usage: invoice <amount> [mint_index]\r\n");
         return;
@@ -636,6 +328,7 @@ static void cmd_invoice(const char *arg)
 
 static void cmd_claim(const char *arg)
 {
+    wallet_store_guard guard;
     if (!arg || strlen(arg) == 0) {
         nucula_console_write("usage: claim <quote_id> [mint_index]\r\n");
         return;
@@ -670,9 +363,9 @@ static void cmd_claim(const char *arg)
         }
     } else {
         for (int i = 0; i < MAX_MINTS; i++) {
-            if (!g_wallets[i]) continue;
-            if (g_wallets[i]->check_mint_quote(quote_id, quote)) {
-                w = g_wallets[i];
+            if (!wallet_store_get(i)) continue;
+            if (wallet_store_get(i)->check_mint_quote(quote_id, quote)) {
+                w = wallet_store_get(i);
                 break;
             }
         }
@@ -716,6 +409,7 @@ static void cmd_claim(const char *arg)
 
 static void cmd_melt(const char *arg)
 {
+    wallet_store_guard guard;
     if (!arg || strlen(arg) == 0) {
         nucula_console_write("usage: melt <bolt11_invoice> [mint_index]\r\n");
         return;
@@ -756,14 +450,14 @@ static void cmd_melt(const char *arg)
         return;
     }
 
-    int wallet_bal = w->balance();
+    long long wallet_bal = w->balance();
     int total_needed = quote.amount + quote.fee_reserve;
     console_printf("amount:      %d sat\r\n", quote.amount);
     console_printf("fee_reserve: %d sat\r\n", quote.fee_reserve);
-    console_printf("balance:     %d sat\r\n", wallet_bal);
+    console_printf("balance:     %lld sat\r\n", wallet_bal);
 
     if (wallet_bal < total_needed) {
-        console_printf("error: insufficient balance (%d < %d)\r\n",
+        console_printf("error: insufficient balance (%lld < %d)\r\n",
                        wallet_bal, total_needed);
         return;
     }
@@ -783,21 +477,18 @@ static void cmd_melt(const char *arg)
 
 static void cmd_stickup(const char *arg)
 {
+    wallet_store_guard guard;
     (void)arg;
 
     bool any = false;
     for (int i = 0; i < MAX_MINTS; i++) {
-        auto *w = g_wallets[i];
+        auto *w = wallet_store_get(i);
         if (!w || w->proofs().empty()) continue;
 
-        int balance = 0;
-        for (const auto &p : w->proofs())
-            balance += p.amount;
-
         any = true;
-        console_printf("[%d] %s: %d sat in %d proofs\r\n",
+        console_printf("[%d] %s: %lld sat in %d proofs\r\n",
                        i, w->mint_url().c_str(),
-                       balance, (int)w->proofs().size());
+                       (long long)w->balance(), (int)w->proofs().size());
 
         cashu::Token token;
         token.mint = w->mint_url();
@@ -805,6 +496,12 @@ static void cmd_stickup(const char *arg)
         token.proofs = w->proofs();
 
         std::string serialized = cashu::serialize_token_v4(token);
+        if (serialized.empty()) {
+            // Without this token string the proofs have no other exit —
+            // clearing them here would destroy the funds.
+            console_printf("[%d] error: token serialization failed, not draining\r\n", i);
+            continue;
+        }
 
         nucula_console_write(serialized.c_str());
         nucula_console_write("\r\n");
@@ -825,17 +522,13 @@ static void cmd_stickup(const char *arg)
 
 static void erase_all_wallets()
 {
-    for (int i = 0; i < MAX_MINTS; i++) {
-        if (g_wallets[i]) {
-            g_wallets[i]->erase_nvs();
-            delete g_wallets[i];
-            g_wallets[i] = nullptr;
-        }
-    }
+    wallet_store_guard guard;
+    wallet_store_remove_all();
 }
 
 static void cmd_seed(const char *arg)
 {
+    wallet_store_guard guard;
     if (!arg || strlen(arg) == 0 || strcmp(arg, "show") == 0) {
         std::string mnemonic;
         if (cashu::Wallet::load_mnemonic(mnemonic)) {
@@ -925,6 +618,77 @@ static void cmd_reboot(const char *arg)
 }
 
 // -------------------------------------------------------------------------
+// Telemetry
+// -------------------------------------------------------------------------
+
+static void cmd_heap(const char *arg)
+{
+    (void)arg;
+    console_printf("free:          %lu\r\n", (unsigned long)esp_get_free_heap_size());
+    console_printf("largest block: %u\r\n",
+                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    console_printf("min ever free: %lu\r\n",
+                   (unsigned long)esp_get_minimum_free_heap_size());
+}
+
+static void cmd_tasks(const char *arg)
+{
+    (void)arg;
+    UBaseType_t n = uxTaskGetNumberOfTasks();
+    TaskStatus_t *st = (TaskStatus_t *)malloc(n * sizeof(TaskStatus_t));
+    if (!st) {
+        nucula_console_write("error: out of memory\r\n");
+        return;
+    }
+    n = uxTaskGetSystemState(st, n, NULL);
+    console_printf("%-16s %4s %10s\r\n", "name", "prio", "stack-min");
+    for (UBaseType_t i = 0; i < n; i++)
+        console_printf("%-16s %4u %10u\r\n", st[i].pcTaskName,
+                       (unsigned)st[i].uxCurrentPriority,
+                       (unsigned)st[i].usStackHighWaterMark);
+    free(st);
+}
+
+static void cmd_log(const char *arg)
+{
+    esp_log_level_t level;
+    if (arg && arg[0] && (arg[1] == '\0' || arg[1] == ' ')) {
+        switch (arg[0]) {
+            case 'e': level = ESP_LOG_ERROR; break;
+            case 'w': level = ESP_LOG_WARN;  break;
+            case 'i': level = ESP_LOG_INFO;  break;
+            case 'd': level = ESP_LOG_DEBUG; break;
+            default:  goto usage;
+        }
+        const char *tag = arg + 1;
+        while (*tag == ' ') tag++;
+        esp_log_level_set(*tag ? tag : "*", level);
+        console_printf("log level '%c' set for %s\r\n", arg[0], *tag ? tag : "*");
+        return;
+    }
+usage:
+    nucula_console_write("usage: log <e|w|i|d> [tag]\r\n");
+}
+
+static void cmd_bench(const char *arg)
+{
+    (void)arg;
+    nucula_console_write("benchmarking crypto primitives...\r\n");
+    crypto_run_benchmark(wallet_store_ctx());
+    nucula_console_write("done (results logged at info level)\r\n");
+}
+
+static void cmd_selftest(const char *arg)
+{
+    (void)arg;
+    nucula_console_write("running self-tests (details logged at info level)...\r\n");
+    bool ok = crypto_run_tests(wallet_store_ctx()) != 0;
+    if (!cashu::keyset_run_tests())
+        ok = false;
+    console_printf("self-tests %s\r\n", ok ? "PASSED" : "FAILED");
+}
+
+// -------------------------------------------------------------------------
 // Keypad
 // -------------------------------------------------------------------------
 
@@ -960,12 +724,27 @@ extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "nucula cashu wallet");
 
+    // NVS backs the wallet itself (proofs, seed, keysets) — bring it up
+    // first and independently of WiFi.
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES ||
+        nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "NVS needs erase (%s)", esp_err_to_name(nvs_err));
+        if (nvs_flash_erase() == ESP_OK)
+            nvs_err = nvs_flash_init();
+    }
+    if (nvs_err != ESP_OK)
+        ESP_LOGE(TAG, "NVS init failed: %s — wallet persistence disabled",
+                 esp_err_to_name(nvs_err));
+
+    http_init();
+
     if (wifi_init() != ESP_OK)
         ESP_LOGE(TAG, "wifi failed, continuing offline");
 
     // Bring up the interactive console FIRST, while heap is plentiful, so its
     // USB driver + line buffer always allocate. Command handlers tolerate the
-    // wallets not being ready yet (they null-check g_wallets[i]). Initializing
+    // wallets not being ready yet (they null-check wallet_store_get(i)). Initializing
     // it last starved it once WiFi + every wallet's keysets were loaded.
     console_init(NULL);
     console_register_cmd("status",  cmd_status,  "show system and wallet status");
@@ -980,41 +759,44 @@ extern "C" void app_main(void)
     console_register_cmd("seed",    cmd_seed,     "seed [show|generate|restore|wipe]");
     console_register_cmd("keypad",  cmd_keypad,   "keypad scan — probe PCF8574 wiring");
     console_register_cmd("reboot",  cmd_reboot,   "restart the device");
+    console_register_cmd("heap",    cmd_heap,     "show heap usage");
+    console_register_cmd("tasks",   cmd_tasks,    "show task stack high-water marks");
+    console_register_cmd("log",     cmd_log,      "log <e|w|i|d> [tag] — set log level");
+    console_register_cmd("bench",   cmd_bench,    "benchmark crypto primitives");
+    console_register_cmd("selftest", cmd_selftest, "run crypto/keyset self-tests");
     console_start();
 
-    g_ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
-    if (!g_ctx) {
+    secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
+    if (!ctx) {
         ESP_LOGE(TAG, "failed to create secp256k1 context");
         return;
     }
     {
         unsigned char rand32[32];
         esp_fill_random(rand32, sizeof(rand32));
-        if (!secp256k1_context_randomize(g_ctx, rand32))
+        if (!secp256k1_context_randomize(ctx, rand32))
             ESP_LOGW(TAG, "secp256k1 context randomize failed");
     }
 
-    crypto_run_tests(g_ctx);
+    if (!wallet_store_init(ctx)) {
+        ESP_LOGE(TAG, "wallet store init failed");
+        return;
+    }
+
+#if CONFIG_NUCULA_SELFTEST_ON_BOOT
+    crypto_run_tests(ctx);
     if (!cashu::keyset_run_tests())
         ESP_LOGE(TAG, "keyset id derivation self-test FAILED");
+#endif
 
     cashu::Wallet::load_seed();
-    cashu::Wallet::ensure_p2pk_keypair(g_ctx);
-
-    for (int i = 0; i < MAX_MINTS; i++) {
-        std::string url = cashu::Wallet::load_mint_url_for_slot(i);
-        if (url.empty()) continue;
-        auto *w = new cashu::Wallet(url, g_ctx, i);
-        w->load_from_nvs();
-        g_wallets[i] = w;
-        ESP_LOGI(TAG, "restored wallet [%d] %s (%d keysets, %d proofs)",
-                 i, url.c_str(), (int)w->keysets().size(), (int)w->proofs().size());
-    }
+    cashu::Wallet::ensure_p2pk_keypair(wallet_store_ctx());
 
     if (wifi_is_connected()) {
         for (int i = 0; i < MAX_MINTS; i++) {
-            if (!g_wallets[i]) continue;
-            if (!g_wallets[i]->load_keysets())
+            auto *w = wallet_store_get(i);
+            if (!w) continue;
+            if (!w->load_keysets())
                 ESP_LOGW(TAG, "failed to refresh keysets for [%d]", i);
         }
     }
@@ -1037,18 +819,18 @@ extern "C" void app_main(void)
             TickType_t backoff = pdMS_TO_TICKS(5000);
             const TickType_t backoff_max = pdMS_TO_TICKS(60000);
             while (xEventGroupGetBits(eg) & WIFI_CONNECTED_BIT) {
-                int pending = 0;
-                for (int i = 0; i < MAX_MINTS; i++)
-                    if (g_wallets[i]) pending += g_wallets[i]->pending_count();
-                if (pending == 0)
+                if (wallet_store_total_pending() == 0)
                     break;
 
                 int total_ok = 0, total_fail = 0;
                 for (int i = 0; i < MAX_MINTS; i++) {
-                    if (!g_wallets[i]) continue;
-                    if (g_wallets[i]->pending_count() == 0) continue;
+                    // Per-slot guard: released between slots so console
+                    // commands can interleave with a long drain pass.
+                    wallet_store_guard guard;
+                    auto *w = wallet_store_get(i);
+                    if (!w || w->pending_count() == 0) continue;
                     int ok = 0, fail = 0;
-                    g_wallets[i]->drain_pending_tokens(ok, fail);
+                    w->drain_pending_tokens(ok, fail);
                     total_ok += ok;
                     total_fail += fail;
                 }
@@ -1079,24 +861,21 @@ extern "C" void app_main(void)
         }
     }, "wifi_drain", 8192, NULL, 4, NULL);
 
-    // NFC creates the shared I2C bus; display and keypad join it
-    if (!nfc_init())
-        ESP_LOGW(TAG, "PN7160 init failed, NFC disabled");
+    // Shared I2C bus for display, keypad, and NFC. Each driver probes for
+    // its device and disables itself when absent, so a bare module still
+    // boots into a fully working console + wallet.
+    if (i2c_bus_init() != ESP_OK)
+        ESP_LOGW(TAG, "I2C bus init failed; display/keypad/NFC disabled");
 
-    i2c_master_bus_handle_t i2c_bus = nfc_get_i2c_bus();
+    display_init(i2c_bus_get());
 
-    display_init(i2c_bus);
-
-    if (i2c_bus) {
-        if (keypad_init(i2c_bus) == ESP_OK) {
-            keypad_start_task();
-            xTaskCreate(keypad_ui_task, "keypad_ui", 4096, NULL, 3, NULL);
-        } else {
-            ESP_LOGW(TAG, "keypad init failed");
-        }
-    } else {
-        ESP_LOGW(TAG, "no I2C bus for keypad (NFC init failed?)");
+    if (keypad_init(i2c_bus_get()) == ESP_OK) {
+        keypad_start_task();
+        xTaskCreate(keypad_ui_task, "keypad_ui", 4096, NULL, 3, NULL);
     }
+
+    if (!nfc_init(i2c_bus_get()))
+        ESP_LOGW(TAG, "PN7160 init failed, NFC disabled");
 
     display_refresh();
 }

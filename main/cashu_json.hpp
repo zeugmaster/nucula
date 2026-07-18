@@ -1,5 +1,4 @@
-#ifndef CASHU_JSON_HPP
-#define CASHU_JSON_HPP
+#pragma once
 
 #include "cashu.hpp"
 #include "cJSON.h"
@@ -60,13 +59,15 @@ bool from_json_array(const cJSON* arr, std::vector<T>& out) {
     return true;
 }
 
-// Convenience: serialize to JSON string (caller owns string)
+// Convenience: serialize to JSON string. Returns "" on allocation failure;
+// callers sending requests must treat that as an error, not as a body.
 template<typename T>
 std::string serialize(const T& v) {
     cJSON* j = to_json(v);
+    if (!j) return "";
     char* str = cJSON_PrintUnformatted(j);
-    std::string result(str);
-    cJSON_free(str);
+    std::string result(str ? str : "");
+    if (str) cJSON_free(str);
     cJSON_Delete(j);
     return result;
 }
@@ -95,6 +96,9 @@ bool keysets_from_json(const char* json_str, std::vector<Keyset>& out);
 std::string serialize_token_v3(const Token& token);
 bool deserialize_token_v3(const char* token_str, Token& out);
 
+// Decode either token format by its prefix (cashuB -> V4, cashuA -> V3).
+// Returns false for anything else.
+bool deserialize_token(const char* token_str, Token& out);
+
 } // namespace cashu
 
-#endif

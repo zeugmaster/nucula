@@ -1,5 +1,4 @@
-#ifndef CASHU_SUITE_H
-#define CASHU_SUITE_H
+#pragma once
 
 #include <stdint.h>
 #include <stddef.h>
@@ -98,4 +97,3 @@ int cashu_sha256(const unsigned char *data, size_t len, unsigned char out[32]);
 }
 #endif
 
-#endif /* CASHU_SUITE_H */

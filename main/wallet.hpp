@@ -1,12 +1,9 @@
-#ifndef CASHU_WALLET_HPP
-#define CASHU_WALLET_HPP
+#pragma once
 
 #include "cashu.hpp"
 #include "secp256k1.h"
 #include <string>
 #include <vector>
-
-static const int MAX_MINTS = 3;
 
 namespace cashu {
 
@@ -87,7 +84,7 @@ public:
     bool check_melt_quote(const std::string& quote_id, MeltQuote& quote_out);
     bool melt_tokens(const MeltQuote& quote, int& change_amount);
 
-    int balance() const;
+    int64_t balance() const;
     bool select_proofs(int amount_needed, std::vector<Proof>& selected,
                        std::vector<Proof>& remaining);
 
@@ -108,7 +105,9 @@ private:
     bool load_proofs();
     bool save_keysets();
     bool load_keysets_nvs();
-    void merge_keysets(const std::vector<Keyset>& fresh);
+    // Returns true when the merge changed anything (new keyset, changed
+    // metadata, or newly filled keys) — i.e. when a save is warranted.
+    bool merge_keysets(const std::vector<Keyset>& fresh);
 
     // Mint public key (compressed hex) for a given amount in a keyset. Returned
     // as hex so callers can hand it to the byte-oriented crypto suite, keeping
@@ -126,4 +125,3 @@ private:
 
 } // namespace cashu
 
-#endif

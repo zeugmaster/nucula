@@ -9,9 +9,8 @@
 extern "C" {
 #endif
 
-#define KEYPAD_I2C_ADDR  0x20
-
-// Add PCF8574 to the shared I2C bus (call after nfc_init).
+// Probe for the PCF8574 on the shared I2C bus and add it as a device.
+// Returns ESP_ERR_NOT_FOUND when the keypad is absent.
 esp_err_t keypad_init(i2c_master_bus_handle_t bus);
 
 // Start the background polling task and event queue.

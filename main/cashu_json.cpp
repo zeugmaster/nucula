@@ -1,7 +1,8 @@
 #include "cashu_json.hpp"
+#include "cashu_cbor.hpp"
+#include "base64url.hpp"
 #include <cstdlib>
 #include <cstring>
-#include <mbedtls/base64.h>
 
 namespace cashu {
 
@@ -14,6 +15,10 @@ static const char* get_string(const cJSON* obj, const char* key) {
 static bool get_int(const cJSON* obj, const char* key, int& out) {
     const cJSON* item = cJSON_GetObjectItemCaseSensitive(obj, key);
     if (!item || !cJSON_IsNumber(item)) return false;
+    // All protocol ints (amounts, fees) are non-negative and must fit in
+    // int32 — valueint saturates silently, so bound via the double value.
+    if (item->valuedouble < 0 || item->valuedouble > 2147483647.0)
+        return false;
     out = item->valueint;
     return true;
 }
@@ -426,9 +431,10 @@ bool from_json_keyset_info_response(const cJSON *j, std::vector<KeysetInfo> &out
 
 std::string proofs_to_json(const std::vector<Proof>& proofs) {
     cJSON* arr = to_json_array(proofs);
+    if (!arr) return "";
     char* str = cJSON_PrintUnformatted(arr);
-    std::string result(str);
-    cJSON_free(str);
+    std::string result(str ? str : "");
+    if (str) cJSON_free(str);
     cJSON_Delete(arr);
     return result;
 }
@@ -443,9 +449,10 @@ bool proofs_from_json(const char* json_str, std::vector<Proof>& out) {
 
 std::string keysets_to_json(const std::vector<Keyset>& keysets) {
     cJSON* arr = to_json_array(keysets);
+    if (!arr) return "";
     char* str = cJSON_PrintUnformatted(arr);
-    std::string result(str);
-    cJSON_free(str);
+    std::string result(str ? str : "");
+    if (str) cJSON_free(str);
     cJSON_Delete(arr);
     return result;
 }
@@ -465,55 +472,15 @@ bool keysets_from_json(const char* json_str, std::vector<Keyset>& out) {
 static const char V3_PREFIX[] = "cashuA";
 static const size_t V3_PREFIX_LEN = 6;
 
-static std::string base64url_encode(const unsigned char *data, size_t len) {
-    size_t out_len = 0;
-    mbedtls_base64_encode(nullptr, 0, &out_len, data, len);
-    std::string result(out_len, '\0');
-    mbedtls_base64_encode((unsigned char *)result.data(), out_len, &out_len,
-                          data, len);
-    result.resize(out_len);
-    for (char &c : result) {
-        if (c == '+') c = '-';
-        else if (c == '/') c = '_';
-    }
-    while (!result.empty() && result.back() == '=')
-        result.pop_back();
-    return result;
-}
-
-static bool base64url_decode(const char *input, size_t input_len,
-                             std::string &out) {
-    std::string b64(input, input_len);
-    for (char &c : b64) {
-        if (c == '-') c = '+';
-        else if (c == '_') c = '/';
-    }
-    while (b64.size() % 4 != 0)
-        b64.push_back('=');
-
-    size_t out_len = 0;
-    int ret = mbedtls_base64_decode(nullptr, 0, &out_len,
-                                    (const unsigned char *)b64.data(),
-                                    b64.size());
-    if (ret != 0 && ret != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL)
-        return false;
-
-    out.resize(out_len);
-    ret = mbedtls_base64_decode((unsigned char *)out.data(), out_len, &out_len,
-                                (const unsigned char *)b64.data(),
-                                b64.size());
-    if (ret != 0) return false;
-    out.resize(out_len);
-    return true;
-}
-
 std::string serialize_token_v3(const Token &token) {
     cJSON *j = to_json(token);
+    if (!j) return "";
     char *json_str = cJSON_PrintUnformatted(j);
+    cJSON_Delete(j);
+    if (!json_str) return "";
     std::string encoded = base64url_encode(
         (const unsigned char *)json_str, strlen(json_str));
     cJSON_free(json_str);
-    cJSON_Delete(j);
     return std::string(V3_PREFIX) + encoded;
 }
 
@@ -528,6 +495,15 @@ bool deserialize_token_v3(const char *token_str, Token &out) {
         return false;
 
     return deserialize(json_str.c_str(), out);
+}
+
+bool deserialize_token(const char *token_str, Token &out) {
+    if (!token_str) return false;
+    if (strncmp(token_str, "cashuB", 6) == 0)
+        return deserialize_token_v4(token_str, out);
+    if (strncmp(token_str, "cashuA", 6) == 0)
+        return deserialize_token_v3(token_str, out);
+    return false;
 }
 
 } // namespace cashu

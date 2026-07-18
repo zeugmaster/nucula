@@ -1,5 +1,4 @@
-#ifndef NUCULA_WIFI_H
-#define NUCULA_WIFI_H
+#pragma once
 
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
@@ -32,6 +31,14 @@ esp_err_t wifi_init(void);
 bool wifi_is_connected(void);
 
 /**
+ * Toggle radio power save. Default is WIFI_PS_MIN_MODEM (doze between DTIM
+ * beacons, ~100-300 ms first-packet latency). Pass true to disable power
+ * save for a latency-critical window (an active NFC payment), false to
+ * restore it.
+ */
+void wifi_set_low_latency(bool on);
+
+/**
  * Returns the FreeRTOS event group whose WIFI_CONNECTED_BIT is set whenever
  * the device is associated and has an IP, and cleared on disconnect. Other
  * tasks can wait on this bit to react to (re)connection events.
@@ -42,4 +49,3 @@ EventGroupHandle_t wifi_get_event_group(void);
 }
 #endif
 
-#endif

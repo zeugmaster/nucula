@@ -4,8 +4,10 @@
 #include "cashu_json.hpp"
 #include "cashu_cbor.hpp"
 #include "wallet.hpp"
-#include "display.h"
+#include "wallet_store.hpp"
+#include "ui.h"
 #include "wifi.h"
+#include "http.h"
 
 #include <cstring>
 #include <string>
@@ -27,41 +29,9 @@ static std::atomic<NfcState> s_state{NfcState::off};
 static std::atomic<bool> s_stop_flag{false};
 static TaskHandle_t s_task_handle = nullptr;
 
-extern cashu::Wallet *g_wallets[];
-extern secp256k1_context *g_ctx;
-extern void display_refresh();
-extern void display_nfc_status(const char *line1, const char *line2);
-
 // -------------------------------------------------------------------------
-// Token redemption (unchanged from PN532 version)
+// Token redemption
 // -------------------------------------------------------------------------
-
-static cashu::Wallet *find_wallet_for(const char *mint_url)
-{
-    for (int i = 0; i < MAX_MINTS; i++)
-        if (g_wallets[i] && g_wallets[i]->mint_url() == mint_url)
-            return g_wallets[i];
-    return nullptr;
-}
-
-// Returns the wallet that owns the token's mint, creating a new slot if
-// needed. NULL if no slot is free.
-static cashu::Wallet *wallet_for_token(const cashu::Token &token)
-{
-    cashu::Wallet *w = find_wallet_for(token.mint.c_str());
-    if (w) return w;
-    int slot = -1;
-    for (int i = 0; i < MAX_MINTS; i++) if (!g_wallets[i]) { slot = i; break; }
-    if (slot < 0) {
-        ESP_LOGE(TAG, "no free mint slots");
-        return nullptr;
-    }
-    w = new cashu::Wallet(token.mint, g_ctx, slot);
-    g_wallets[slot] = w;
-    w->save_mint_url();
-    ESP_LOGI(TAG, "added mint [%d]: %s", slot, token.mint.c_str());
-    return w;
-}
 
 // Returns:
 //   1  on online success (swapped immediately)
@@ -69,21 +39,19 @@ static cashu::Wallet *wallet_for_token(const cashu::Token &token)
 //  -1  on failure
 static int redeem_or_stash_token(const std::string &token_str)
 {
-    cashu::Token token;
-    bool decoded = false;
-    if (token_str.compare(0, 6, "cashuB") == 0)
-        decoded = cashu::deserialize_token_v4(token_str.c_str(), token);
-    else if (token_str.compare(0, 6, "cashuA") == 0)
-        decoded = cashu::deserialize_token_v3(token_str.c_str(), token);
+    // Hold the store for the whole redeem/stash: the wallet pointer must
+    // stay valid across the swap, and stickup/mint-remove must not
+    // interleave with an in-flight redemption.
+    wallet_store_guard guard;
 
-    if (!decoded) {
+    cashu::Token token;
+    if (!cashu::deserialize_token(token_str.c_str(), token)) {
         ESP_LOGE(TAG, "token decode failed");
         return -1;
     }
 
-    int input_total = 0;
-    for (const auto &p : token.proofs) input_total += p.amount;
-    ESP_LOGI(TAG, "token: %d sat, %d proofs from %s",
+    long long input_total = cashu::proofs_sum(token.proofs);
+    ESP_LOGI(TAG, "token: %lld sat, %d proofs from %s",
              input_total, (int)token.proofs.size(), token.mint.c_str());
 
     if (!wifi_is_connected()) {
@@ -92,7 +60,7 @@ static int redeem_or_stash_token(const std::string &token_str)
         // public keys; without them a forged token is indistinguishable from
         // real ecash, and there is no online swap to fall back on. Refuse —
         // and do NOT create a new mint slot for an unknown mint.
-        cashu::Wallet *w = find_wallet_for(token.mint.c_str());
+        cashu::Wallet *w = wallet_store_find(token.mint.c_str());
         if (!w || w->keysets().empty()) {
             ESP_LOGE(TAG, "offline: refusing token from unknown mint %s "
                           "(no keysets, cannot verify DLEQ)",
@@ -103,11 +71,11 @@ static int redeem_or_stash_token(const std::string &token_str)
             ESP_LOGE(TAG, "pending: stash failed");
             return -1;
         }
-        ESP_LOGI(TAG, "offline: stashed %d sat for later drain", input_total);
+        ESP_LOGI(TAG, "offline: stashed %lld sat for later drain", input_total);
         return 0;
     }
 
-    cashu::Wallet *w = wallet_for_token(token);
+    cashu::Wallet *w = wallet_store_get_or_create(token.mint);
     if (!w) return -1;
 
     if (w->keysets().empty() || !w->active_keyset()) {
@@ -117,9 +85,8 @@ static int redeem_or_stash_token(const std::string &token_str)
     std::vector<cashu::Proof> received;
     if (!w->receive(token, received)) { ESP_LOGE(TAG, "swap failed"); return -1; }
 
-    int total = 0;
-    for (const auto &p : received) total += p.amount;
-    ESP_LOGI(TAG, "redeemed %d sat (%d proofs)", total, (int)received.size());
+    ESP_LOGI(TAG, "redeemed %lld sat (%d proofs)",
+             (long long)cashu::proofs_sum(received), (int)received.size());
     return 1;
 }
 
@@ -159,15 +126,22 @@ static void on_ndef_written(const uint8_t *data, size_t len)
 static void restart_discovery()
 {
     const uint8_t stop[] = {0x21, 0x06, 0x01, 0x00};
-    nci_write(&s_nci, stop, sizeof(stop));
+    if (nci_write(&s_nci, stop, sizeof(stop)) != ESP_OK) {
+        ESP_LOGW(TAG, "restart discovery: deactivate write failed");
+        return;
+    }
     // Drain responses
     for (int i = 0; i < 10; i++) {
         if (nci_wait_for_irq(200)) {
-            nci_read(&s_nci, s_nci.rx_buf, &s_nci.rx_len);
+            if (nci_read(&s_nci, s_nci.rx_buf, &s_nci.rx_len) != ESP_OK)
+                break;
             if (s_nci.rx_buf[0] == 0x41 && s_nci.rx_buf[1] == 0x06) break;
         } else break;
     }
-    nci_write(&s_nci, s_nci.discovery_cmd, s_nci.discovery_cmd_len);
+    if (nci_write(&s_nci, s_nci.discovery_cmd, s_nci.discovery_cmd_len) != ESP_OK) {
+        ESP_LOGW(TAG, "restart discovery: discover write failed");
+        return;
+    }
     if (nci_wait_for_irq(200))
         nci_read(&s_nci, s_nci.rx_buf, &s_nci.rx_len);
 }
@@ -176,12 +150,17 @@ static void restart_discovery()
 static void send_nci_response(const uint8_t *apdu, size_t apdu_len)
 {
     static uint8_t frame[NCI_MAX_FRAME_SIZE];
+    if (apdu_len > sizeof(frame) - 3) {
+        ESP_LOGE(TAG, "APDU response too large (%d)", (int)apdu_len);
+        return;
+    }
     frame[0] = 0x00;
     frame[1] = (apdu_len >> 8) & 0xFF;
     frame[2] = apdu_len & 0xFF;
     if (apdu_len > 0)
         memcpy(&frame[3], apdu, apdu_len);
-    nci_write(&s_nci, frame, 3 + apdu_len);
+    if (nci_write(&s_nci, frame, 3 + apdu_len) != ESP_OK)
+        ESP_LOGW(TAG, "APDU response write failed");
 }
 
 // -------------------------------------------------------------------------
@@ -208,7 +187,7 @@ static void nfc_task(void *arg)
     // Offline-receive: ask the sender to lock the proofs to our P2PK pubkey
     // so we can swap them once WiFi returns. Online we skip the lock for
     // privacy (single static key would link receives).
-    if (!wifi_is_connected() && cashu::Wallet::ensure_p2pk_keypair(g_ctx)) {
+    if (!wifi_is_connected() && cashu::Wallet::ensure_p2pk_keypair(wallet_store_ctx())) {
         cashu::NUT10Option opt;
         opt.kind = "P2PK";
         opt.data = cashu::Wallet::p2pk_pubkey_hex();
@@ -220,10 +199,10 @@ static void nfc_task(void *arg)
     std::string creq = cashu::serialize_payment_request(req);
     ESP_LOGI(TAG, "creq: %s", creq.c_str());
 
-    if (!ndef_set_message(creq.c_str())) {
-        ESP_LOGE(TAG, "NDEF message too large");
+    if (creq.empty() || !ndef_set_message(creq.c_str())) {
+        ESP_LOGE(TAG, "payment request encode/NDEF failed");
         s_state.store(NfcState::error);
-        display_nfc_status("nfc error", "ndef too large");
+        display_nfc_status("nfc error", "request too large");
         delete params;
         s_task_handle = nullptr;
         vTaskDelete(nullptr);
@@ -231,6 +210,24 @@ static void nfc_task(void *arg)
     }
 
     ndef_set_receive_callback(on_ndef_written);
+
+    // Full radio responsiveness while a payment is in flight; restored on
+    // every exit path below.
+    wifi_set_low_latency(true);
+
+    // Prime the TLS connection to the expected mint while the user is
+    // still tapping: the post-tap swap then reuses it.
+    if (wifi_is_connected()) {
+        if (!params->mint_url.empty()) {
+            http_prewarm(params->mint_url.c_str());
+        } else {
+            wallet_store_guard guard;
+            for (int i = 0; i < MAX_MINTS; i++) {
+                auto *w = wallet_store_get(i);
+                if (w) { http_prewarm(w->mint_url().c_str()); break; }
+            }
+        }
+    }
 
     int64_t start = esp_timer_get_time();
     char amt_str[16];
@@ -290,7 +287,6 @@ static void nfc_task(void *arg)
 
             ndef_handle_apdu(&s_nci.rx_buf[3], apdu_len, rsp_buf, &rsp_len);
             send_nci_response(rsp_buf, rsp_len);
-            vTaskDelay(pdMS_TO_TICKS(1)); // brief yield after write
 
             // Check if a token arrived via the callback
             if (s_token_received) {
@@ -324,6 +320,7 @@ static void nfc_task(void *arg)
         ESP_LOGD(TAG, "unhandled NCI: %02X %02X", mt, oid);
     }
 
+    wifi_set_low_latency(false);
     ndef_set_receive_callback(nullptr);
     ndef_clear_message();
     delete params;
@@ -335,23 +332,29 @@ static void nfc_task(void *arg)
 // Public API
 // -------------------------------------------------------------------------
 
-bool nfc_init()
+bool nfc_init(i2c_master_bus_handle_t bus)
 {
+    ndef_init();
     memset(&s_nci, 0, sizeof(s_nci));
 
     int retries = 3;
     while (retries-- > 0) {
-        if (nci_setup_cardemu(&s_nci) == ESP_OK) {
+        esp_err_t err = nci_setup_cardemu(&s_nci, bus);
+        if (err == ESP_OK) {
             s_hw_init = true;
             s_state.store(NfcState::idle);
             ESP_LOGI(TAG, "PN7160 ready");
             return true;
         }
+        if (err == ESP_ERR_NOT_FOUND || err == ESP_ERR_INVALID_ARG) {
+            // Chip absent (or no bus) — retrying won't make it appear.
+            break;
+        }
         ESP_LOGW(TAG, "NCI setup failed, retrying... (%d left)", retries);
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
-    ESP_LOGE(TAG, "PN7160 not responding");
+    ESP_LOGW(TAG, "PN7160 unavailable, NFC disabled");
     s_state.store(NfcState::off);
     return false;
 }
@@ -398,9 +401,4 @@ const char *nfc_status_str()
         case NfcState::error:     return "error";
     }
     return "?";
-}
-
-i2c_master_bus_handle_t nfc_get_i2c_bus()
-{
-    return s_nci.i2c_bus;
 }
