@@ -5,6 +5,7 @@
 #include "cashu_cbor.hpp"
 #include "wallet.hpp"
 #include "wallet_store.hpp"
+#include "unit.hpp"
 #include "ui.h"
 #include "wifi.h"
 #include "http.h"
@@ -37,7 +38,12 @@ static TaskHandle_t s_task_handle = nullptr;
 //   1  on online success (swapped immediately)
 //   0  on offline success (stashed for later drain)
 //  -1  on failure
-static int redeem_or_stash_token(const std::string &token_str)
+// `expected_unit` is what our NUT-18 request asked for — a different unit
+// is accepted (receive() enforces internal consistency) but logged.
+// `desc`/`desc_len` receive the formatted received amount for the display.
+static int redeem_or_stash_token(const std::string &token_str,
+                                 const char *expected_unit,
+                                 char *desc, size_t desc_len)
 {
     // Hold the store for the whole redeem/stash: the wallet pointer must
     // stay valid across the swap, and stickup/mint-remove must not
@@ -51,8 +57,16 @@ static int redeem_or_stash_token(const std::string &token_str)
     }
 
     long long input_total = cashu::proofs_sum(token.proofs);
-    ESP_LOGI(TAG, "token: %lld sat, %d proofs from %s",
-             input_total, (int)token.proofs.size(), token.mint.c_str());
+    char amt[32];
+    cashu::format_amount(amt, sizeof(amt), input_total, token.unit.c_str());
+    ESP_LOGI(TAG, "token: %s, %d proofs from %s",
+             amt, (int)token.proofs.size(), token.mint.c_str());
+    if (desc && desc_len)
+        snprintf(desc, desc_len, "%s", amt);
+
+    if (expected_unit && expected_unit[0] && token.unit != expected_unit)
+        ESP_LOGW(TAG, "payer sent %s, request asked for %s — accepting",
+                 token.unit.c_str(), expected_unit);
 
     if (!wifi_is_connected()) {
         // Offline: only accept a token from a mint we already hold keysets
@@ -71,22 +85,25 @@ static int redeem_or_stash_token(const std::string &token_str)
             ESP_LOGE(TAG, "pending: stash failed");
             return -1;
         }
-        ESP_LOGI(TAG, "offline: stashed %lld sat for later drain", input_total);
+        ESP_LOGI(TAG, "offline: stashed %s for later drain", amt);
         return 0;
     }
 
     cashu::Wallet *w = wallet_store_get_or_create(token.mint);
     if (!w) return -1;
 
-    if (w->keysets().empty() || !w->active_keyset()) {
+    if (w->keysets().empty() || !w->active_keyset(token.unit)) {
         if (!w->load_keysets()) { ESP_LOGE(TAG, "keyset load failed"); return -1; }
     }
 
     std::vector<cashu::Proof> received;
     if (!w->receive(token, received)) { ESP_LOGE(TAG, "swap failed"); return -1; }
 
-    ESP_LOGI(TAG, "redeemed %lld sat (%d proofs)",
-             (long long)cashu::proofs_sum(received), (int)received.size());
+    cashu::format_amount(amt, sizeof(amt),
+                         cashu::proofs_sum(received), token.unit.c_str());
+    if (desc && desc_len)
+        snprintf(desc, desc_len, "%s", amt);
+    ESP_LOGI(TAG, "redeemed %s (%d proofs)", amt, (int)received.size());
     return 1;
 }
 
@@ -169,6 +186,7 @@ static void send_nci_response(const uint8_t *apdu, size_t apdu_len)
 
 struct NfcRequestParams {
     int amount;
+    std::string unit;
     std::string mint_url;
 };
 
@@ -176,10 +194,11 @@ static void nfc_task(void *arg)
 {
     auto *params = static_cast<NfcRequestParams *>(arg);
 
-    // Build payment request and load into NDEF layer
+    // Build payment request and load into NDEF layer. NUT-18: `u` MUST be
+    // set when an amount is set.
     cashu::PaymentRequest req;
     req.amount     = params->amount;
-    req.unit       = std::string("sat");
+    req.unit       = params->unit;
     req.single_use = true;
     if (!params->mint_url.empty())
         req.mints = std::vector<std::string>{params->mint_url};
@@ -230,8 +249,9 @@ static void nfc_task(void *arg)
     }
 
     int64_t start = esp_timer_get_time();
-    char amt_str[16];
-    snprintf(amt_str, sizeof(amt_str), "%d sat", params->amount);
+    char amt_str[24];
+    cashu::format_amount(amt_str, sizeof(amt_str), params->amount,
+                         params->unit.c_str());
 
     s_state.store(NfcState::waiting);
     display_nfc_status("tap to pay", amt_str);
@@ -293,14 +313,20 @@ static void nfc_task(void *arg)
                 s_state.store(NfcState::redeeming);
                 display_nfc_status("redeeming...", amt_str);
 
-                int rc = redeem_or_stash_token(s_received_token);
+                // Show what was actually received (unit may differ from
+                // the request); fall back to the requested amount.
+                char recv_str[32];
+                snprintf(recv_str, sizeof(recv_str), "%s", amt_str);
+                int rc = redeem_or_stash_token(s_received_token,
+                                               params->unit.c_str(),
+                                               recv_str, sizeof(recv_str));
                 if (rc == 1) {
                     s_state.store(NfcState::success);
-                    display_nfc_status("paid!", amt_str);
+                    display_nfc_status("paid!", recv_str);
                     display_refresh();
                 } else if (rc == 0) {
                     s_state.store(NfcState::success);
-                    display_nfc_status("queued", amt_str);
+                    display_nfc_status("queued", recv_str);
                     display_refresh();
                 } else {
                     s_state.store(NfcState::error);
@@ -359,13 +385,14 @@ bool nfc_init(i2c_master_bus_handle_t bus)
     return false;
 }
 
-bool nfc_request_start(int amount, const char *mint_url)
+bool nfc_request_start(int amount, const char *unit, const char *mint_url)
 {
     if (!s_hw_init) return false;
     if (s_task_handle) { ESP_LOGW(TAG, "already running"); return false; }
 
     auto *p = new NfcRequestParams();
     p->amount = amount;
+    p->unit = (unit && unit[0]) ? unit : cashu::Wallet::default_unit();
     if (mint_url) p->mint_url = mint_url;
 
     s_stop_flag.store(false);

@@ -3,6 +3,9 @@
 #include "base64url.hpp"
 #include <cstdlib>
 #include <cstring>
+#include <esp_log.h>
+
+#define TAG "cashu_json"
 
 namespace cashu {
 
@@ -266,23 +269,43 @@ cJSON* to_json(const MintQuote& v) {
     cJSON_AddStringToObject(j, "quote", v.quote.c_str());
     cJSON_AddStringToObject(j, "request", v.request.c_str());
     cJSON_AddNumberToObject(j, "amount", v.amount);
-    cJSON_AddStringToObject(j, "state", v.state.c_str());
+    if (!v.unit.empty())
+        cJSON_AddStringToObject(j, "unit", v.unit.c_str());
+    if (!v.method.empty())
+        cJSON_AddStringToObject(j, "method", v.method.c_str());
+    if (!v.state.empty())
+        cJSON_AddStringToObject(j, "state", v.state.c_str());
     cJSON_AddNumberToObject(j, "expiry", (double)v.expiry);
+    if (v.amount_paid)
+        cJSON_AddNumberToObject(j, "amount_paid", *v.amount_paid);
+    if (v.amount_issued)
+        cJSON_AddNumberToObject(j, "amount_issued", *v.amount_issued);
     return j;
 }
 
 bool from_json(const cJSON* j, MintQuote& out) {
     const char* quote = get_string(j, "quote");
     const char* request = get_string(j, "request");
-    const char* state = get_string(j, "state");
-    if (!quote || !request || !state) return false;
+    if (!quote || !request) return false;
     out.quote = quote;
     out.request = request;
-    out.state = state;
+    // Legacy bolt11 field, deprecated in NUT-23 and absent from
+    // custom-method responses (nuts PR#382) — optional by design.
+    const char* state = get_string(j, "state");
+    out.state = state ? state : "";
+    const char* unit = get_string(j, "unit");
+    out.unit = unit ? unit : "";
+    const char* method = get_string(j, "method");
+    out.method = method ? method : "";
     if (!get_int(j, "amount", out.amount))
         out.amount = 0;
     if (!get_int64(j, "expiry", out.expiry))
         out.expiry = 0;
+    int paid = 0, issued = 0;
+    out.amount_paid = get_int(j, "amount_paid", paid)
+        ? std::optional<int>(paid) : std::nullopt;
+    out.amount_issued = get_int(j, "amount_issued", issued)
+        ? std::optional<int>(issued) : std::nullopt;
     return true;
 }
 
@@ -318,8 +341,14 @@ cJSON* to_json(const MeltQuote& v) {
     cJSON_AddStringToObject(j, "quote", v.quote.c_str());
     cJSON_AddNumberToObject(j, "amount", v.amount);
     cJSON_AddNumberToObject(j, "fee_reserve", v.fee_reserve);
+    if (!v.unit.empty())
+        cJSON_AddStringToObject(j, "unit", v.unit.c_str());
+    if (!v.method.empty())
+        cJSON_AddStringToObject(j, "method", v.method.c_str());
     cJSON_AddStringToObject(j, "state", v.state.c_str());
     cJSON_AddNumberToObject(j, "expiry", (double)v.expiry);
+    if (v.request)
+        cJSON_AddStringToObject(j, "request", v.request->c_str());
     if (v.payment_preimage)
         cJSON_AddStringToObject(j, "payment_preimage",
                                 v.payment_preimage->c_str());
@@ -335,9 +364,19 @@ bool from_json(const cJSON* j, MeltQuote& out) {
     out.quote = quote;
     out.state = state;
     if (!get_int(j, "amount", out.amount)) return false;
-    if (!get_int(j, "fee_reserve", out.fee_reserve)) return false;
+    // Custom payment methods may omit fee_reserve (nuts PR#382).
+    if (!get_int(j, "fee_reserve", out.fee_reserve))
+        out.fee_reserve = 0;
+    const char* unit = get_string(j, "unit");
+    out.unit = unit ? unit : "";
+    const char* method = get_string(j, "method");
+    out.method = method ? method : "";
     if (!get_int64(j, "expiry", out.expiry))
         out.expiry = 0;
+    const char* request = get_string(j, "request");
+    out.request = request
+        ? std::optional<std::string>(request)
+        : std::nullopt;
     const char* preimage = get_string(j, "payment_preimage");
     out.payment_preimage = preimage
         ? std::optional<std::string>(preimage)
@@ -426,6 +465,50 @@ bool from_json_keyset_info_response(const cJSON *j, std::vector<KeysetInfo> &out
 }
 
 // ---------------------------------------------------------------------------
+// NUT-06 mint info (subset: name + nuts."4"/"5" method-unit matrices)
+// ---------------------------------------------------------------------------
+
+static void parse_method_settings(const cJSON* nut_obj,
+                                  std::vector<MintMethodSetting>& out) {
+    out.clear();
+    if (!nut_obj) return;   // NUT not advertised
+    const cJSON* methods = cJSON_GetObjectItemCaseSensitive(nut_obj, "methods");
+    if (!cJSON_IsArray(methods)) return;
+    const cJSON* row = nullptr;
+    cJSON_ArrayForEach(row, methods) {
+        MintMethodSetting s;
+        const char* method = get_string(row, "method");
+        const char* unit = get_string(row, "unit");
+        if (!method || !unit) continue;   // skip malformed rows
+        s.method = method;
+        s.unit = unit;
+        const char* name = get_string(row, "method_name");
+        s.method_name = name ? std::optional<std::string>(name) : std::nullopt;
+        int64_t v;
+        s.min_amount = get_int64(row, "min_amount", v)
+            ? std::optional<int64_t>(v) : std::nullopt;
+        s.max_amount = get_int64(row, "max_amount", v)
+            ? std::optional<int64_t>(v) : std::nullopt;
+        out.push_back(std::move(s));
+    }
+}
+
+bool from_json_mint_info(const cJSON* j, MintInfo& out) {
+    if (!cJSON_IsObject(j)) return false;
+    const char* name = get_string(j, "name");
+    out.name = name ? name : "";
+    out.mint_methods.clear();
+    out.melt_methods.clear();
+    const cJSON* nuts = cJSON_GetObjectItemCaseSensitive(j, "nuts");
+    if (!cJSON_IsObject(nuts)) return true;   // nuts map is optional
+    parse_method_settings(cJSON_GetObjectItemCaseSensitive(nuts, "4"),
+                          out.mint_methods);
+    parse_method_settings(cJSON_GetObjectItemCaseSensitive(nuts, "5"),
+                          out.melt_methods);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Blob serialization for NVS persistence
 // ---------------------------------------------------------------------------
 
@@ -504,6 +587,75 @@ bool deserialize_token(const char *token_str, Token &out) {
     if (strncmp(token_str, "cashuA", 6) == 0)
         return deserialize_token_v3(token_str, out);
     return false;
+}
+
+// ---------------------------------------------------------------------------
+// Self-test: quote/mint-info parse contract across mint generations
+// ---------------------------------------------------------------------------
+
+bool cashu_json_run_tests()
+{
+    bool ok = true;
+    auto expect = [&](const char* name, bool cond) {
+        if (!cond) {
+            ESP_LOGE(TAG, "%s FAIL", name);
+            ok = false;
+        } else {
+            ESP_LOGI(TAG, "%s ok", name);
+        }
+    };
+
+    { // Legacy NUT-23 bolt11 mint quote: state-driven, no accounting pair
+        MintQuote q;
+        expect("mint quote legacy",
+               deserialize(R"({"quote":"q1","request":"lnbc10n1...","amount":100,)"
+                           R"("state":"PAID","expiry":1753000000})", q)
+               && q.mintable() == 100 && q.unit.empty());
+    }
+    { // PR#382 custom-method quote: accounting pair, no state at all
+        MintQuote q;
+        expect("mint quote pr382",
+               deserialize(R"({"quote":"q2","request":"https://pay.example/abc",)"
+                           R"("unit":"usd","method":"paypal","amount_paid":500,)"
+                           R"("amount_issued":200,"updated_at":1753000000})", q)
+               && q.mintable() == 300 && q.unit == "usd"
+               && q.method == "paypal" && q.state.empty());
+    }
+    { // Accounting pair takes precedence over a stale legacy state
+        MintQuote q;
+        expect("mint quote paid-out",
+               deserialize(R"({"quote":"q3","request":"r","state":"PAID",)"
+                           R"("amount":100,"amount_paid":100,"amount_issued":100})", q)
+               && q.mintable() == 0);
+    }
+    { // Melt quote without fee_reserve (custom methods may omit it)
+        MeltQuote m;
+        expect("melt quote no fee_reserve",
+               deserialize(R"({"quote":"m1","amount":250,"unit":"usd",)"
+                           R"("state":"UNPAID","expiry":1753000000})", m)
+               && m.fee_reserve == 0 && m.unit == "usd");
+    }
+    { // NUT-06 method-unit matrix
+        MintInfo info;
+        cJSON* j = cJSON_Parse(
+            R"({"name":"Test Mint","nuts":{)"
+            R"("4":{"methods":[)"
+            R"({"method":"bolt11","unit":"sat","min_amount":1,"max_amount":10000},)"
+            R"({"method":"paypal","unit":"usd","method_name":"PayPal"},)"
+            R"({"unit":"bad-row-no-method"}],"disabled":false},)"
+            R"("5":{"methods":[{"method":"bolt11","unit":"sat"}]}}})");
+        bool parsed = j && from_json_mint_info(j, info);
+        if (j) cJSON_Delete(j);
+        expect("mint info matrix",
+               parsed && info.name == "Test Mint"
+               && info.mint_methods.size() == 2
+               && info.mint_methods[1].method_name
+               && *info.mint_methods[1].method_name == "PayPal"
+               && info.mint_methods[0].min_amount
+               && *info.mint_methods[0].min_amount == 1
+               && info.melt_methods.size() == 1);
+    }
+    return ok;
 }
 
 } // namespace cashu

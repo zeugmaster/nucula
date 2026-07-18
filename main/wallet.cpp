@@ -6,6 +6,7 @@
 #include "hex.h"
 #include "http.h"
 #include "nut10.hpp"
+#include "unit.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -287,6 +288,48 @@ bool Wallet::save_counter(const std::string& keyset_id, uint32_t counter)
 }
 
 // -------------------------------------------------------------------------
+// Default unit (global UX setting)
+// -------------------------------------------------------------------------
+
+std::string Wallet::s_default_unit;
+bool        Wallet::s_default_unit_loaded = false;
+
+std::string Wallet::default_unit()
+{
+    if (!s_default_unit_loaded) {
+        s_default_unit = "sat";
+        nvs_handle_t handle;
+        if (nvs_open(NVS_NS, NVS_READONLY, &handle) == ESP_OK) {
+            char buf[32] = {};
+            size_t len = sizeof(buf);
+            if (nvs_get_str(handle, "def_unit", buf, &len) == ESP_OK && buf[0])
+                s_default_unit = buf;
+            nvs_close(handle);
+        }
+        s_default_unit_loaded = true;
+    }
+    return s_default_unit;
+}
+
+bool Wallet::set_default_unit(const std::string& unit)
+{
+    if (unit.empty() || unit.size() > 31)
+        return false;
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &handle) != ESP_OK)
+        return false;
+    esp_err_t err = nvs_set_str(handle, "def_unit", unit.c_str());
+    if (err == ESP_OK)
+        err = nvs_commit(handle);
+    nvs_close(handle);
+    if (err != ESP_OK)
+        return false;
+    s_default_unit = unit;
+    s_default_unit_loaded = true;
+    return true;
+}
+
+// -------------------------------------------------------------------------
 // NVS persistence (existing)
 // -------------------------------------------------------------------------
 
@@ -400,6 +443,30 @@ bool Wallet::save_keysets()
     slot_key(old_key, sizeof(old_key), "keys", nvs_slot_);
     nvs_erase_key(handle, old_key);
 
+    // Over the cap, prefer keysets our proofs reference (dropping one orphans
+    // its proofs: no unit, no fee info, no keys for DLEQ), then active
+    // keysets, then the rest.
+    std::vector<size_t> order(keysets_.size());
+    for (size_t i = 0; i < order.size(); i++)
+        order[i] = i;
+    if (keysets_.size() > (size_t)MAX_KEYSETS) {
+        std::vector<int> rank(keysets_.size(), 2);
+        for (size_t i = 0; i < keysets_.size(); i++)
+            if (keysets_[i].active)
+                rank[i] = 1;
+        for (const auto& p : proofs_)
+            for (size_t i = 0; i < keysets_.size(); i++)
+                if (keysets_[i].id == p.id) { rank[i] = 0; break; }
+        std::stable_sort(order.begin(), order.end(),
+                         [&rank](size_t a, size_t b) { return rank[a] < rank[b]; });
+        for (size_t i = MAX_KEYSETS; i < order.size(); i++) {
+            const Keyset& ks = keysets_[order[i]];
+            ESP_LOGE(TAG, "[%d] keyset cap: dropping %s (unit %s%s) from NVS",
+                     nvs_slot_, ks.id.c_str(), ks.unit.c_str(),
+                     ks.active ? ", active" : "");
+        }
+    }
+
     char cnt_key[16];
     snprintf(cnt_key, sizeof(cnt_key), "kn_%d", nvs_slot_);
     uint8_t count = (uint8_t)keysets_.size();
@@ -416,7 +483,7 @@ bool Wallet::save_keysets()
     for (int i = 0; i < count; i++) {
         char ks_key[16];
         snprintf(ks_key, sizeof(ks_key), "k_%d_%d", nvs_slot_, i);
-        std::string blob = serialize(keysets_[i]);
+        std::string blob = serialize(keysets_[order[i]]);
         if (blob.empty()) {
             ESP_LOGE(TAG, "save keyset %d: serialization failed", i);
             nvs_close(handle);
@@ -743,6 +810,9 @@ const Keyset* Wallet::active_keyset_for_mint(const std::string& unit) const
 // Fee calculation (NUT-02)
 // -------------------------------------------------------------------------
 
+// NUT-02 input fees, summed per proof over each proof's keyset ppk.
+// Callers guarantee single-unit inputs (proofs_unit / select_proofs):
+// a ppk sum across different units would be meaningless.
 int Wallet::calculate_fee(const std::vector<Proof>& inputs) const
 {
     int sum_ppk = 0;
@@ -980,6 +1050,116 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
 }
 
 // -------------------------------------------------------------------------
+// NUT-06: mint info (RAM cache, never persisted)
+// -------------------------------------------------------------------------
+
+bool Wallet::load_mint_info()
+{
+    std::string url = mint_url_ + "/v1/info";
+    http_response_t resp = {};
+    esp_err_t err = http_get(url.c_str(), &resp);
+    if (err != ESP_OK || !resp.body) {
+        ESP_LOGW(TAG, "mint info GET failed: %s", esp_err_to_name(err));
+        http_response_free(&resp);
+        return false;
+    }
+    if (resp.status != 200) {
+        ESP_LOGW(TAG, "mint info: mint returned %d", resp.status);
+        http_response_free(&resp);
+        return false;
+    }
+
+    // Big mints ship 10-20 KB of info; parse and free the transient body +
+    // tree immediately, keeping only the small extracted subset.
+    cJSON* j = cJSON_ParseWithLength(resp.body, resp.body_len);
+    http_response_free(&resp);
+    if (!j) {
+        ESP_LOGW(TAG, "mint info: parse failed");
+        return false;
+    }
+    MintInfo info;
+    bool ok = from_json_mint_info(j, info);
+    cJSON_Delete(j);
+    if (!ok)
+        return false;
+
+    info_ = std::move(info);
+    ESP_LOGI(TAG, "[%d] mint info: %s (%d mint, %d melt method-unit pairs)",
+             nvs_slot_, info_->name.c_str(),
+             (int)info_->mint_methods.size(), (int)info_->melt_methods.size());
+    return true;
+}
+
+const MintInfo* Wallet::mint_info() const
+{
+    return info_ ? &*info_ : nullptr;
+}
+
+bool Wallet::method_supported(bool melt, const std::string& method,
+                              const std::string& unit, int amount) const
+{
+    if (!info_)
+        return true;   // no info loaded: let the mint decide
+    const auto& rows = melt ? info_->melt_methods : info_->mint_methods;
+    for (const auto& r : rows) {
+        if (r.method != method || r.unit != unit)
+            continue;
+        if (amount >= 0 && r.min_amount && amount < *r.min_amount) {
+            ESP_LOGW(TAG, "%s %s/%s: amount %d below mint minimum %lld",
+                     melt ? "melt" : "mint", method.c_str(), unit.c_str(),
+                     amount, (long long)*r.min_amount);
+            return false;
+        }
+        if (amount >= 0 && r.max_amount && amount > *r.max_amount) {
+            ESP_LOGW(TAG, "%s %s/%s: amount %d above mint maximum %lld",
+                     melt ? "melt" : "mint", method.c_str(), unit.c_str(),
+                     amount, (long long)*r.max_amount);
+            return false;
+        }
+        return true;
+    }
+    ESP_LOGW(TAG, "mint does not advertise %s %s/%s",
+             melt ? "melt" : "mint", method.c_str(), unit.c_str());
+    return false;
+}
+
+// -------------------------------------------------------------------------
+// Mint error decoding
+// -------------------------------------------------------------------------
+
+// Decode a non-200 mint response ({"detail","code"}, see the NUTs error
+// code registry) into one friendly log line. Returns the code, 0 when the
+// body carries none.
+static int log_mint_error(const char* op, const http_response_t& resp)
+{
+    int code = 0;
+    std::string detail;
+    if (resp.body && resp.body_len > 0) {
+        cJSON* j = cJSON_ParseWithLength(resp.body, resp.body_len);
+        if (j) {
+            const cJSON* c = cJSON_GetObjectItemCaseSensitive(j, "code");
+            if (cJSON_IsNumber(c))
+                code = c->valueint;
+            const cJSON* d = cJSON_GetObjectItemCaseSensitive(j, "detail");
+            if (cJSON_IsString(d) && d->valuestring)
+                detail = d->valuestring;
+            cJSON_Delete(j);
+        }
+    }
+    const char* hint = "";
+    switch (code) {
+        case 11006: hint = " (amount outside mint's min/max)"; break;
+        case 11009: hint = " (inputs/outputs of multiple units)"; break;
+        case 11010: hint = " (input and output units differ)"; break;
+        case 11013: hint = " (unit or method not supported)"; break;
+        default: break;
+    }
+    ESP_LOGE(TAG, "%s: mint returned %d code=%d %s%s",
+             op, resp.status, code, detail.c_str(), hint);
+    return code;
+}
+
+// -------------------------------------------------------------------------
 // Swap (NUT-03)
 // -------------------------------------------------------------------------
 
@@ -992,9 +1172,18 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
         return false;
     }
 
-    const Keyset* ks = active_keyset_for_mint();
+    // NUT-03 transactions are single-unit (mint error 11009) and outputs
+    // must match the inputs' unit (11010) — derive it from the inputs'
+    // keysets rather than trusting any caller-supplied value.
+    std::string unit;
+    if (!proofs_unit(inputs, unit)) {
+        ESP_LOGE(TAG, "swap: mixed-unit or unknown-keyset inputs");
+        return false;
+    }
+
+    const Keyset* ks = active_keyset_for_mint(unit);
     if (!ks) {
-        ESP_LOGE(TAG, "swap: no mintable keyset");
+        ESP_LOGE(TAG, "swap: no mintable %s keyset", unit.c_str());
         return false;
     }
 
@@ -1080,8 +1269,7 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
     }
 
     if (resp.status != 200) {
-        ESP_LOGE(TAG, "swap: mint returned %d: %.*s",
-                 resp.status, (int)resp.body_len, resp.body);
+        log_mint_error("swap", resp);
         http_response_free(&resp);
         return false;
     }
@@ -1159,6 +1347,22 @@ bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
         return false;
     }
 
+    // Unit checks: all proofs must share one unit (mint error 11009) and
+    // the token's declared unit must match the keyset-resolved one (11010).
+    // The swap below then picks the same-unit active keyset, so any unit
+    // the mint actively backs is accepted — not just the default.
+    std::string unit;
+    if (!proofs_unit(inputs, unit)) {
+        ESP_LOGE(TAG, "receive: mixed-unit proofs in token");
+        return false;
+    }
+    const std::string declared = normalize_unit(token.unit);
+    if (!declared.empty() && declared != unit) {
+        ESP_LOGE(TAG, "receive: token says '%s' but proofs are '%s'",
+                 declared.c_str(), unit.c_str());
+        return false;
+    }
+
     // NUT-12 (Carol-side): if a transferred proof carries a DLEQ with the
     // sender's blinding factor `r`, verify it against the keyset's pubkey for
     // that amount before swapping. A missing DLEQ is allowed (warn only) since
@@ -1229,8 +1433,9 @@ bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
     for (const auto& p : proofs_out)
         proofs_.push_back(p);
 
-    ESP_LOGI(TAG, "received %lld sat (%d proofs)",
-             (long long)proofs_sum(proofs_out), (int)proofs_out.size());
+    char amt[48];
+    format_amount(amt, sizeof(amt), proofs_sum(proofs_out), unit.c_str());
+    ESP_LOGI(TAG, "received %s (%d proofs)", amt, (int)proofs_out.size());
     save_proofs();
     return true;
 }
@@ -1245,27 +1450,84 @@ int64_t Wallet::balance() const
 }
 
 // -------------------------------------------------------------------------
-// Proof selection (greedy, largest first)
+// Per-unit views (a proof's unit lives on its keyset)
 // -------------------------------------------------------------------------
 
-bool Wallet::select_proofs(int amount_needed,
+const std::string* Wallet::unit_for_proof(const Proof& p) const
+{
+    bool amb = false;
+    const Keyset* ks = resolve_keyset(keysets_, p.id, &amb);
+    return (ks && !amb) ? &ks->unit : nullptr;
+}
+
+bool Wallet::proofs_unit(const std::vector<Proof>& proofs,
+                         std::string& unit_out) const
+{
+    if (proofs.empty())
+        return false;
+    unit_out.clear();
+    for (const auto& p : proofs) {
+        const std::string* u = unit_for_proof(p);
+        if (!u)
+            return false;
+        if (unit_out.empty())
+            unit_out = *u;
+        else if (unit_out != *u)
+            return false;
+    }
+    return true;
+}
+
+int64_t Wallet::balance_for_unit(const std::string& unit) const
+{
+    int64_t total = 0;
+    for (const auto& p : proofs_) {
+        const std::string* u = unit_for_proof(p);
+        if (u && *u == unit)
+            total += p.amount;
+    }
+    return total;
+}
+
+void Wallet::collect_units(std::vector<std::string>& out) const
+{
+    for (const auto& p : proofs_) {
+        const std::string* u = unit_for_proof(p);
+        const char* name = u ? u->c_str() : "?";
+        if (std::find(out.begin(), out.end(), name) == out.end())
+            out.push_back(name);
+    }
+}
+
+// -------------------------------------------------------------------------
+// Proof selection (greedy, largest first, single unit)
+// -------------------------------------------------------------------------
+
+bool Wallet::select_proofs(int amount_needed, const std::string& unit,
                            std::vector<Proof>& selected,
                            std::vector<Proof>& remaining)
 {
     selected.clear();
     remaining.clear();
 
-    std::vector<size_t> indices(proofs_.size());
-    for (size_t i = 0; i < indices.size(); i++)
-        indices[i] = i;
+    // Only same-unit proofs are candidates; everything else goes straight
+    // to `remaining` (see the fund-safety contract in wallet.hpp).
+    std::vector<size_t> candidates;
+    for (size_t i = 0; i < proofs_.size(); i++) {
+        const std::string* u = unit_for_proof(proofs_[i]);
+        if (u && *u == unit)
+            candidates.push_back(i);
+        else
+            remaining.push_back(proofs_[i]);
+    }
 
-    std::sort(indices.begin(), indices.end(), [&](size_t a, size_t b) {
+    std::sort(candidates.begin(), candidates.end(), [&](size_t a, size_t b) {
         return proofs_[a].amount > proofs_[b].amount;
     });
 
     int sum = 0;
     bool enough = false;
-    for (size_t idx : indices) {
+    for (size_t idx : candidates) {
         if (!enough) {
             selected.push_back(proofs_[idx]);
             sum += proofs_[idx].amount;
@@ -1278,8 +1540,8 @@ bool Wallet::select_proofs(int amount_needed,
     }
 
     if (!enough) {
-        ESP_LOGE(TAG, "select_proofs: insufficient balance (%d < %d)",
-                 sum, amount_needed);
+        ESP_LOGE(TAG, "select_proofs: insufficient %s balance (%d < %d)",
+                 unit.c_str(), sum, amount_needed);
         selected.clear();
         remaining.clear();
         return false;
@@ -1288,14 +1550,33 @@ bool Wallet::select_proofs(int amount_needed,
 }
 
 // -------------------------------------------------------------------------
-// NUT-04: Mint tokens (bolt11)
+// NUT-04: Mint tokens (method-generic)
 // -------------------------------------------------------------------------
 
-bool Wallet::request_mint_quote(int amount, MintQuote& quote_out)
+bool Wallet::request_mint_quote(int amount, const std::string& unit,
+                                const std::string& method, MintQuote& quote_out)
 {
+    // Both strings reach the URL/body — enforce the NUT-04 charset before
+    // interpolation (console input flows through here).
+    if (!unit_token_valid(unit.c_str()) || !unit_token_valid(method.c_str())) {
+        ESP_LOGE(TAG, "mint quote: invalid unit '%s' or method '%s'",
+                 unit.c_str(), method.c_str());
+        return false;
+    }
+
+    // Lazy NUT-06 fetch off the sat/bolt11 hot path only — the common case
+    // never pays an extra round-trip, and absent info never blocks.
+    if ((method != "bolt11" || unit != "sat") && !info_)
+        load_mint_info();
+    if (!method_supported(false, method, unit, amount)) {
+        ESP_LOGE(TAG, "mint quote: %s/%s rejected by mint info",
+                 method.c_str(), unit.c_str());
+        return false;
+    }
+
     cJSON* body = cJSON_CreateObject();
     cJSON_AddNumberToObject(body, "amount", amount);
-    cJSON_AddStringToObject(body, "unit", "sat");
+    cJSON_AddStringToObject(body, "unit", unit.c_str());
     char* body_str = cJSON_PrintUnformatted(body);
     cJSON_Delete(body);
     if (!body_str) {
@@ -1303,7 +1584,7 @@ bool Wallet::request_mint_quote(int amount, MintQuote& quote_out)
         return false;
     }
 
-    std::string url = mint_url_ + "/v1/mint/quote/bolt11";
+    std::string url = mint_url_ + "/v1/mint/quote/" + method;
     http_response_t resp = {};
     esp_err_t err = http_post_json(url.c_str(), body_str, &resp);
     cJSON_free(body_str);
@@ -1314,8 +1595,7 @@ bool Wallet::request_mint_quote(int amount, MintQuote& quote_out)
         return false;
     }
     if (resp.status != 200) {
-        ESP_LOGE(TAG, "mint quote: mint returned %d: %.*s",
-                 resp.status, (int)resp.body_len, resp.body);
+        log_mint_error("mint quote", resp);
         http_response_free(&resp);
         return false;
     }
@@ -1327,14 +1607,28 @@ bool Wallet::request_mint_quote(int amount, MintQuote& quote_out)
         return false;
     }
 
-    ESP_LOGI(TAG, "mint quote: id=%s amount=%d state=%s",
-             quote_out.quote.c_str(), quote_out.amount, quote_out.state.c_str());
+    // Stamp what we asked for when the mint omits the echo, so mint_tokens
+    // targets the right keyset and endpoint.
+    if (quote_out.unit.empty())
+        quote_out.unit = unit;
+    if (quote_out.method.empty())
+        quote_out.method = method;
+
+    ESP_LOGI(TAG, "mint quote: id=%s amount=%d unit=%s method=%s state=%s",
+             quote_out.quote.c_str(), quote_out.amount, quote_out.unit.c_str(),
+             quote_out.method.c_str(), quote_out.state.c_str());
     return true;
 }
 
-bool Wallet::check_mint_quote(const std::string& quote_id, MintQuote& quote_out)
+bool Wallet::check_mint_quote(const std::string& quote_id,
+                              const std::string& method, MintQuote& quote_out)
 {
-    std::string url = mint_url_ + "/v1/mint/quote/bolt11/" + quote_id;
+    if (!unit_token_valid(method.c_str())) {
+        ESP_LOGE(TAG, "check mint quote: invalid method '%s'", method.c_str());
+        return false;
+    }
+
+    std::string url = mint_url_ + "/v1/mint/quote/" + method + "/" + quote_id;
     http_response_t resp = {};
     esp_err_t err = http_get(url.c_str(), &resp);
 
@@ -1356,16 +1650,28 @@ bool Wallet::check_mint_quote(const std::string& quote_id, MintQuote& quote_out)
         return false;
     }
 
-    ESP_LOGI(TAG, "mint quote %s: state=%s amount=%d",
-             quote_id.c_str(), quote_out.state.c_str(), quote_out.amount);
+    if (quote_out.method.empty())
+        quote_out.method = method;
+
+    ESP_LOGI(TAG, "mint quote %s: state=%s amount=%d mintable=%d",
+             quote_id.c_str(), quote_out.state.c_str(), quote_out.amount,
+             quote_out.mintable());
     return true;
 }
 
-bool Wallet::mint_tokens(const std::string& quote_id, int amount)
+bool Wallet::mint_tokens(const MintQuote& quote, int amount)
 {
-    const Keyset* ks = active_keyset_for_mint();
+    const std::string unit = quote.unit.empty() ? std::string("sat") : quote.unit;
+    const std::string method = quote.method.empty() ? std::string("bolt11")
+                                                    : quote.method;
+    if (!unit_token_valid(method.c_str())) {
+        ESP_LOGE(TAG, "mint_tokens: invalid method '%s'", method.c_str());
+        return false;
+    }
+
+    const Keyset* ks = active_keyset_for_mint(unit);
     if (!ks) {
-        ESP_LOGE(TAG, "mint_tokens: no mintable keyset");
+        ESP_LOGE(TAG, "mint_tokens: no mintable %s keyset", unit.c_str());
         return false;
     }
 
@@ -1374,14 +1680,14 @@ bool Wallet::mint_tokens(const std::string& quote_id, int amount)
     if (!generate_outputs(amounts, ks->id, blinding))
         return false;
 
-    MintRequest req{quote_id, blinding.outputs};
+    MintRequest req{quote.quote, blinding.outputs};
     std::string body = serialize(req);
     if (body.empty()) {
         ESP_LOGE(TAG, "mint: request serialization failed");
         return false;
     }
 
-    std::string url = mint_url_ + "/v1/mint/bolt11";
+    std::string url = mint_url_ + "/v1/mint/" + method;
     http_response_t resp = {};
     esp_err_t err = http_post_json(url.c_str(), body.c_str(), &resp);
     if (err != ESP_OK || !resp.body) {
@@ -1390,8 +1696,7 @@ bool Wallet::mint_tokens(const std::string& quote_id, int amount)
         return false;
     }
     if (resp.status != 200) {
-        ESP_LOGE(TAG, "mint: mint returned %d: %.*s",
-                 resp.status, (int)resp.body_len, resp.body);
+        log_mint_error("mint", resp);
         http_response_free(&resp);
         return false;
     }
@@ -1415,21 +1720,43 @@ bool Wallet::mint_tokens(const std::string& quote_id, int amount)
     for (const auto& p : new_proofs)
         proofs_.push_back(p);
 
-    ESP_LOGI(TAG, "minted %lld sat (%d proofs)",
-             (long long)proofs_sum(new_proofs), (int)new_proofs.size());
+    char amt[48];
+    format_amount(amt, sizeof(amt), proofs_sum(new_proofs), unit.c_str());
+    ESP_LOGI(TAG, "minted %s (%d proofs)", amt, (int)new_proofs.size());
     save_proofs();
     return true;
 }
 
 // -------------------------------------------------------------------------
-// NUT-05: Melt tokens (bolt11)
+// NUT-05: Melt tokens (method-generic)
 // -------------------------------------------------------------------------
 
-bool Wallet::request_melt_quote(const std::string& bolt11, MeltQuote& quote_out)
+bool Wallet::request_melt_quote(const std::string& request, const std::string& unit,
+                                const std::string& method, MeltQuote& quote_out,
+                                std::optional<int> amount)
 {
+    if (!unit_token_valid(unit.c_str()) || !unit_token_valid(method.c_str())) {
+        ESP_LOGE(TAG, "melt quote: invalid unit '%s' or method '%s'",
+                 unit.c_str(), method.c_str());
+        return false;
+    }
+
+    // Lazy NUT-06 fetch off the sat/bolt11 hot path only. The bolt11 amount
+    // lives in the invoice, so bounds are checked only when the caller
+    // passed an explicit amount.
+    if ((method != "bolt11" || unit != "sat") && !info_)
+        load_mint_info();
+    if (!method_supported(true, method, unit, amount ? *amount : -1)) {
+        ESP_LOGE(TAG, "melt quote: %s/%s rejected by mint info",
+                 method.c_str(), unit.c_str());
+        return false;
+    }
+
     cJSON* body = cJSON_CreateObject();
-    cJSON_AddStringToObject(body, "request", bolt11.c_str());
-    cJSON_AddStringToObject(body, "unit", "sat");
+    cJSON_AddStringToObject(body, "request", request.c_str());
+    cJSON_AddStringToObject(body, "unit", unit.c_str());
+    if (amount)   // PR#382: amountless payment targets (custom methods)
+        cJSON_AddNumberToObject(body, "amount", *amount);
     char* body_str = cJSON_PrintUnformatted(body);
     cJSON_Delete(body);
     if (!body_str) {
@@ -1437,7 +1764,7 @@ bool Wallet::request_melt_quote(const std::string& bolt11, MeltQuote& quote_out)
         return false;
     }
 
-    std::string url = mint_url_ + "/v1/melt/quote/bolt11";
+    std::string url = mint_url_ + "/v1/melt/quote/" + method;
     http_response_t resp = {};
     esp_err_t err = http_post_json(url.c_str(), body_str, &resp);
     cJSON_free(body_str);
@@ -1448,8 +1775,7 @@ bool Wallet::request_melt_quote(const std::string& bolt11, MeltQuote& quote_out)
         return false;
     }
     if (resp.status != 200) {
-        ESP_LOGE(TAG, "melt quote: mint returned %d: %.*s",
-                 resp.status, (int)resp.body_len, resp.body);
+        log_mint_error("melt quote", resp);
         http_response_free(&resp);
         return false;
     }
@@ -1461,15 +1787,27 @@ bool Wallet::request_melt_quote(const std::string& bolt11, MeltQuote& quote_out)
         return false;
     }
 
-    ESP_LOGI(TAG, "melt quote: id=%s amount=%d fee_reserve=%d state=%s",
-             quote_out.quote.c_str(), quote_out.amount,
-             quote_out.fee_reserve, quote_out.state.c_str());
+    if (quote_out.unit.empty())
+        quote_out.unit = unit;
+    if (quote_out.method.empty())
+        quote_out.method = method;
+
+    ESP_LOGI(TAG, "melt quote: id=%s amount=%d fee_reserve=%d unit=%s method=%s state=%s",
+             quote_out.quote.c_str(), quote_out.amount, quote_out.fee_reserve,
+             quote_out.unit.c_str(), quote_out.method.c_str(),
+             quote_out.state.c_str());
     return true;
 }
 
-bool Wallet::check_melt_quote(const std::string& quote_id, MeltQuote& quote_out)
+bool Wallet::check_melt_quote(const std::string& quote_id,
+                              const std::string& method, MeltQuote& quote_out)
 {
-    std::string url = mint_url_ + "/v1/melt/quote/bolt11/" + quote_id;
+    if (!unit_token_valid(method.c_str())) {
+        ESP_LOGE(TAG, "check melt quote: invalid method '%s'", method.c_str());
+        return false;
+    }
+
+    std::string url = mint_url_ + "/v1/melt/quote/" + method + "/" + quote_id;
     http_response_t resp = {};
     esp_err_t err = http_get(url.c_str(), &resp);
 
@@ -1492,6 +1830,9 @@ bool Wallet::check_melt_quote(const std::string& quote_id, MeltQuote& quote_out)
         return false;
     }
 
+    if (quote_out.method.empty())
+        quote_out.method = method;
+
     ESP_LOGI(TAG, "melt quote %s: state=%s", quote_id.c_str(), quote_out.state.c_str());
     return true;
 }
@@ -1500,15 +1841,23 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
 {
     change_amount = 0;
 
-    const Keyset* ks = active_keyset_for_mint();
+    const std::string unit = quote.unit.empty() ? std::string("sat") : quote.unit;
+    const std::string method = quote.method.empty() ? std::string("bolt11")
+                                                    : quote.method;
+    if (!unit_token_valid(method.c_str())) {
+        ESP_LOGE(TAG, "melt: invalid method '%s'", method.c_str());
+        return false;
+    }
+
+    const Keyset* ks = active_keyset_for_mint(unit);
     if (!ks) {
-        ESP_LOGE(TAG, "melt: no mintable keyset");
+        ESP_LOGE(TAG, "melt: no mintable %s keyset", unit.c_str());
         return false;
     }
 
     int needed = quote.amount + quote.fee_reserve;
     std::vector<Proof> selected, leftover;
-    if (!select_proofs(needed, selected, leftover))
+    if (!select_proofs(needed, unit, selected, leftover))
         return false;
 
     int input_sum = 0;
@@ -1554,7 +1903,7 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
         return false;
     }
 
-    std::string url = mint_url_ + "/v1/melt/bolt11";
+    std::string url = mint_url_ + "/v1/melt/" + method;
     http_response_t resp = {};
     esp_err_t err = http_post_json_timeout(url.c_str(), body.c_str(), &resp, 120000);
     if (err != ESP_OK || !resp.body) {
@@ -1563,8 +1912,7 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
         return false;
     }
     if (resp.status != 200) {
-        ESP_LOGE(TAG, "melt: mint returned %d: %.*s",
-                 resp.status, (int)resp.body_len, resp.body);
+        log_mint_error("melt", resp);
         http_response_free(&resp);
         return false;
     }
@@ -1602,8 +1950,10 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
                 change_amount += p.amount;
                 proofs_.push_back(p);
             }
-            ESP_LOGI(TAG, "melt: received %d sat change (%d proofs)",
-                     change_amount, (int)change_proofs.size());
+            char amt[48];
+            format_amount(amt, sizeof(amt), change_amount, unit.c_str());
+            ESP_LOGI(TAG, "melt: received %s change (%d proofs)",
+                     amt, (int)change_proofs.size());
         } else {
             ESP_LOGW(TAG, "melt: failed to unblind change signatures");
         }
@@ -1624,6 +1974,27 @@ bool Wallet::clear_proofs()
 {
     proofs_.clear();
     return save_proofs();
+}
+
+bool Wallet::remove_proofs(const std::vector<Proof>& to_remove)
+{
+    std::vector<Proof> kept;
+    kept.reserve(proofs_.size());
+    for (const auto& p : proofs_) {
+        bool drop = false;
+        for (const auto& r : to_remove)
+            if (r.secret == p.secret) { drop = true; break; }
+        if (!drop)
+            kept.push_back(p);
+    }
+
+    std::vector<Proof> backup = std::move(proofs_);
+    proofs_ = std::move(kept);
+    if (!save_proofs()) {
+        proofs_ = std::move(backup);
+        return false;
+    }
+    return true;
 }
 
 // -------------------------------------------------------------------------
