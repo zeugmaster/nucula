@@ -1019,9 +1019,13 @@ extern "C" void app_main(void)
         }
     }
 
-    // Drain task: every time WiFi transitions to connected, walk each
-    // wallet's pending queue and try to swap the stashed offline-receive
-    // tokens.
+    // Drain task: while WiFi is connected, walk each wallet's pending queue
+    // and try to swap the stashed offline-receive tokens. We can't drain just
+    // once on the rising edge: DNS/routing is often not usable for the first
+    // few seconds after GOT_IP, and a link that stays up never produces
+    // another edge. So once connected we retry with an exponential backoff
+    // until everything is redeemed (or the link drops), then re-arm on the
+    // next reconnect.
     xTaskCreate([](void *) {
         EventGroupHandle_t eg = wifi_get_event_group();
         for (;;) {
@@ -1030,23 +1034,46 @@ extern "C" void app_main(void)
             /* Settle: give the IP stack a moment before the first HTTP. */
             vTaskDelay(pdMS_TO_TICKS(2000));
 
-            int total_ok = 0, total_fail = 0;
-            for (int i = 0; i < MAX_MINTS; i++) {
-                if (!g_wallets[i]) continue;
-                if (g_wallets[i]->pending_count() == 0) continue;
-                int ok = 0, fail = 0;
-                g_wallets[i]->drain_pending_tokens(ok, fail);
-                total_ok += ok;
-                total_fail += fail;
-            }
-            if (total_ok || total_fail) {
-                ESP_LOGI(TAG, "drain: %d ok, %d failed across all slots",
-                         total_ok, total_fail);
-                display_refresh();
+            TickType_t backoff = pdMS_TO_TICKS(5000);
+            const TickType_t backoff_max = pdMS_TO_TICKS(60000);
+            while (xEventGroupGetBits(eg) & WIFI_CONNECTED_BIT) {
+                int pending = 0;
+                for (int i = 0; i < MAX_MINTS; i++)
+                    if (g_wallets[i]) pending += g_wallets[i]->pending_count();
+                if (pending == 0)
+                    break;
+
+                int total_ok = 0, total_fail = 0;
+                for (int i = 0; i < MAX_MINTS; i++) {
+                    if (!g_wallets[i]) continue;
+                    if (g_wallets[i]->pending_count() == 0) continue;
+                    int ok = 0, fail = 0;
+                    g_wallets[i]->drain_pending_tokens(ok, fail);
+                    total_ok += ok;
+                    total_fail += fail;
+                }
+                if (total_ok || total_fail) {
+                    ESP_LOGI(TAG, "drain: %d ok, %d failed across all slots",
+                             total_ok, total_fail);
+                    display_refresh();
+                }
+
+                if (total_ok > 0) {
+                    /* Made progress; retry promptly for the rest. */
+                    backoff = pdMS_TO_TICKS(5000);
+                    vTaskDelay(backoff);
+                } else {
+                    /* No progress (DNS not ready / mint down). Back off so we
+                     * don't hammer the network, capped at backoff_max. */
+                    vTaskDelay(backoff);
+                    if (backoff < backoff_max)
+                        backoff = backoff * 2 < backoff_max ? backoff * 2
+                                                            : backoff_max;
+                }
             }
 
-            /* Wait until the bit clears, then re-loop to wait for the next
-             * rising edge. */
+            /* Drained, or the link dropped. Wait until the bit clears so the
+             * next reconnect re-arms us. */
             while (xEventGroupGetBits(eg) & WIFI_CONNECTED_BIT)
                 vTaskDelay(pdMS_TO_TICKS(5000));
         }

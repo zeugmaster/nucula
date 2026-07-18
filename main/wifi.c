@@ -56,6 +56,28 @@ static void event_handler(void *arg, esp_event_base_t base,
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "connected, ip: " IPSTR, IP2STR(&event->ip_info.ip));
+
+        /* Some networks hand out an IP but no usable DNS server (the DHCP
+         * lease omits it). lwIP then fails name resolution instantly with
+         * EAI_FAIL, so the mints never resolve. If the main DNS slot is
+         * empty, install public resolvers as a fallback. */
+        esp_netif_dns_info_t dns = {0};
+        esp_netif_get_dns_info(event->esp_netif, ESP_NETIF_DNS_MAIN, &dns);
+        ESP_LOGI(TAG, "got ip=" IPSTR " gw=" IPSTR " dns=" IPSTR,
+                 IP2STR(&event->ip_info.ip), IP2STR(&event->ip_info.gw),
+                 IP2STR(&dns.ip.u_addr.ip4));
+        if (dns.ip.u_addr.ip4.addr == 0) {
+            esp_netif_dns_info_t main_dns = { .ip.type = ESP_IPADDR_TYPE_V4 };
+            esp_netif_dns_info_t backup_dns = { .ip.type = ESP_IPADDR_TYPE_V4 };
+            main_dns.ip.u_addr.ip4.addr   = esp_ip4addr_aton("1.1.1.1");
+            backup_dns.ip.u_addr.ip4.addr = esp_ip4addr_aton("8.8.8.8");
+            esp_netif_set_dns_info(event->esp_netif, ESP_NETIF_DNS_MAIN,
+                                   &main_dns);
+            esp_netif_set_dns_info(event->esp_netif, ESP_NETIF_DNS_BACKUP,
+                                   &backup_dns);
+            ESP_LOGW(TAG, "no DNS from DHCP; using fallback 1.1.1.1 / 8.8.8.8");
+        }
+
         s_retry_count = 0;
         s_connected = true;
         xEventGroupSetBits(s_event_group, WIFI_CONNECTED_BIT);
