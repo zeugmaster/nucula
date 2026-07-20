@@ -3,6 +3,7 @@
 #include "wifi_config.h"
 #include "http.h"
 
+#include <stdatomic.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -25,7 +26,7 @@
 #define WIFI_FALLBACK_DNS_BACKUP "8.8.8.8"
 static EventGroupHandle_t s_event_group;
 static int s_retry_count;
-static bool s_connected;
+static atomic_bool s_connected;
 
 static void wifi_supervisor_task(void *arg)
 {
