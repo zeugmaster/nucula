@@ -17,6 +17,7 @@
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <freertos/task.h>
 
 #include "nci.h"
@@ -30,6 +31,9 @@ static bool s_hw_init = false;
 static std::atomic<NfcState> s_state{NfcState::off};
 static std::atomic<bool> s_stop_flag{false};
 static TaskHandle_t s_task_handle = nullptr;
+// Given by nfc_task right before it deletes itself; nfc_request_stop
+// blocks on it instead of polling s_task_handle.
+static SemaphoreHandle_t s_task_done = nullptr;
 
 // -------------------------------------------------------------------------
 // Token redemption
@@ -185,6 +189,7 @@ static void nfc_task(void *arg)
         ui_show_nfc_status("nfc error", "request too large");
         delete params;
         s_task_handle = nullptr;
+        xSemaphoreGive(s_task_done);
         vTaskDelete(nullptr);
         return;
     }
@@ -315,6 +320,7 @@ static void nfc_task(void *arg)
     ndef_clear_message();
     delete params;
     s_task_handle = nullptr;
+    xSemaphoreGive(s_task_done);
     vTaskDelete(nullptr);
 }
 
@@ -354,6 +360,14 @@ bool nfc_request_start(int amount, const char *unit, const char *mint_url)
     if (!s_hw_init) return false;
     if (s_task_handle) { ESP_LOGW(TAG, "already running"); return false; }
 
+    if (!s_task_done)
+        s_task_done = xSemaphoreCreateBinary();
+    if (!s_task_done)
+        return false;
+    // Drain a give left by a task that finished on its own (success or
+    // timeout without a stop), so the next stop can't return early.
+    xSemaphoreTake(s_task_done, 0);
+
     auto *p = new NfcRequestParams();
     p->amount = amount;
     p->unit = (unit && unit[0]) ? unit : cashu::Wallet::default_unit();
@@ -373,8 +387,12 @@ bool nfc_request_start(int amount, const char *unit, const char *mint_url)
 void nfc_request_stop()
 {
     s_stop_flag.store(true);
-    for (int i = 0; i < 50 && s_task_handle; i++)
-        vTaskDelay(pdMS_TO_TICKS(100));
+    // The task gives s_task_done just before deleting itself; a stuck task
+    // is abandoned after 5 s as before, but the common case returns as
+    // soon as the task is actually gone instead of on a 100 ms poll grid.
+    if (s_task_handle && s_task_done &&
+        xSemaphoreTake(s_task_done, pdMS_TO_TICKS(5000)) != pdTRUE)
+        ESP_LOGW(TAG, "nfc task did not stop within 5s");
     s_task_handle = nullptr;
     s_state.store(s_hw_init ? NfcState::idle : NfcState::off);
 }
