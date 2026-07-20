@@ -1,4 +1,5 @@
 #include "keypad.h"
+#include "task_config.h"
 #include "board.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -6,7 +7,7 @@
 #include "freertos/queue.h"
 #include <string.h>
 
-static const char *TAG = "keypad";
+#define TAG "keypad"
 
 static i2c_master_dev_handle_t s_dev    = NULL;
 static QueueHandle_t            s_queue  = NULL;
@@ -145,7 +146,8 @@ esp_err_t keypad_start_task(void)
 
     // 3072: the I2C driver's error-logging path alone can burn >1 KB of
     // stack, which overflowed the previous 2048-byte allocation.
-    if (xTaskCreate(keypad_task, "keypad", 3072, NULL, 4, NULL) != pdPASS) {
+    if (xTaskCreate(keypad_task, "keypad", NUCULA_TASK_STACK_KEYPAD, NULL,
+                    NUCULA_TASK_PRIO_KEYPAD, NULL) != pdPASS) {
         ESP_LOGE(TAG, "task create failed");
         vQueueDelete(s_queue);
         s_queue = NULL;

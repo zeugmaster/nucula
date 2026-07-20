@@ -1,4 +1,5 @@
 #include "nfc.hpp"
+#include "task_config.h"
 #include "ndef.hpp"
 #include "cashu.hpp"
 #include "cashu_json.hpp"
@@ -181,7 +182,7 @@ static void nfc_task(void *arg)
     if (creq.empty() || !ndef_set_message(creq.c_str())) {
         ESP_LOGE(TAG, "payment request encode/NDEF failed");
         s_state.store(NfcState::error);
-        display_nfc_status("nfc error", "request too large");
+        ui_show_nfc_status("nfc error", "request too large");
         delete params;
         s_task_handle = nullptr;
         vTaskDelete(nullptr);
@@ -214,14 +215,14 @@ static void nfc_task(void *arg)
                          params->unit.c_str());
 
     s_state.store(NfcState::waiting);
-    display_nfc_status("tap to pay", amt_str);
+    ui_show_nfc_status("tap to pay", amt_str);
 
     while (!s_stop_flag.load()) {
         // Timeout check
         if ((esp_timer_get_time() - start) > (int64_t)PAYMENT_TIMEOUT_MS * 1000) {
             ESP_LOGW(TAG, "payment timeout");
             s_state.store(NfcState::error);
-            display_nfc_status("nfc timeout", "");
+            ui_show_nfc_status("nfc timeout", "");
             break;
         }
 
@@ -255,7 +256,7 @@ static void nfc_task(void *arg)
             ndef_reset_receive();
             if (!s_rx.received) {
                 s_state.store(NfcState::waiting);
-                display_nfc_status("tap to pay", amt_str);
+                ui_show_nfc_status("tap to pay", amt_str);
             }
             continue;
         }
@@ -273,7 +274,7 @@ static void nfc_task(void *arg)
             // Check if a token arrived via the callback
             if (s_rx.received) {
                 s_state.store(NfcState::redeeming);
-                display_nfc_status("redeeming...", amt_str);
+                ui_show_nfc_status("redeeming...", amt_str);
 
                 // Show what was actually received (unit may differ from
                 // the request); fall back to the requested amount.
@@ -284,15 +285,15 @@ static void nfc_task(void *arg)
                                                recv_str, sizeof(recv_str));
                 if (rc == 1) {
                     s_state.store(NfcState::success);
-                    display_nfc_status("paid!", recv_str);
-                    display_refresh();
+                    ui_show_nfc_status("paid!", recv_str);
+                    ui_refresh();
                 } else if (rc == 0) {
                     s_state.store(NfcState::success);
-                    display_nfc_status("queued", recv_str);
-                    display_refresh();
+                    ui_show_nfc_status("queued", recv_str);
+                    ui_refresh();
                 } else {
                     s_state.store(NfcState::error);
-                    display_nfc_status("redeem failed", "");
+                    ui_show_nfc_status("redeem failed", "");
                 }
                 break;
             }
@@ -361,7 +362,8 @@ bool nfc_request_start(int amount, const char *unit, const char *mint_url)
     s_stop_flag.store(false);
     s_rx.received = false;
     s_rx.token.clear();
-    if (xTaskCreate(nfc_task, "nfc", 16384, p, 5, &s_task_handle) != pdPASS) {
+    if (xTaskCreate(nfc_task, "nfc", NUCULA_TASK_STACK_NFC, p,
+                    NUCULA_TASK_PRIO_NFC, &s_task_handle) != pdPASS) {
         delete p;
         return false;
     }

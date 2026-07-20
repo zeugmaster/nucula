@@ -247,6 +247,9 @@ static bool attach_p2pk_witnesses(secp256k1_context* ctx,
             return false;
         }
         unsigned char sig[64];
+        // Deliberately NOT routed through the cashu_suite vtable: NUT-11
+        // P2PK witnesses are secp256k1 Schnorr by spec, independent of
+        // which suite signed the proof's keyset.
         if (!cashu_schnorr_sign_secret(ctx, priv,
                                        (const unsigned char*)p.secret.c_str(),
                                        p.secret.size(), sig)) {

@@ -1,5 +1,6 @@
 #include "cashu_cbor.hpp"
 #include "base64url.hpp"
+#include "cashu_suite.h"
 #include "hex.h"
 
 #include <cstring>
@@ -232,12 +233,13 @@ bool deserialize_token_v4(const char *token_str, Token &out)
 // -------------------------------------------------------------------------
 
 // Encode a hex string as a CBOR byte string. Hard-fails on odd length,
-// invalid characters, or more than max_bytes (<= 33) decoded bytes — a
-// malformed field must abort the whole token, not silently truncate it.
+// invalid characters, or more than max_bytes (<= CASHU_MAX_POINT_LEN)
+// decoded bytes — a malformed field must abort the whole token, not
+// silently truncate it.
 static bool encode_hex_bytes(CborEncoder *enc, const std::string &hex,
                              size_t max_bytes)
 {
-    uint8_t bytes[33];
+    uint8_t bytes[CASHU_MAX_POINT_LEN];
     size_t len = hex.size() / 2;
     if ((hex.size() % 2) != 0 || len > max_bytes || max_bytes > sizeof(bytes))
         return false;
@@ -286,7 +288,7 @@ static bool encode_token_v4(const Token &token,
         // (NUT-00 also permits an 8-byte short form, but emitting the full id
         //  keeps our tokens losslessly round-trippable and keyset-verifiable.)
         cbor_encode_text_stringz(&entry_map, "i");
-        if (!encode_hex_bytes(&entry_map, keyset_id, 33))
+        if (!encode_hex_bytes(&entry_map, keyset_id, CASHU_MAX_POINT_LEN))
             return false;
 
         // "p": proofs array
@@ -310,9 +312,9 @@ static bool encode_token_v4(const Token &token,
             cbor_encode_text_stringz(&p_map, "s");
             cbor_encode_text_stringz(&p_map, p->secret.c_str());
 
-            // "c": signature (byte string)
+            // "c": signature (byte string), sized for any suite's points
             cbor_encode_text_stringz(&p_map, "c");
-            if (!encode_hex_bytes(&p_map, p->C, 33))
+            if (!encode_hex_bytes(&p_map, p->C, CASHU_MAX_POINT_LEN))
                 return false;
 
             if (p->dleq) {

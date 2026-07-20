@@ -24,11 +24,11 @@ static void cmd_seed(const char *arg)
     if (!arg || strlen(arg) == 0 || strcmp(arg, "show") == 0) {
         std::string mnemonic;
         if (cashu::Wallet::load_mnemonic(mnemonic)) {
-            nucula_console_write("warning: keep your seed phrase secret!\r\n");
-            nucula_console_write(mnemonic.c_str());
-            nucula_console_write("\r\n");
+            console_print("warning: keep your seed phrase secret!\r\n");
+            console_print(mnemonic.c_str());
+            console_print("\r\n");
         } else {
-            nucula_console_write("no seed configured\r\n");
+            console_print("no seed configured\r\n");
         }
         return;
     }
@@ -36,13 +36,13 @@ static void cmd_seed(const char *arg)
     if (strcmp(arg, "generate") == 0) {
         char mnemonic[256];
         if (!bip39_generate(mnemonic, sizeof(mnemonic))) {
-            nucula_console_write("error: mnemonic generation failed\r\n");
+            console_print("error: mnemonic generation failed\r\n");
             return;
         }
 
         unsigned char seed[64];
         if (!bip39_to_seed(mnemonic, seed)) {
-            nucula_console_write("error: seed derivation failed\r\n");
+            console_print("error: seed derivation failed\r\n");
             return;
         }
 
@@ -50,14 +50,14 @@ static void cmd_seed(const char *arg)
         cashu::Wallet::erase_seed();
 
         if (!cashu::Wallet::save_seed(seed, mnemonic)) {
-            nucula_console_write("error: failed to save seed\r\n");
+            console_print("error: failed to save seed\r\n");
             return;
         }
 
-        nucula_console_write("seed generated. write down your seed phrase:\r\n\r\n");
-        nucula_console_write(mnemonic);
-        nucula_console_write("\r\n\r\nall wallet data erased. add mints with 'mint add <url>'\r\n");
-        display_refresh();
+        console_print("seed generated. write down your seed phrase:\r\n\r\n");
+        console_print(mnemonic);
+        console_print("\r\n\r\nall wallet data erased. add mints with 'mint add <url>'\r\n");
+        ui_refresh();
         return;
     }
 
@@ -66,13 +66,13 @@ static void cmd_seed(const char *arg)
         while (*words == ' ') words++;
 
         if (!bip39_validate(words)) {
-            nucula_console_write("error: invalid mnemonic (bad checksum or unknown words)\r\n");
+            console_print("error: invalid mnemonic (bad checksum or unknown words)\r\n");
             return;
         }
 
         unsigned char seed[64];
         if (!bip39_to_seed(words, seed)) {
-            nucula_console_write("error: seed derivation failed\r\n");
+            console_print("error: seed derivation failed\r\n");
             return;
         }
 
@@ -80,25 +80,25 @@ static void cmd_seed(const char *arg)
         cashu::Wallet::erase_seed();
 
         if (!cashu::Wallet::save_seed(seed, words)) {
-            nucula_console_write("error: failed to save seed\r\n");
+            console_print("error: failed to save seed\r\n");
             return;
         }
 
-        nucula_console_write("seed restored. all wallet data erased.\r\n");
-        nucula_console_write("add mints with 'mint add <url>' to begin recovery\r\n");
-        display_refresh();
+        console_print("seed restored. all wallet data erased.\r\n");
+        console_print("add mints with 'mint add <url>' to begin recovery\r\n");
+        ui_refresh();
         return;
     }
 
     if (strcmp(arg, "wipe") == 0) {
         erase_all_wallets();
         cashu::Wallet::erase_seed();
-        nucula_console_write("seed and all wallet data erased\r\n");
-        display_refresh();
+        console_print("seed and all wallet data erased\r\n");
+        ui_refresh();
         return;
     }
 
-    nucula_console_write("usage: seed [show|generate|restore <12 words>|wipe]\r\n");
+    console_print("usage: seed [show|generate|restore <12 words>|wipe]\r\n");
 }
 
 void commands_seed_register(void)

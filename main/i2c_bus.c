@@ -2,7 +2,7 @@
 #include "board.h"
 #include "esp_log.h"
 
-static const char *TAG = "i2c_bus";
+#define TAG "i2c_bus"
 
 static i2c_master_bus_handle_t s_bus;
 

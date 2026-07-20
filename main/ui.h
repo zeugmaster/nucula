@@ -5,10 +5,10 @@
 // display layer no-ops then.
 
 // Home screen: balance, mint list, wifi/pending status.
-void display_refresh();
+void ui_refresh();
 
 // Full-screen NFC status (line1 large, line2 small).
-void display_nfc_status(const char *line1, const char *line2);
+void ui_show_nfc_status(const char *line1, const char *line2);
 
 // Keypad payment state machine (amount entry -> NFC window). Run as a task.
 void keypad_ui_task(void *arg);

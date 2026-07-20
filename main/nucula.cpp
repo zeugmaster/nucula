@@ -1,4 +1,5 @@
 #include <esp_log.h>
+#include "task_config.h"
 #include <esp_random.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -62,7 +63,7 @@ static void wifi_drain_task(void *)
             if (total_ok || total_fail) {
                 ESP_LOGI(TAG, "drain: %d ok, %d failed across all slots",
                          total_ok, total_fail);
-                display_refresh();
+                ui_refresh();
             }
 
             if (total_ok > 0) {
@@ -164,7 +165,8 @@ extern "C" void app_main(void)
     }
 
 
-    xTaskCreate(wifi_drain_task, "wifi_drain", 8192, NULL, 4, NULL);
+    xTaskCreate(wifi_drain_task, "wifi_drain", NUCULA_TASK_STACK_WIFI_DRAIN,
+                NULL, NUCULA_TASK_PRIO_WIFI_DRAIN, NULL);
 
     // Shared I2C bus for display, keypad, and NFC. Each driver probes for
     // its device and disables itself when absent, so a bare module still
@@ -176,11 +178,12 @@ extern "C" void app_main(void)
 
     if (keypad_init(i2c_bus_get()) == ESP_OK) {
         keypad_start_task();
-        xTaskCreate(keypad_ui_task, "keypad_ui", 4096, NULL, 3, NULL);
+        xTaskCreate(keypad_ui_task, "keypad_ui", NUCULA_TASK_STACK_KEYPAD_UI,
+                    NULL, NUCULA_TASK_PRIO_KEYPAD_UI, NULL);
     }
 
     if (!nfc_init(i2c_bus_get()))
         ESP_LOGW(TAG, "PN7160 init failed, NFC disabled");
 
-    display_refresh();
+    ui_refresh();
 }

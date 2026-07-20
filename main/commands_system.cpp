@@ -36,11 +36,11 @@ static void cmd_nfc(const char *arg)
     if (strncmp(arg, "request ", 8) == 0) {
         int amount = atoi(arg + 8);
         if (amount <= 0) {
-            nucula_console_write("usage: nfc request <amount> [u=<unit>]\r\n");
+            console_print("usage: nfc request <amount> [u=<unit>]\r\n");
             return;
         }
         if (nfc_state() == NfcState::off) {
-            nucula_console_write("error: NFC not available\r\n");
+            console_print("error: NFC not available\r\n");
             return;
         }
         CmdOpts opts;
@@ -52,22 +52,22 @@ static void cmd_nfc(const char *arg)
         cashu::format_amount(amt, sizeof(amt), amount, unit.c_str());
         console_printf("requesting %s via NFC...\r\n", amt);
         if (!nfc_request_start(amount, unit.c_str(), nullptr))
-            nucula_console_write("error: failed to start\r\n");
+            console_print("error: failed to start\r\n");
         return;
     }
     if (strcmp(arg, "stop") == 0) {
         nfc_request_stop();
-        nucula_console_write("nfc stopped\r\n");
-        display_refresh();
+        console_print("nfc stopped\r\n");
+        ui_refresh();
         return;
     }
-    nucula_console_write("usage: nfc [request <amount> [u=<unit>]|stop]\r\n");
+    console_print("usage: nfc [request <amount> [u=<unit>]|stop]\r\n");
 }
 
 static void cmd_reboot(const char *arg)
 {
     (void)arg;
-    nucula_console_write("rebooting...\r\n");
+    console_print("rebooting...\r\n");
     vTaskDelay(pdMS_TO_TICKS(100));
     esp_restart();
 }
@@ -92,7 +92,7 @@ static void cmd_tasks(const char *arg)
     UBaseType_t n = uxTaskGetNumberOfTasks();
     TaskStatus_t *st = (TaskStatus_t *)malloc(n * sizeof(TaskStatus_t));
     if (!st) {
-        nucula_console_write("error: out of memory\r\n");
+        console_print("error: out of memory\r\n");
         return;
     }
     n = uxTaskGetSystemState(st, n, NULL);
@@ -122,21 +122,21 @@ static void cmd_log(const char *arg)
         return;
     }
 usage:
-    nucula_console_write("usage: log <e|w|i|d> [tag]\r\n");
+    console_print("usage: log <e|w|i|d> [tag]\r\n");
 }
 
 static void cmd_bench(const char *arg)
 {
     (void)arg;
-    nucula_console_write("benchmarking crypto primitives...\r\n");
+    console_print("benchmarking crypto primitives...\r\n");
     crypto_run_benchmark(wallet_store_ctx());
-    nucula_console_write("done (results logged at info level)\r\n");
+    console_print("done (results logged at info level)\r\n");
 }
 
 static void cmd_selftest(const char *arg)
 {
     (void)arg;
-    nucula_console_write("running self-tests (details logged at info level)...\r\n");
+    console_print("running self-tests (details logged at info level)...\r\n");
     bool ok = crypto_run_tests(wallet_store_ctx()) != 0;
     if (!cashu::keyset_run_tests())
         ok = false;
@@ -154,13 +154,13 @@ static void cmd_selftest(const char *arg)
 static void cmd_keypad(const char *arg)
 {
     if (!arg || strcmp(arg, "scan") != 0) {
-        nucula_console_write("usage: keypad scan\r\n");
-        nucula_console_write("  scan: probe each PCF8574 pin (P0-P6) and report which\r\n");
-        nucula_console_write("        other pins go low. Press keys while scanning.\r\n");
+        console_print("usage: keypad scan\r\n");
+        console_print("  scan: probe each PCF8574 pin (P0-P6) and report which\r\n");
+        console_print("        other pins go low. Press keys while scanning.\r\n");
         return;
     }
 
-    nucula_console_write("keypad scan — press keys, each fires once per press (~30s)\r\n\r\n");
+    console_print("keypad scan — press keys, each fires once per press (~30s)\r\n\r\n");
 
     int64_t deadline = esp_timer_get_time() + 30LL * 1000000;
     while (esp_timer_get_time() < deadline) {
@@ -169,10 +169,10 @@ static void cmd_keypad(const char *arg)
         if (key) {
             char line[32];
             snprintf(line, sizeof(line), "key: '%c'\r\n", key);
-            nucula_console_write(line);
+            console_print(line);
         }
     }
-    nucula_console_write("scan done\r\n");
+    console_print("scan done\r\n");
 }
 
 void commands_system_register(void)

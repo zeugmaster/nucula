@@ -5,7 +5,7 @@
 #include "freertos/task.h"
 #include <string.h>
 
-static const char *TAG = "nci";
+#define TAG "nci"
 
 // Single waiter (the nfc task) parked in nci_wait_for_irq.
 static TaskHandle_t s_irq_waiter;

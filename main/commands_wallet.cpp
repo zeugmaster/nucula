@@ -52,7 +52,7 @@ static void cmd_status(const char *arg)
         console_printf("    keysets: %d\r\n", (int)w->keysets().size());
         console_printf("    proofs:  %d\r\n", (int)w->proofs().size());
         if (print_unit_balances(w, "    ", "balance: "))
-            nucula_console_write("    warning: proofs with unknown keyset\r\n");
+            console_print("    warning: proofs with unknown keyset\r\n");
     }
     if (count > 0) {
         std::vector<std::string> units;
@@ -86,10 +86,10 @@ static void cmd_balance(const char *arg)
             console_printf("  %s  (keyset %s)\r\n", amt, p.id.c_str());
         }
         if (print_unit_balances(w, "  ", "subtotal: "))
-            nucula_console_write("  warning: proofs with unknown keyset excluded\r\n");
+            console_print("  warning: proofs with unknown keyset excluded\r\n");
     }
     if (!any) {
-        nucula_console_write("no proofs\r\n");
+        console_print("no proofs\r\n");
         return;
     }
     std::vector<std::string> units;
@@ -113,10 +113,10 @@ static void cmd_unit(const char *arg)
         std::vector<std::string> units;
         wallet_store_collect_units(units);
         if (!units.empty()) {
-            nucula_console_write("held units:");
+            console_print("held units:");
             for (const auto &u : units)
                 console_printf(" %s", u.c_str());
-            nucula_console_write("\r\n");
+            console_print("\r\n");
         }
         return;
     }
@@ -126,7 +126,7 @@ static void cmd_unit(const char *arg)
     std::string unit = cashu::normalize_unit(
         end ? std::string(arg, end - arg) : std::string(arg));
     if (!cashu::unit_token_valid(unit.c_str())) {
-        nucula_console_write("error: unit must be non-empty [a-z0-9_-]\r\n");
+        console_print("error: unit must be non-empty [a-z0-9_-]\r\n");
         return;
     }
 
@@ -140,29 +140,29 @@ static void cmd_unit(const char *arg)
     }
 
     if (!cashu::Wallet::set_default_unit(unit)) {
-        nucula_console_write("error: failed to persist default unit\r\n");
+        console_print("error: failed to persist default unit\r\n");
         return;
     }
     console_printf("default unit: %s%s\r\n", unit.c_str(),
                    backed ? "" : " (no mint has an active keyset for it yet)");
-    display_refresh();
+    ui_refresh();
 }
 
 static void cmd_receive(const char *arg)
 {
     wallet_store_guard guard;
     if (!arg || strlen(arg) == 0) {
-        nucula_console_write("usage: receive <cashu token>\r\n");
+        console_print("usage: receive <cashu token>\r\n");
         return;
     }
     if (!wifi_is_connected()) {
-        nucula_console_write("error: not connected to wifi\r\n");
+        console_print("error: not connected to wifi\r\n");
         return;
     }
 
     cashu::Token token;
     if (!cashu::deserialize_token(arg, token)) {
-        nucula_console_write("error: failed to decode token\r\n");
+        console_print("error: failed to decode token\r\n");
         return;
     }
 
@@ -181,7 +181,7 @@ static void cmd_receive(const char *arg)
     if (!ensure_active_keyset(w, token.unit, /*require_active=*/false))
         return;
 
-    nucula_console_write("swapping...\r\n");
+    console_print("swapping...\r\n");
     std::vector<cashu::Proof> received;
     int64_t t0 = esp_timer_get_time();
     if (!w->receive(token, received)) {
@@ -194,7 +194,7 @@ static void cmd_receive(const char *arg)
                          cashu::proofs_sum(received), token.unit.c_str());
     console_printf("received %s in %d proofs (%lld ms)\r\n",
                    amt, (int)received.size(), ms);
-    display_refresh();
+    ui_refresh();
 }
 
 static void cmd_mint(const char *arg)
@@ -203,7 +203,7 @@ static void cmd_mint(const char *arg)
     if (!arg || strlen(arg) == 0 || strcmp(arg, "list") == 0) {
         int count = wallet_store_count();
         if (count == 0) {
-            nucula_console_write("no mints configured\r\n");
+            console_print("no mints configured\r\n");
             return;
         }
         for (int i = 0; i < MAX_MINTS; i++) {
@@ -221,11 +221,11 @@ static void cmd_mint(const char *arg)
         const char *url = arg + 4;
         while (*url == ' ') url++;
         if (strlen(url) == 0) {
-            nucula_console_write("usage: mint add <url>\r\n");
+            console_print("usage: mint add <url>\r\n");
             return;
         }
         if (wallet_store_find(url)) {
-            nucula_console_write("mint already added\r\n");
+            console_print("mint already added\r\n");
             return;
         }
         auto *w = wallet_store_get_or_create(url);
@@ -236,13 +236,13 @@ static void cmd_mint(const char *arg)
         console_printf("added mint [%d]: %s\r\n", w->nvs_slot(), url);
 
         if (wifi_is_connected()) {
-            nucula_console_write("loading keysets...\r\n");
+            console_print("loading keysets...\r\n");
             if (!w->load_keysets())
-                nucula_console_write("warning: failed to load keysets\r\n");
+                console_print("warning: failed to load keysets\r\n");
         } else {
-            nucula_console_write("offline: keysets will load when connected\r\n");
+            console_print("offline: keysets will load when connected\r\n");
         }
-        display_refresh();
+        ui_refresh();
         return;
     }
 
@@ -253,12 +253,12 @@ static void cmd_mint(const char *arg)
         if (!w) return;
         if (!w->mint_info()) {
             if (!wifi_is_connected()) {
-                nucula_console_write("error: not connected to wifi\r\n");
+                console_print("error: not connected to wifi\r\n");
                 return;
             }
-            nucula_console_write("loading mint info...\r\n");
+            console_print("loading mint info...\r\n");
             if (!w->load_mint_info()) {
-                nucula_console_write("error: failed to load mint info\r\n");
+                console_print("error: failed to load mint info\r\n");
                 return;
             }
         }
@@ -269,7 +269,7 @@ static void cmd_mint(const char *arg)
                              const std::vector<cashu::MintMethodSetting> &rows) {
             console_printf("%s\r\n", label);
             if (rows.empty()) {
-                nucula_console_write("  (none advertised)\r\n");
+                console_print("  (none advertised)\r\n");
                 return;
             }
             for (const auto &r : rows) {
@@ -307,7 +307,7 @@ static void cmd_mint(const char *arg)
         }
 
         if (!w) {
-            nucula_console_write("mint not found\r\n");
+            console_print("mint not found\r\n");
             return;
         }
 
@@ -315,28 +315,28 @@ static void cmd_mint(const char *arg)
                        slot, w->mint_url().c_str(),
                        (long long)w->balance(), (int)w->proofs().size());
         wallet_store_remove(slot);
-        display_refresh();
+        ui_refresh();
         return;
     }
 
-    nucula_console_write("usage: mint [list|add <url>|remove <index|url>|info [idx]]\r\n");
+    console_print("usage: mint [list|add <url>|remove <index|url>|info [idx]]\r\n");
 }
 
 static void cmd_invoice(const char *arg)
 {
     wallet_store_guard guard;
     if (!arg || strlen(arg) == 0) {
-        nucula_console_write("usage: invoice <amount> [u=<unit>] [m=<method>] [w=<mint_idx>]\r\n");
+        console_print("usage: invoice <amount> [u=<unit>] [m=<method>] [w=<mint_idx>]\r\n");
         return;
     }
     if (!wifi_is_connected()) {
-        nucula_console_write("error: not connected to wifi\r\n");
+        console_print("error: not connected to wifi\r\n");
         return;
     }
 
     int amount = atoi(arg);
     if (amount <= 0) {
-        nucula_console_write("error: amount must be positive\r\n");
+        console_print("error: amount must be positive\r\n");
         return;
     }
 
@@ -355,7 +355,7 @@ static void cmd_invoice(const char *arg)
     if (!ensure_active_keyset(w, unit, /*require_active=*/true))
         return;
 
-    nucula_console_write("requesting mint quote...\r\n");
+    console_print("requesting mint quote...\r\n");
     cashu::MintQuote quote;
     if (!w->request_mint_quote(amount, unit, method, quote)) {
         print_flow_error(w, "failed to get mint quote");
@@ -364,16 +364,16 @@ static void cmd_invoice(const char *arg)
 
     // For bolt11 `request` is an invoice; for custom methods it is an
     // opaque payment target (URL, account reference) — print verbatim.
-    nucula_console_write(method == "bolt11" ? "pay this invoice:\r\n"
+    console_print(method == "bolt11" ? "pay this invoice:\r\n"
                                             : "payment request:\r\n");
-    nucula_console_write(quote.request.c_str());
-    nucula_console_write("\r\n");
+    console_print(quote.request.c_str());
+    console_print("\r\n");
     console_printf("quote: %s\r\n", quote.quote.c_str());
     char amt[48];
     cashu::format_amount(amt, sizeof(amt), quote.amount, quote.unit.c_str());
     console_printf("amount: %s\r\n", amt);
     if (method == "bolt11")
-        nucula_console_write("then run: claim <quote_id>\r\n");
+        console_print("then run: claim <quote_id>\r\n");
     else
         console_printf("then run: claim %s m=%s\r\n",
                        quote.quote.c_str(), method.c_str());
@@ -383,11 +383,11 @@ static void cmd_claim(const char *arg)
 {
     wallet_store_guard guard;
     if (!arg || strlen(arg) == 0) {
-        nucula_console_write("usage: claim <quote_id> [m=<method>] [w=<mint_idx>]\r\n");
+        console_print("usage: claim <quote_id> [m=<method>] [w=<mint_idx>]\r\n");
         return;
     }
     if (!wifi_is_connected()) {
-        nucula_console_write("error: not connected to wifi\r\n");
+        console_print("error: not connected to wifi\r\n");
         return;
     }
 
@@ -405,7 +405,7 @@ static void cmd_claim(const char *arg)
         w = resolve_wallet(opts.idx.c_str());
         if (!w) return;
         if (!w->check_mint_quote(quote_id, method, quote)) {
-            nucula_console_write("error: quote not found on this mint\r\n");
+            console_print("error: quote not found on this mint\r\n");
             return;
         }
     } else {
@@ -419,7 +419,7 @@ static void cmd_claim(const char *arg)
     }
 
     if (!w) {
-        nucula_console_write("error: quote not found on any mint\r\n");
+        console_print("error: quote not found on any mint\r\n");
         return;
     }
 
@@ -428,11 +428,11 @@ static void cmd_claim(const char *arg)
     int claimable = quote.mintable();
     if (claimable <= 0) {
         if (quote.state == "UNPAID")
-            nucula_console_write("invoice not paid yet\r\n");
+            console_print("invoice not paid yet\r\n");
         else if (quote.state == "ISSUED")
-            nucula_console_write("tokens already claimed\r\n");
+            console_print("tokens already claimed\r\n");
         else if (quote.amount_paid && quote.amount_issued)
-            nucula_console_write("nothing mintable (paid amount fully issued)\r\n");
+            console_print("nothing mintable (paid amount fully issued)\r\n");
         else
             console_printf("unexpected state: %s\r\n", quote.state.c_str());
         return;
@@ -442,7 +442,7 @@ static void cmd_claim(const char *arg)
     if (!ensure_active_keyset(w, unit, /*require_active=*/true))
         return;
 
-    nucula_console_write("minting tokens...\r\n");
+    console_print("minting tokens...\r\n");
     if (!w->mint_tokens(quote, claimable)) {
         print_flow_error(w, "minting failed");
         return;
@@ -452,19 +452,19 @@ static void cmd_claim(const char *arg)
     cashu::format_amount(amt, sizeof(amt), claimable,
                          quote.unit.empty() ? "sat" : quote.unit.c_str());
     console_printf("minted %s\r\n", amt);
-    display_refresh();
+    ui_refresh();
 }
 
 static void cmd_melt(const char *arg)
 {
     wallet_store_guard guard;
     if (!arg || strlen(arg) == 0) {
-        nucula_console_write("usage: melt <request> [u=<unit>] [m=<method>] "
+        console_print("usage: melt <request> [u=<unit>] [m=<method>] "
                              "[a=<amount>] [w=<mint_idx>]\r\n");
         return;
     }
     if (!wifi_is_connected()) {
-        nucula_console_write("error: not connected to wifi\r\n");
+        console_print("error: not connected to wifi\r\n");
         return;
     }
 
@@ -484,7 +484,7 @@ static void cmd_melt(const char *arg)
     if (!ensure_active_keyset(w, unit, /*require_active=*/true))
         return;
 
-    nucula_console_write("requesting melt quote...\r\n");
+    console_print("requesting melt quote...\r\n");
     cashu::MeltQuote quote;
     std::optional<int> req_amount = opts.amount > 0
         ? std::optional<int>(opts.amount) : std::nullopt;
@@ -509,7 +509,7 @@ static void cmd_melt(const char *arg)
         return;
     }
 
-    nucula_console_write("paying...\r\n");
+    console_print("paying...\r\n");
     int change_amount = 0;
     if (!w->melt_tokens(quote, change_amount)) {
         print_flow_error(w, "melt failed");
@@ -522,7 +522,7 @@ static void cmd_melt(const char *arg)
         cashu::format_amount(amt, sizeof(amt), change_amount, quote.unit.c_str());
         console_printf("change: %s\r\n", amt);
     }
-    display_refresh();
+    ui_refresh();
 }
 
 static void cmd_stickup(const char *arg)
@@ -576,8 +576,8 @@ static void cmd_stickup(const char *arg)
                                  cashu::proofs_sum(drained), u.c_str());
             console_printf("[%d] %s: %s in %d proofs\r\n",
                            i, w->mint_url().c_str(), amt, (int)drained.size());
-            nucula_console_write(serialized.c_str());
-            nucula_console_write("\r\n");
+            console_print(serialized.c_str());
+            console_print("\r\n");
 
             if (!w->remove_proofs(drained)) {
                 console_printf("[%d] error: failed to persist drain — proofs "
@@ -589,9 +589,9 @@ static void cmd_stickup(const char *arg)
     }
 
     if (!any)
-        nucula_console_write("nothing to drain\r\n");
+        console_print("nothing to drain\r\n");
     else
-        display_refresh();
+        ui_refresh();
 }
 
 void commands_wallet_register(void)

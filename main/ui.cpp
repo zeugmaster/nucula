@@ -31,7 +31,7 @@ static void draw_title_bar(const char *right_label)
     }
 }
 
-void display_nfc_status(const char *line1, const char *line2)
+void ui_show_nfc_status(const char *line1, const char *line2)
 {
     display_clear();
     draw_title_bar("nfc");
@@ -53,7 +53,7 @@ void display_nfc_status(const char *line1, const char *line2)
     display_update();
 }
 
-void display_refresh()
+void ui_refresh()
 {
     // Layout (64px total, 128px wide):
     //   y= 0.. 8  title bar (scale 1)
@@ -66,7 +66,7 @@ void display_refresh()
 
     // Never hard-block the UI on a long wallet operation (a melt can hold
     // the store for up to two minutes): skip this frame instead — every
-    // wallet op ends with a display_refresh, so a skipped frame self-heals.
+    // wallet op ends with a ui_refresh, so a skipped frame self-heals.
     // Recursive mutex: callers already holding the guard pass immediately.
     if (!wallet_store_try_lock(100))
         return;
@@ -253,7 +253,7 @@ void keypad_ui_task(void *arg)
                 }
             } else if (key == '*') {
                 ui = UiState::IDLE;
-                display_refresh();
+                ui_refresh();
             } else if (key == '#') {
                 nfc_amount = atoi(amount_buf);
                 if (nfc_amount <= 0) break;             // nothing entered yet
@@ -264,7 +264,7 @@ void keypad_ui_task(void *arg)
                 char amt_str[24];
                 cashu::format_amount(amt_str, sizeof(amt_str), nfc_amount,
                                      unit_buf);
-                display_nfc_status("waiting", amt_str);
+                ui_show_nfc_status("waiting", amt_str);
             }
             break;
 
@@ -272,7 +272,7 @@ void keypad_ui_task(void *arg)
             if (key == '*') {
                 nfc_request_stop();
                 ui = UiState::IDLE;
-                display_refresh();
+                ui_refresh();
                 break;
             }
             // Refresh display whenever NFC state changes
@@ -284,15 +284,15 @@ void keypad_ui_task(void *arg)
             cashu::format_amount(amt_str, sizeof(amt_str), nfc_amount, unit_buf);
             switch (cur) {
             case NfcState::waiting:
-                display_nfc_status("waiting", amt_str);   break;
+                ui_show_nfc_status("waiting", amt_str);   break;
             case NfcState::active:
-                display_nfc_status("reading...", amt_str); break;
+                ui_show_nfc_status("reading...", amt_str); break;
             case NfcState::redeeming:
-                display_nfc_status("redeeming", amt_str);  break;
+                ui_show_nfc_status("redeeming", amt_str);  break;
             case NfcState::success:
-                display_nfc_status("success!", "");         break;
+                ui_show_nfc_status("success!", "");         break;
             case NfcState::error:
-                display_nfc_status("error", "try again");   break;
+                ui_show_nfc_status("error", "try again");   break;
             default:
                 break;
             }
@@ -303,7 +303,7 @@ void keypad_ui_task(void *arg)
                 nfc_request_stop();
                 ui = UiState::IDLE;
                 last_nfc = NfcState::off;
-                display_refresh();
+                ui_refresh();
             }
             break;
         }

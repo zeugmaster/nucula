@@ -71,21 +71,21 @@ cashu::Wallet *resolve_wallet(const char *idx_str)
 {
     int count = wallet_store_count();
     if (count == 0) {
-        nucula_console_write("error: no mints configured\r\n");
+        console_print("error: no mints configured\r\n");
         return nullptr;
     }
     if (idx_str && *idx_str) {
         int slot = atoi(idx_str);
         if (slot >= 0 && slot < MAX_MINTS && wallet_store_get(slot))
             return wallet_store_get(slot);
-        nucula_console_write("error: invalid mint index\r\n");
+        console_print("error: invalid mint index\r\n");
         return nullptr;
     }
     if (count == 1) {
         for (int i = 0; i < MAX_MINTS; i++)
             if (wallet_store_get(i)) return wallet_store_get(i);
     }
-    nucula_console_write("error: multiple mints, specify index\r\n");
+    console_print("error: multiple mints, specify index\r\n");
     for (int i = 0; i < MAX_MINTS; i++) {
         if (!wallet_store_get(i)) continue;
         console_printf("  [%d] %s\r\n", i, wallet_store_get(i)->mint_url().c_str());
@@ -102,9 +102,9 @@ bool ensure_active_keyset(cashu::Wallet *w, const std::string &unit,
 {
     if (!w->keysets().empty() && w->active_keyset(unit))
         return true;
-    nucula_console_write("loading keysets...\r\n");
+    console_print("loading keysets...\r\n");
     if (!w->load_keysets()) {
-        nucula_console_write("error: failed to load keysets\r\n");
+        console_print("error: failed to load keysets\r\n");
         return false;
     }
     if (require_active && !w->active_keyset(unit)) {

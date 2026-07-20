@@ -26,7 +26,7 @@ static struct {
     std::vector<command_entry> commands;
 } s_con;
 
-void nucula_console_write(const char *str)
+void console_print(const char *str)
 {
     if (str)
         usb_serial_jtag_write_bytes(str, strlen(str), portMAX_DELAY);
@@ -39,24 +39,24 @@ void console_printf(const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    nucula_console_write(buf);
+    console_print(buf);
 }
 
 static void cmd_help(const char *arg)
 {
     (void)arg;
-    nucula_console_write("\r\nAvailable commands:\r\n");
+    console_print("\r\nAvailable commands:\r\n");
     for (const auto &cmd : s_con.commands) {
-        nucula_console_write("  ");
-        nucula_console_write(cmd.name);
+        console_print("  ");
+        console_print(cmd.name);
         if (cmd.help_text) {
             size_t name_len = strlen(cmd.name);
             for (size_t i = name_len; i < 14; i++)
-                nucula_console_write(" ");
-            nucula_console_write("- ");
-            nucula_console_write(cmd.help_text);
+                console_print(" ");
+            console_print("- ");
+            console_print(cmd.help_text);
         }
-        nucula_console_write("\r\n");
+        console_print("\r\n");
     }
 }
 
@@ -68,9 +68,9 @@ static void process_command(char *cmd, char *arg)
             return;
         }
     }
-    nucula_console_write("unknown command: ");
-    nucula_console_write(cmd);
-    nucula_console_write("\r\ntype 'help' for available commands.\r\n");
+    console_print("unknown command: ");
+    console_print(cmd);
+    console_print("\r\ntype 'help' for available commands.\r\n");
 }
 
 static void parse_and_run(char *line)
@@ -98,7 +98,7 @@ static void console_task(void *arg)
     int pos = 0;
 
     vTaskDelay(pdMS_TO_TICKS(500));
-    nucula_console_write("\r\nnucula> ");
+    console_print("\r\nnucula> ");
 
     // Read in chunks and batch the echo of printable runs: with per-byte
     // reads and a blocking 1-byte echo write each, a full-speed paste of a
@@ -122,22 +122,22 @@ static void console_task(void *arg)
             uint8_t c = buf[i];
             if (c == '\r' || c == '\n') {
                 flush_echo(i);
-                nucula_console_write("\r\n");
+                console_print("\r\n");
                 s_con.line_buffer[pos] = '\0';
                 parse_and_run(s_con.line_buffer);
                 pos = 0;
-                nucula_console_write("nucula> ");
+                console_print("nucula> ");
             } else if (c == 127 || c == '\b') {
                 flush_echo(i);
                 if (pos > 0) {
                     pos--;
-                    nucula_console_write("\b \b");
+                    console_print("\b \b");
                 }
             } else if (c == 0x03) {
                 flush_echo(i);
-                nucula_console_write("^C\r\n");
+                console_print("^C\r\n");
                 pos = 0;
-                nucula_console_write("nucula> ");
+                console_print("nucula> ");
             } else if (pos < (int)s_con.max_line_length - 1) {
                 s_con.line_buffer[pos++] = c;
                 if (echo_from < 0)
