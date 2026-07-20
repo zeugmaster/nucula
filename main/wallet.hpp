@@ -81,7 +81,7 @@ public:
     // Offline-receive queue: tokens stashed when WiFi is down and drained on
     // reconnect. Each entry is a complete cashuA/cashuB token string from one
     // NFC tap (which itself bundles N proofs). Cap is per-wallet, see
-    // PEND_MAX in wallet.cpp.
+    // PEND_MAX in wallet_nvs.cpp.
     bool stash_pending_token(const std::string& raw_token);
     bool list_pending_tokens(std::vector<std::string>& out);
     bool drain_pending_tokens(int& accepted, int& failed);
@@ -141,6 +141,22 @@ public:
     static std::string default_unit();
     static bool set_default_unit(const std::string& unit);
 
+    // Decoded {code, detail} of the last non-200 mint response (NUTs error
+    // code registry), cleared on entry to every network flow. All-zero /
+    // empty means the last failure was transport-level (or there was no
+    // failure) — console error printing relies on that to stay additive.
+    struct MintError {
+        int status = 0;        // HTTP status; 0 = transport failure
+        int code = 0;          // NUT error-code registry value; 0 = none
+        std::string detail;    // mint-provided text; "" = none
+    };
+    const MintError& last_mint_error() const { return last_error_; }
+
+    // On-device happy-path self-test of fee math, proof selection,
+    // per-unit views, and keyset resolution on a throwaway Wallet with
+    // injected state (wallet_selftest.cpp). No NVS, no network.
+    static bool run_tests();
+
     const std::string& mint_url() const { return mint_url_; }
     const std::vector<Keyset>& keysets() const { return keysets_; }
     const std::vector<Proof>& proofs() const { return proofs_; }
@@ -156,6 +172,7 @@ private:
     std::vector<Keyset> keysets_;
     std::vector<Proof> proofs_;
     std::optional<MintInfo> info_;   // NUT-06 cache, RAM only
+    MintError last_error_;
     secp256k1_context* ctx_;
     int nvs_slot_;
 
@@ -163,6 +180,15 @@ private:
     bool load_proofs();
     bool save_keysets();
     bool load_keysets_nvs();
+
+    // Flow plumbing (wallet_flows.cpp). adopt_proofs clears single-use
+    // witnesses, appends to proofs_, and returns the sum; callers persist
+    // and log themselves.
+    int64_t adopt_proofs(std::vector<Proof>& fresh);
+    bool normalize_input_keyset_ids(std::vector<Proof>& inputs);
+    bool verify_forwarded_dleq(const std::vector<Proof>& inputs) const;
+    int  unblind_melt_change(const MeltQuote& resp, const BlindingData& blinding,
+                             const Keyset& ks, const std::string& unit);
     // Returns true when the merge changed anything (new keyset, changed
     // metadata, or newly filled keys) — i.e. when a save is warranted.
     bool merge_keysets(const std::vector<Keyset>& fresh);

@@ -1,4 +1,5 @@
 #include "nfc.hpp"
+#include "task_config.h"
 #include "ndef.hpp"
 #include "cashu.hpp"
 #include "cashu_json.hpp"
@@ -16,6 +17,7 @@
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <freertos/task.h>
 
 #include "nci.h"
@@ -29,6 +31,9 @@ static bool s_hw_init = false;
 static std::atomic<NfcState> s_state{NfcState::off};
 static std::atomic<bool> s_stop_flag{false};
 static TaskHandle_t s_task_handle = nullptr;
+// Given by nfc_task right before it deletes itself; nfc_request_stop
+// blocks on it instead of polling s_task_handle.
+static SemaphoreHandle_t s_task_done = nullptr;
 
 // -------------------------------------------------------------------------
 // Token redemption
@@ -111,8 +116,13 @@ static int redeem_or_stash_token(const std::string &token_str,
 // NDEF write callback
 // -------------------------------------------------------------------------
 
-static volatile bool s_token_received = false;
-static std::string   s_received_token;
+// Single-task hand-off: on_ndef_written runs synchronously inside
+// ndef_handle_apdu on the nfc task itself, so no synchronization is
+// needed — the flag is only ever read after the call that may set it.
+static struct {
+    bool received;
+    std::string token;
+} s_rx;
 
 static void on_ndef_written(const uint8_t *data, size_t len)
 {
@@ -131,53 +141,8 @@ static void on_ndef_written(const uint8_t *data, size_t len)
     }
 
     ESP_LOGI(TAG, "cashu token (%d chars)", (int)token.size());
-    s_received_token = std::move(token);
-    s_token_received = true;
-}
-
-// -------------------------------------------------------------------------
-// NCI helpers
-// -------------------------------------------------------------------------
-
-// Stop and restart RF discovery (called after reader deactivates)
-static void restart_discovery()
-{
-    const uint8_t stop[] = {0x21, 0x06, 0x01, 0x00};
-    if (nci_write(&s_nci, stop, sizeof(stop)) != ESP_OK) {
-        ESP_LOGW(TAG, "restart discovery: deactivate write failed");
-        return;
-    }
-    // Drain responses
-    for (int i = 0; i < 10; i++) {
-        if (nci_wait_for_irq(200)) {
-            if (nci_read(&s_nci, s_nci.rx_buf, &s_nci.rx_len) != ESP_OK)
-                break;
-            if (s_nci.rx_buf[0] == 0x41 && s_nci.rx_buf[1] == 0x06) break;
-        } else break;
-    }
-    if (nci_write(&s_nci, s_nci.discovery_cmd, s_nci.discovery_cmd_len) != ESP_OK) {
-        ESP_LOGW(TAG, "restart discovery: discover write failed");
-        return;
-    }
-    if (nci_wait_for_irq(200))
-        nci_read(&s_nci, s_nci.rx_buf, &s_nci.rx_len);
-}
-
-// Send APDU response wrapped in NCI DATA packet
-static void send_nci_response(const uint8_t *apdu, size_t apdu_len)
-{
-    static uint8_t frame[NCI_MAX_FRAME_SIZE];
-    if (apdu_len > sizeof(frame) - 3) {
-        ESP_LOGE(TAG, "APDU response too large (%d)", (int)apdu_len);
-        return;
-    }
-    frame[0] = 0x00;
-    frame[1] = (apdu_len >> 8) & 0xFF;
-    frame[2] = apdu_len & 0xFF;
-    if (apdu_len > 0)
-        memcpy(&frame[3], apdu, apdu_len);
-    if (nci_write(&s_nci, frame, 3 + apdu_len) != ESP_OK)
-        ESP_LOGW(TAG, "APDU response write failed");
+    s_rx.token = std::move(token);
+    s_rx.received = true;
 }
 
 // -------------------------------------------------------------------------
@@ -221,9 +186,10 @@ static void nfc_task(void *arg)
     if (creq.empty() || !ndef_set_message(creq.c_str())) {
         ESP_LOGE(TAG, "payment request encode/NDEF failed");
         s_state.store(NfcState::error);
-        display_nfc_status("nfc error", "request too large");
+        ui_show_nfc_status("nfc error", "request too large");
         delete params;
         s_task_handle = nullptr;
+        xSemaphoreGive(s_task_done);
         vTaskDelete(nullptr);
         return;
     }
@@ -254,94 +220,97 @@ static void nfc_task(void *arg)
                          params->unit.c_str());
 
     s_state.store(NfcState::waiting);
-    display_nfc_status("tap to pay", amt_str);
+    ui_show_nfc_status("tap to pay", amt_str);
 
     while (!s_stop_flag.load()) {
         // Timeout check
         if ((esp_timer_get_time() - start) > (int64_t)PAYMENT_TIMEOUT_MS * 1000) {
             ESP_LOGW(TAG, "payment timeout");
             s_state.store(NfcState::error);
-            display_nfc_status("nfc timeout", "");
+            ui_show_nfc_status("nfc timeout", "");
             break;
         }
 
         // Poll IRQ with 100 ms window so we can also check stop flag / timeout
-        if (!nci_wait_for_irq(100)) continue;
+        if (!nci_poll_frame(&s_nci, 100)) continue;
 
-        s_nci.rx_len = 0;
-        if (nci_read(&s_nci, s_nci.rx_buf, &s_nci.rx_len) != ESP_OK || s_nci.rx_len == 0)
-            continue;
+        const uint8_t *frame = nci_frame(&s_nci);
+        uint32_t frame_len = nci_frame_len(&s_nci);
+        uint8_t mt  = frame[0];
+        uint8_t oid = frame[1];
 
-        uint8_t mt  = s_nci.rx_buf[0];
-        uint8_t oid = s_nci.rx_buf[1];
+        // CORE_CONN_CREDITS_NTF — flow control, ignore
+        if (mt == (NCI_MT_NTF | NCI_GID_CORE) &&
+            oid == NCI_OID_CORE_CONN_CREDITS) continue;
 
-        // Credits NTF — flow control, ignore
-        if (mt == 0x60 && oid == 0x06) continue;
-
-        // RF_INTF_ACTIVATED_NTF — reader detected
-        if (mt == 0x61 && oid == 0x05) {
+        // Reader detected
+        if (mt == (NCI_MT_NTF | NCI_GID_RF) &&
+            oid == NCI_RF_INTF_ACTIVATED_NTF) {
             ESP_LOGI(TAG, "reader detected");
             s_state.store(NfcState::active);
             ndef_reset_receive();
             continue;
         }
 
-        // RF_DEACTIVATE_NTF — reader removed
-        if (mt == 0x61 && oid == 0x06) {
-            uint8_t dtype = s_nci.rx_len > 3 ? s_nci.rx_buf[3] : 0xFF;
+        // Reader removed
+        if (mt == (NCI_MT_NTF | NCI_GID_RF) && oid == NCI_RF_DEACTIVATE_NTF) {
+            uint8_t dtype = frame_len > 3 ? frame[3] : 0xFF;
             ESP_LOGI(TAG, "reader removed (type=%d)", dtype);
-            if (dtype != 3) restart_discovery();
+            if (dtype != 3 && nci_restart_discovery(&s_nci) != ESP_OK)
+                ESP_LOGW(TAG, "restart discovery failed");
             ndef_reset_receive();
-            if (!s_token_received) {
+            if (!s_rx.received) {
                 s_state.store(NfcState::waiting);
-                display_nfc_status("tap to pay", amt_str);
+                ui_show_nfc_status("tap to pay", amt_str);
             }
             continue;
         }
 
-        // DATA packet — APDU from reader
-        if (mt == 0x00 && oid == 0x00) {
-            uint8_t apdu_len = s_nci.rx_buf[2];
+        // DATA packet (conn 0) — APDU from reader
+        if (mt == NCI_MT_DATA && oid == 0x00) {
+            uint8_t apdu_len = frame[2];
             static uint8_t rsp_buf[NCI_MAX_FRAME_SIZE];
             size_t rsp_len = 0;
 
-            ndef_handle_apdu(&s_nci.rx_buf[3], apdu_len, rsp_buf, &rsp_len);
-            send_nci_response(rsp_buf, rsp_len);
+            ndef_handle_apdu(&frame[3], apdu_len, rsp_buf, &rsp_len);
+            if (nci_send_data(&s_nci, rsp_buf, rsp_len) != ESP_OK)
+                ESP_LOGW(TAG, "APDU response write failed");
 
             // Check if a token arrived via the callback
-            if (s_token_received) {
+            if (s_rx.received) {
                 s_state.store(NfcState::redeeming);
-                display_nfc_status("redeeming...", amt_str);
+                ui_show_nfc_status("redeeming...", amt_str);
 
                 // Show what was actually received (unit may differ from
                 // the request); fall back to the requested amount.
                 char recv_str[32];
                 snprintf(recv_str, sizeof(recv_str), "%s", amt_str);
-                int rc = redeem_or_stash_token(s_received_token,
+                int rc = redeem_or_stash_token(s_rx.token,
                                                params->unit.c_str(),
                                                recv_str, sizeof(recv_str));
                 if (rc == 1) {
                     s_state.store(NfcState::success);
-                    display_nfc_status("paid!", recv_str);
-                    display_refresh();
+                    ui_show_nfc_status("paid!", recv_str);
+                    ui_refresh();
                 } else if (rc == 0) {
                     s_state.store(NfcState::success);
-                    display_nfc_status("queued", recv_str);
-                    display_refresh();
+                    ui_show_nfc_status("queued", recv_str);
+                    ui_refresh();
                 } else {
                     s_state.store(NfcState::error);
-                    display_nfc_status("redeem failed", "");
+                    ui_show_nfc_status("redeem failed", "");
                 }
                 break;
             }
             continue;
         }
 
-        // Discovery RSP / NTF after restart — ignore
-        if ((mt == 0x41 && oid == 0x03) ||
-            (mt == 0x61 && oid == 0x03) ||
-            (mt == 0x60 && oid == 0x07) ||
-            (mt == 0x60 && oid == 0x08)) continue;
+        // Discovery RSP / NTF after restart, core error NTFs — ignore
+        if ((mt == (NCI_MT_RSP | NCI_GID_RF) && oid == NCI_OID_RF_DISCOVER) ||
+            (mt == (NCI_MT_NTF | NCI_GID_RF) && oid == NCI_RF_DISCOVER_NTF) ||
+            (mt == (NCI_MT_NTF | NCI_GID_CORE) &&
+             (oid == NCI_OID_CORE_GENERIC_ERROR ||
+              oid == NCI_OID_CORE_INTERFACE_ERROR))) continue;
 
         ESP_LOGD(TAG, "unhandled NCI: %02X %02X", mt, oid);
     }
@@ -351,6 +320,7 @@ static void nfc_task(void *arg)
     ndef_clear_message();
     delete params;
     s_task_handle = nullptr;
+    xSemaphoreGive(s_task_done);
     vTaskDelete(nullptr);
 }
 
@@ -390,14 +360,24 @@ bool nfc_request_start(int amount, const char *unit, const char *mint_url)
     if (!s_hw_init) return false;
     if (s_task_handle) { ESP_LOGW(TAG, "already running"); return false; }
 
+    if (!s_task_done)
+        s_task_done = xSemaphoreCreateBinary();
+    if (!s_task_done)
+        return false;
+    // Drain a give left by a task that finished on its own (success or
+    // timeout without a stop), so the next stop can't return early.
+    xSemaphoreTake(s_task_done, 0);
+
     auto *p = new NfcRequestParams();
     p->amount = amount;
     p->unit = (unit && unit[0]) ? unit : cashu::Wallet::default_unit();
     if (mint_url) p->mint_url = mint_url;
 
     s_stop_flag.store(false);
-    s_token_received = false;
-    if (xTaskCreate(nfc_task, "nfc", 16384, p, 5, &s_task_handle) != pdPASS) {
+    s_rx.received = false;
+    s_rx.token.clear();
+    if (xTaskCreate(nfc_task, "nfc", NUCULA_TASK_STACK_NFC, p,
+                    NUCULA_TASK_PRIO_NFC, &s_task_handle) != pdPASS) {
         delete p;
         return false;
     }
@@ -407,8 +387,12 @@ bool nfc_request_start(int amount, const char *unit, const char *mint_url)
 void nfc_request_stop()
 {
     s_stop_flag.store(true);
-    for (int i = 0; i < 50 && s_task_handle; i++)
-        vTaskDelay(pdMS_TO_TICKS(100));
+    // The task gives s_task_done just before deleting itself; a stuck task
+    // is abandoned after 5 s as before, but the common case returns as
+    // soon as the task is actually gone instead of on a 100 ms poll grid.
+    if (s_task_handle && s_task_done &&
+        xSemaphoreTake(s_task_done, pdMS_TO_TICKS(5000)) != pdTRUE)
+        ESP_LOGW(TAG, "nfc task did not stop within 5s");
     s_task_handle = nullptr;
     s_state.store(s_hw_init ? NfcState::idle : NfcState::off);
 }
@@ -422,7 +406,6 @@ const char *nfc_status_str()
         case NfcState::idle:      return "idle";
         case NfcState::waiting:   return "waiting";
         case NfcState::active:    return "active";
-        case NfcState::received:  return "received";
         case NfcState::redeeming: return "redeeming";
         case NfcState::success:   return "success";
         case NfcState::error:     return "error";

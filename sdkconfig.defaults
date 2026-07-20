@@ -1,3 +1,8 @@
+# Reference board is the XIAO ESP32-C3; without this a fresh clone builds
+# for the default esp32 target (the pinned target otherwise lives only in
+# the untracked sdkconfig).
+CONFIG_IDF_TARGET="esp32c3"
+
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

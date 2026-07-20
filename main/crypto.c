@@ -461,9 +461,8 @@ static int secp_verify_dleq_unblinded(void *ctx,
 }
 
 /* secp256k1 BDHKE suite. Bound to keyset versions v1 (0x00) and v2 (0x01) by
- * keyset.cpp; the version_byte here advertises the current default (v2). */
+ * keyset.cpp (suite_for_id owns the version -> suite mapping). */
 const cashu_suite_t cashu_suite_secp256k1 = {
-    .version_byte = 0x01,
     .name = "secp256k1",
     .pubkey_len = 33,
     .scalar_len = 32,

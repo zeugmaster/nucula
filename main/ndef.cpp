@@ -58,7 +58,6 @@ static size_t s_ndef_file_len = 0;
 // Incoming receive buffer for UPDATE BINARY
 static uint8_t s_recv_buf[NDEF_MAX_DATA_SIZE];
 static int s_expected_nlen = -1;
-static int64_t s_last_write_time = 0;
 
 static ndef_message_cb_t s_recv_callback;
 
@@ -119,7 +118,6 @@ void ndef_reset_receive()
 {
     memset(s_recv_buf, 0, sizeof(s_recv_buf));
     s_expected_nlen = -1;
-    s_last_write_time = 0;
 }
 
 void ndef_set_receive_callback(ndef_message_cb_t cb)
@@ -299,7 +297,6 @@ bool ndef_handle_apdu(const uint8_t *apdu, size_t apdu_len,
         }
 
         memcpy(s_recv_buf + offset, apdu + 5, lc);
-        s_last_write_time = esp_timer_get_time();
 
         ESP_LOGD(TAG, "UPDATE BINARY off=%d lc=%d", offset, lc);
 

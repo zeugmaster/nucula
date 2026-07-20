@@ -8,7 +8,6 @@ enum class NfcState {
     idle,
     waiting,
     active,
-    received,
     redeeming,
     success,
     error,

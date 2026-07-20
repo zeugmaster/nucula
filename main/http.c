@@ -1,4 +1,5 @@
 #include "http.h"
+#include "task_config.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -261,7 +262,8 @@ void http_prewarm(const char *base_url)
     if (!url)
         return;
     snprintf(url, n, "%s/v1/info", base_url);
-    if (xTaskCreate(prewarm_task, "http_warm", 8192, url, 3, NULL) != pdPASS)
+    if (xTaskCreate(prewarm_task, "http_warm", NUCULA_TASK_STACK_HTTP_WARM, url,
+                    NUCULA_TASK_PRIO_HTTP_WARM, NULL) != pdPASS)
         free(url);
 }
 

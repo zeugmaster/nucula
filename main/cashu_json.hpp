@@ -7,21 +7,17 @@
 namespace cashu {
 
 // Serialize model to cJSON object. Caller owns the returned pointer
-// and must free it with cJSON_Delete().
+// and must free it with cJSON_Delete(). Response-only types (quotes,
+// signatures, tokens) have no encode side: the wallet only ever parses
+// them, and V3/JSON token encoding is legacy-out (V4/CBOR is the live
+// encode path in cashu_cbor).
 cJSON* to_json(const DLEQ& v);
 cJSON* to_json(const BlindedMessage& v);
-cJSON* to_json(const BlindSignature& v);
 cJSON* to_json(const Proof& v);
 cJSON* to_json(const Keyset& v);
-cJSON* to_json(const KeysetInfo& v);
 cJSON* to_json(const SwapRequest& v);
-cJSON* to_json(const SwapResponse& v);
-cJSON* to_json(const MintQuote& v);
 cJSON* to_json(const MintRequest& v);
-cJSON* to_json(const MintResponse& v);
-cJSON* to_json(const MeltQuote& v);
 cJSON* to_json(const MeltRequest& v);
-cJSON* to_json(const Token& v);
 
 // Deserialize model from cJSON object. Returns false if required
 // fields are missing or have wrong types.
@@ -96,11 +92,10 @@ bool cashu_json_run_tests();
 // Blob serialization for NVS persistence
 std::string proofs_to_json(const std::vector<Proof>& proofs);
 bool proofs_from_json(const char* json_str, std::vector<Proof>& out);
-std::string keysets_to_json(const std::vector<Keyset>& keysets);
 bool keysets_from_json(const char* json_str, std::vector<Keyset>& out);
 
-// V3 token serialization: Token <-> "cashuA..." string
-std::string serialize_token_v3(const Token& token);
+// V3 token parsing: "cashuA..." string -> Token (receive-only; the wallet
+// never emits V3 tokens)
 bool deserialize_token_v3(const char* token_str, Token& out);
 
 // Decode either token format by its prefix (cashuB -> V4, cashuA -> V3).

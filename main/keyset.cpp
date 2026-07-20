@@ -6,11 +6,11 @@
 
 #include "cashu_suite.h"
 #include "hex.h"
-#include "esp_log.h"
+#include <esp_log.h>
 
 namespace cashu {
 
-static const char *TAG = "keyset";
+#define TAG "keyset"
 
 static std::string to_lower(std::string s)
 {

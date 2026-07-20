@@ -323,11 +323,6 @@ void display_text(int x, int y, const char *text, int scale)
     display_text_color(x, y, text, COLOR_WHITE, COLOR_BLACK, scale);
 }
 
-void display_text_inv(int x, int y, const char *text, int scale)
-{
-    display_text_color(x, y, text, COLOR_BLACK, COLOR_WHITE, scale);
-}
-
 int display_text_width(const char *text, int scale)
 {
     return (int)strlen(text) * FONT_ADVANCE * scale;

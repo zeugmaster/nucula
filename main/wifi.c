@@ -1,7 +1,9 @@
 #include "wifi.h"
+#include "task_config.h"
 #include "wifi_config.h"
 #include "http.h"
 
+#include <stdatomic.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -17,10 +19,14 @@
 #define FAST_RETRY_COUNT      3
 #define SUPERVISOR_PERIOD_MS  30000
 
-static const char *TAG = "wifi";
+#define TAG "wifi"
+
+// Public resolvers used only when DHCP hands out no DNS server.
+#define WIFI_FALLBACK_DNS_MAIN   "1.1.1.1"
+#define WIFI_FALLBACK_DNS_BACKUP "8.8.8.8"
 static EventGroupHandle_t s_event_group;
 static int s_retry_count;
-static bool s_connected;
+static atomic_bool s_connected;
 
 static void wifi_supervisor_task(void *arg)
 {
@@ -77,13 +83,14 @@ static void event_handler(void *arg, esp_event_base_t base,
         if (dns.ip.u_addr.ip4.addr == 0) {
             esp_netif_dns_info_t main_dns = { .ip.type = ESP_IPADDR_TYPE_V4 };
             esp_netif_dns_info_t backup_dns = { .ip.type = ESP_IPADDR_TYPE_V4 };
-            main_dns.ip.u_addr.ip4.addr   = esp_ip4addr_aton("1.1.1.1");
-            backup_dns.ip.u_addr.ip4.addr = esp_ip4addr_aton("8.8.8.8");
+            main_dns.ip.u_addr.ip4.addr   = esp_ip4addr_aton(WIFI_FALLBACK_DNS_MAIN);
+            backup_dns.ip.u_addr.ip4.addr = esp_ip4addr_aton(WIFI_FALLBACK_DNS_BACKUP);
             esp_netif_set_dns_info(event->esp_netif, ESP_NETIF_DNS_MAIN,
                                    &main_dns);
             esp_netif_set_dns_info(event->esp_netif, ESP_NETIF_DNS_BACKUP,
                                    &backup_dns);
-            ESP_LOGW(TAG, "no DNS from DHCP; using fallback 1.1.1.1 / 8.8.8.8");
+            ESP_LOGW(TAG, "no DNS from DHCP; using fallback "
+                     WIFI_FALLBACK_DNS_MAIN " / " WIFI_FALLBACK_DNS_BACKUP);
         }
 
         s_retry_count = 0;
@@ -139,7 +146,8 @@ esp_err_t wifi_init(void)
     /* 4096: the supervisor also runs http_close_all (TLS teardown) now, and
      * its high-water mark was already down to ~270 bytes at 2048. */
     BaseType_t ok = xTaskCreate(wifi_supervisor_task, "wifi_sup",
-                                4096, NULL, 3, NULL);
+                                NUCULA_TASK_STACK_WIFI_SUP, NULL,
+                                NUCULA_TASK_PRIO_WIFI_SUP, NULL);
     if (ok != pdPASS)
         ESP_LOGE(TAG, "failed to spawn wifi_supervisor_task");
 

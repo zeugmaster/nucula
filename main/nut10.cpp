@@ -3,33 +3,6 @@
 
 namespace cashu {
 
-std::string serialize_nut10_secret(const NUT10Secret& s)
-{
-    cJSON* arr = cJSON_CreateArray();
-    cJSON_AddItemToArray(arr, cJSON_CreateString(s.kind.c_str()));
-
-    cJSON* obj = cJSON_CreateObject();
-    cJSON_AddStringToObject(obj, "nonce", s.nonce.c_str());
-    cJSON_AddStringToObject(obj, "data",  s.data.c_str());
-    if (!s.tags.empty()) {
-        cJSON* tags = cJSON_CreateArray();
-        for (const auto& tag : s.tags) {
-            cJSON* row = cJSON_CreateArray();
-            for (const auto& v : tag)
-                cJSON_AddItemToArray(row, cJSON_CreateString(v.c_str()));
-            cJSON_AddItemToArray(tags, row);
-        }
-        cJSON_AddItemToObject(obj, "tags", tags);
-    }
-    cJSON_AddItemToArray(arr, obj);
-
-    char* str = cJSON_PrintUnformatted(arr);
-    std::string out(str ? str : "");
-    if (str) cJSON_free(str);
-    cJSON_Delete(arr);
-    return out;
-}
-
 bool parse_nut10_secret(const std::string& s, NUT10Secret& out)
 {
     cJSON* root = cJSON_Parse(s.c_str());
