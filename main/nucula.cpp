@@ -114,15 +114,16 @@ extern "C" void app_main(void)
     if (wifi_init() != ESP_OK)
         ESP_LOGE(TAG, "wifi failed, continuing offline");
 
-    // Bring up the interactive console FIRST, while heap is plentiful, so its
-    // USB driver + line buffer always allocate. Command handlers tolerate the
-    // wallets not being ready yet (they null-check wallet_store_get(i)). Initializing
-    // it last starved it once WiFi + every wallet's keysets were loaded.
+    // Reserve the console's allocations FIRST, while heap is plentiful, so
+    // its USB driver + line buffer always succeed. (Initializing it last
+    // starved it once WiFi + every wallet's keysets were loaded.) The
+    // command TASK starts only after wallet_store_init below, so no
+    // handler can ever run against a half-initialized store.
     console_init(NULL);
     commands_wallet_register();
     commands_seed_register();
     commands_system_register();
-    console_start();
+
     secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
     if (!ctx) {
         ESP_LOGE(TAG, "failed to create secp256k1 context");
@@ -139,6 +140,7 @@ extern "C" void app_main(void)
         ESP_LOGE(TAG, "wallet store init failed");
         return;
     }
+    console_start();
 
 #if CONFIG_NUCULA_SELFTEST_ON_BOOT
     crypto_run_tests(ctx);
