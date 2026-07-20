@@ -185,8 +185,12 @@ static esp_err_t perform_with_timeout(const char *url, esp_http_client_method_t 
             esp_http_client_set_header(client, "Content-Type", "application/json");
             esp_http_client_set_post_field(client, post_data, post_len);
         } else {
-            // The handle may have carried a POST before.
+            // The handle may have carried a POST before. Its Content-Length
+            // header persists on the reused handle and prepare_first_line
+            // only skips (not deletes) it for a body-less GET, which would
+            // make the server wait for a body that never comes.
             esp_http_client_delete_header(client, "Content-Type");
+            esp_http_client_delete_header(client, "Content-Length");
             esp_http_client_set_post_field(client, NULL, 0);
         }
 
