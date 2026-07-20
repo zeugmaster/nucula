@@ -81,7 +81,7 @@ public:
     // Offline-receive queue: tokens stashed when WiFi is down and drained on
     // reconnect. Each entry is a complete cashuA/cashuB token string from one
     // NFC tap (which itself bundles N proofs). Cap is per-wallet, see
-    // PEND_MAX in wallet.cpp.
+    // PEND_MAX in wallet_nvs.cpp.
     bool stash_pending_token(const std::string& raw_token);
     bool list_pending_tokens(std::vector<std::string>& out);
     bool drain_pending_tokens(int& accepted, int& failed);
