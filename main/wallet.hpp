@@ -141,6 +141,17 @@ public:
     static std::string default_unit();
     static bool set_default_unit(const std::string& unit);
 
+    // Decoded {code, detail} of the last non-200 mint response (NUTs error
+    // code registry), cleared on entry to every network flow. All-zero /
+    // empty means the last failure was transport-level (or there was no
+    // failure) — console error printing relies on that to stay additive.
+    struct MintError {
+        int status = 0;        // HTTP status; 0 = transport failure
+        int code = 0;          // NUT error-code registry value; 0 = none
+        std::string detail;    // mint-provided text; "" = none
+    };
+    const MintError& last_mint_error() const { return last_error_; }
+
     const std::string& mint_url() const { return mint_url_; }
     const std::vector<Keyset>& keysets() const { return keysets_; }
     const std::vector<Proof>& proofs() const { return proofs_; }
@@ -156,6 +167,7 @@ private:
     std::vector<Keyset> keysets_;
     std::vector<Proof> proofs_;
     std::optional<MintInfo> info_;   // NUT-06 cache, RAM only
+    MintError last_error_;
     secp256k1_context* ctx_;
     int nvs_slot_;
 

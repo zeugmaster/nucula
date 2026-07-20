@@ -185,7 +185,7 @@ static void cmd_receive(const char *arg)
     std::vector<cashu::Proof> received;
     int64_t t0 = esp_timer_get_time();
     if (!w->receive(token, received)) {
-        nucula_console_write("error: receive failed\r\n");
+        print_flow_error(w, "receive failed");
         return;
     }
     long long ms = (esp_timer_get_time() - t0) / 1000;
@@ -358,7 +358,7 @@ static void cmd_invoice(const char *arg)
     nucula_console_write("requesting mint quote...\r\n");
     cashu::MintQuote quote;
     if (!w->request_mint_quote(amount, unit, method, quote)) {
-        nucula_console_write("error: failed to get mint quote\r\n");
+        print_flow_error(w, "failed to get mint quote");
         return;
     }
 
@@ -444,7 +444,7 @@ static void cmd_claim(const char *arg)
 
     nucula_console_write("minting tokens...\r\n");
     if (!w->mint_tokens(quote, claimable)) {
-        nucula_console_write("error: minting failed\r\n");
+        print_flow_error(w, "minting failed");
         return;
     }
 
@@ -489,7 +489,7 @@ static void cmd_melt(const char *arg)
     std::optional<int> req_amount = opts.amount > 0
         ? std::optional<int>(opts.amount) : std::nullopt;
     if (!w->request_melt_quote(request, unit, method, quote, req_amount)) {
-        nucula_console_write("error: failed to get melt quote\r\n");
+        print_flow_error(w, "failed to get melt quote");
         return;
     }
 
@@ -512,7 +512,7 @@ static void cmd_melt(const char *arg)
     nucula_console_write("paying...\r\n");
     int change_amount = 0;
     if (!w->melt_tokens(quote, change_amount)) {
-        nucula_console_write("error: melt failed\r\n");
+        print_flow_error(w, "melt failed");
         return;
     }
 

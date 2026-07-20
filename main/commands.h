@@ -28,6 +28,7 @@ bool print_unit_balances(cashu::Wallet *w, const char *prefix,
 bool ensure_active_keyset(cashu::Wallet *w, const std::string &unit,
                           bool require_active);
 bool split_first_token(const char *arg, std::string &first, CmdOpts &opts);
+void print_flow_error(const cashu::Wallet *w, const char *what);
 
 void commands_wallet_register(void);
 void commands_seed_register(void);

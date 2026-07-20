@@ -98,26 +98,30 @@ bool Wallet::method_supported(bool melt, const std::string& method,
 // -------------------------------------------------------------------------
 
 // Decode a non-200 mint response ({"detail","code"}, see the NUTs error
-// code registry) into one friendly log line. Returns the code, 0 when the
-// body carries none.
-static int log_mint_error(const char* op, const http_response_t& resp)
+// code registry) into a MintError the caller can surface.
+static void decode_mint_error(const http_response_t& resp, Wallet::MintError& out)
 {
-    int code = 0;
-    std::string detail;
+    out.status = resp.status;
+    out.code = 0;
+    out.detail.clear();
     if (resp.body && resp.body_len > 0) {
         cJSON* j = cJSON_ParseWithLength(resp.body, resp.body_len);
         if (j) {
             const cJSON* c = cJSON_GetObjectItemCaseSensitive(j, "code");
             if (cJSON_IsNumber(c))
-                code = c->valueint;
+                out.code = c->valueint;
             const cJSON* d = cJSON_GetObjectItemCaseSensitive(j, "detail");
             if (cJSON_IsString(d) && d->valuestring)
-                detail = d->valuestring;
+                out.detail = d->valuestring;
             cJSON_Delete(j);
         }
     }
+}
+
+static void log_mint_error(const char* op, const Wallet::MintError& e)
+{
     const char* hint = "";
-    switch (code) {
+    switch (e.code) {
         case 11006: hint = " (amount outside mint's min/max)"; break;
         case 11009: hint = " (inputs/outputs of multiple units)"; break;
         case 11010: hint = " (input and output units differ)"; break;
@@ -125,20 +129,22 @@ static int log_mint_error(const char* op, const http_response_t& resp)
         default: break;
     }
     ESP_LOGE(TAG, "%s: mint returned %d code=%d %s%s",
-             op, resp.status, code, detail.c_str(), hint);
-    return code;
+             op, e.status, e.code, e.detail.c_str(), hint);
 }
 
 // -------------------------------------------------------------------------
 // Mint round-trips
 // -------------------------------------------------------------------------
 
-// One mint POST: transport check -> non-200 decode + log line tagged `op`
-// -> deserialize<T>(body). Every flow used to repeat this block verbatim.
-// timeout_ms == 0 uses the client default (melt passes its long timeout).
+// One mint POST: transport check -> non-200 decode into *err_out + log
+// line tagged `op` -> deserialize<T>(body). Every flow used to repeat
+// this block verbatim. timeout_ms == 0 uses the client default (melt
+// passes its long timeout). Transport failures leave *err_out untouched
+// (all-zero from the flow-entry clear = nothing to surface).
 template <typename T>
 static bool mint_post(const char* op, const std::string& url,
-                      const char* body, T& out, int timeout_ms = 0)
+                      const char* body, T& out,
+                      Wallet::MintError* err_out, int timeout_ms = 0)
 {
     http_response_t resp = {};
     esp_err_t err = timeout_ms > 0
@@ -150,7 +156,11 @@ static bool mint_post(const char* op, const std::string& url,
         return false;
     }
     if (resp.status != 200) {
-        log_mint_error(op, resp);
+        Wallet::MintError e;
+        decode_mint_error(resp, e);
+        log_mint_error(op, e);
+        if (err_out)
+            *err_out = std::move(e);
         http_response_free(&resp);
         return false;
     }
@@ -168,7 +178,7 @@ static bool mint_post(const char* op, const std::string& url,
 // the wrong slot is expected, not an error.
 template <typename T>
 static bool mint_get(const char* op, const std::string& url, T& out,
-                     bool quiet = false)
+                     Wallet::MintError* err_out, bool quiet = false)
 {
     http_response_t resp = {};
     esp_err_t err = http_get(url.c_str(), &resp);
@@ -181,10 +191,14 @@ static bool mint_get(const char* op, const std::string& url, T& out,
         return false;
     }
     if (resp.status != 200) {
+        Wallet::MintError e;
+        decode_mint_error(resp, e);
         if (quiet)
             ESP_LOGD(TAG, "%s: mint returned %d", op, resp.status);
         else
-            log_mint_error(op, resp);
+            log_mint_error(op, e);
+        if (err_out)
+            *err_out = std::move(e);
         http_response_free(&resp);
         return false;
     }
@@ -289,6 +303,7 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
                   std::vector<Proof>& new_proofs,
                   std::vector<Proof>& change)
 {
+    last_error_ = {};
     if (inputs.empty()) {
         ESP_LOGE(TAG, "swap: no inputs");
         return false;
@@ -350,7 +365,8 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
     }
 
     SwapResponse swap_resp;
-    if (!mint_post("swap", mint_url_ + "/v1/swap", body.c_str(), swap_resp))
+    if (!mint_post("swap", mint_url_ + "/v1/swap", body.c_str(), swap_resp,
+                   &last_error_))
         return false;
 
     std::vector<Proof> all_proofs;
@@ -386,6 +402,7 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
 
 bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
 {
+    last_error_ = {};
     if (token.proofs.empty()) {
         ESP_LOGE(TAG, "receive: token has no proofs");
         return false;
@@ -524,6 +541,7 @@ bool Wallet::verify_forwarded_dleq(const std::vector<Proof>& inputs) const
 bool Wallet::request_mint_quote(int amount, const std::string& unit,
                                 const std::string& method, MintQuote& quote_out)
 {
+    last_error_ = {};
     // Both strings reach the URL/body — enforce the NUT-04 charset before
     // interpolation (console input flows through here).
     if (!unit_token_valid(unit.c_str()) || !unit_token_valid(method.c_str())) {
@@ -553,7 +571,7 @@ bool Wallet::request_mint_quote(int amount, const std::string& unit,
     }
 
     bool ok = mint_post("mint quote", mint_url_ + "/v1/mint/quote/" + method,
-                        body_str, quote_out);
+                        body_str, quote_out, &last_error_);
     cJSON_free(body_str);
     if (!ok)
         return false;
@@ -574,6 +592,7 @@ bool Wallet::request_mint_quote(int amount, const std::string& unit,
 bool Wallet::check_mint_quote(const std::string& quote_id,
                               const std::string& method, MintQuote& quote_out)
 {
+    last_error_ = {};
     if (!unit_token_valid(method.c_str())) {
         ESP_LOGE(TAG, "check mint quote: invalid method '%s'", method.c_str());
         return false;
@@ -581,7 +600,7 @@ bool Wallet::check_mint_quote(const std::string& quote_id,
 
     if (!mint_get("check mint quote",
                   mint_url_ + "/v1/mint/quote/" + method + "/" + quote_id,
-                  quote_out, /*quiet=*/true))
+                  quote_out, &last_error_, /*quiet=*/true))
         return false;
 
     if (quote_out.method.empty())
@@ -595,6 +614,7 @@ bool Wallet::check_mint_quote(const std::string& quote_id,
 
 bool Wallet::mint_tokens(const MintQuote& quote, int amount)
 {
+    last_error_ = {};
     const std::string unit = quote.unit.empty() ? std::string("sat") : quote.unit;
     const std::string method = quote.method.empty() ? std::string("bolt11")
                                                     : quote.method;
@@ -623,7 +643,7 @@ bool Wallet::mint_tokens(const MintQuote& quote, int amount)
 
     MintResponse mint_resp;
     if (!mint_post("mint", mint_url_ + "/v1/mint/" + method, body.c_str(),
-                   mint_resp))
+                   mint_resp, &last_error_))
         return false;
 
     std::vector<Proof> new_proofs;
@@ -647,6 +667,7 @@ bool Wallet::request_melt_quote(const std::string& request, const std::string& u
                                 const std::string& method, MeltQuote& quote_out,
                                 std::optional<int> amount)
 {
+    last_error_ = {};
     if (!unit_token_valid(unit.c_str()) || !unit_token_valid(method.c_str())) {
         ESP_LOGE(TAG, "melt quote: invalid unit '%s' or method '%s'",
                  unit.c_str(), method.c_str());
@@ -677,7 +698,7 @@ bool Wallet::request_melt_quote(const std::string& request, const std::string& u
     }
 
     bool ok = mint_post("melt quote", mint_url_ + "/v1/melt/quote/" + method,
-                        body_str, quote_out);
+                        body_str, quote_out, &last_error_);
     cJSON_free(body_str);
     if (!ok)
         return false;
@@ -697,6 +718,7 @@ bool Wallet::request_melt_quote(const std::string& request, const std::string& u
 bool Wallet::check_melt_quote(const std::string& quote_id,
                               const std::string& method, MeltQuote& quote_out)
 {
+    last_error_ = {};
     if (!unit_token_valid(method.c_str())) {
         ESP_LOGE(TAG, "check melt quote: invalid method '%s'", method.c_str());
         return false;
@@ -704,7 +726,7 @@ bool Wallet::check_melt_quote(const std::string& quote_id,
 
     if (!mint_get("check melt quote",
                   mint_url_ + "/v1/melt/quote/" + method + "/" + quote_id,
-                  quote_out))
+                  quote_out, &last_error_))
         return false;
 
     if (quote_out.method.empty())
@@ -716,6 +738,7 @@ bool Wallet::check_melt_quote(const std::string& quote_id,
 
 bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
 {
+    last_error_ = {};
     change_amount = 0;
 
     const std::string unit = quote.unit.empty() ? std::string("sat") : quote.unit;
@@ -769,7 +792,7 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
 
     MeltQuote melt_resp;
     if (!mint_post("melt", mint_url_ + "/v1/melt/" + method, body.c_str(),
-                   melt_resp, /*timeout_ms=*/120000))
+                   melt_resp, &last_error_, /*timeout_ms=*/120000))
         return false;
 
     if (melt_resp.state != "PAID" && melt_resp.state != "PENDING") {

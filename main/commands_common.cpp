@@ -128,3 +128,22 @@ bool split_first_token(const char *arg, std::string &first, CmdOpts &opts)
     }
     return true;
 }
+
+// The standard "error: <what>" line plus, when the wallet captured a
+// decoded mint error on this flow, the mint's own explanation. Transport
+// failures (all-zero MintError) print exactly the plain line.
+void print_flow_error(const cashu::Wallet *w, const char *what)
+{
+    console_printf("error: %s\r\n", what);
+    if (!w)
+        return;
+    const cashu::Wallet::MintError &e = w->last_mint_error();
+    if (e.status == 0 && e.code == 0 && e.detail.empty())
+        return;
+    if (!e.detail.empty())
+        console_printf("  mint said: %s (code %d, http %d)\r\n",
+                       e.detail.c_str(), e.code, e.status);
+    else
+        console_printf("  mint returned http %d (code %d)\r\n",
+                       e.status, e.code);
+}
