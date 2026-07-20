@@ -14,6 +14,7 @@
 #include "unit.hpp"
 #include "commands.h"
 #include "console.h"
+#include "selftest.hpp"
 #include "display.h"
 #include "i2c_bus.h"
 #include "nfc.hpp"
@@ -147,6 +148,10 @@ extern "C" void app_main(void)
         ESP_LOGE(TAG, "unit formatter self-test FAILED");
     if (!cashu::cashu_json_run_tests())
         ESP_LOGE(TAG, "quote/mint-info JSON self-test FAILED");
+    if (!nucula_pure_selftests())
+        ESP_LOGE(TAG, "pure codec/math self-test FAILED");
+    if (!cashu::Wallet::run_tests())
+        ESP_LOGE(TAG, "wallet logic self-test FAILED");
 #endif
 
     cashu::Wallet::load_seed();

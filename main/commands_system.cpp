@@ -7,6 +7,7 @@
 #include "cashu_json.hpp"
 #include "crypto.h"
 #include "crypto_test.h"
+#include "selftest.hpp"
 #include "nfc.hpp"
 #include "keypad.h"
 #include "display.h"
@@ -143,6 +144,10 @@ static void cmd_selftest(const char *arg)
     if (!cashu::unit_run_tests())
         ok = false;
     if (!cashu::cashu_json_run_tests())
+        ok = false;
+    if (!nucula_pure_selftests())
+        ok = false;
+    if (!cashu::Wallet::run_tests())
         ok = false;
     console_printf("self-tests %s\r\n", ok ? "PASSED" : "FAILED");
 }

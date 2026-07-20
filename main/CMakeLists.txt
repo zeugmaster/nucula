@@ -2,6 +2,7 @@ idf_component_register(SRCS "nucula.cpp" "commands_common.cpp" "commands_wallet.
                             "cashu_cbor.cpp" "wifi.c" "http.c" "hex.c" "keyset.cpp"
                             "wallet.cpp" "wallet_nvs.cpp" "wallet_identity.cpp"
                             "wallet_keysets.cpp" "wallet_blind.cpp" "wallet_flows.cpp"
+                            "selftest.cpp" "wallet_selftest.cpp"
                             "console.cpp" "display.cpp" "nfc.cpp" "ndef.cpp" "keypad.c" "i2c_bus.c"
                             "bip39.c" "nut10.cpp" "base64url.cpp" "wallet_store.cpp" "ui.cpp"
                             "unit.cpp"

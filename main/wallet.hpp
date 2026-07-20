@@ -152,6 +152,11 @@ public:
     };
     const MintError& last_mint_error() const { return last_error_; }
 
+    // On-device happy-path self-test of fee math, proof selection,
+    // per-unit views, and keyset resolution on a throwaway Wallet with
+    // injected state (wallet_selftest.cpp). No NVS, no network.
+    static bool run_tests();
+
     const std::string& mint_url() const { return mint_url_; }
     const std::vector<Keyset>& keysets() const { return keysets_; }
     const std::vector<Proof>& proofs() const { return proofs_; }
