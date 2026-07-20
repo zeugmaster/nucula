@@ -30,12 +30,11 @@ namespace cashu {
 
 bool Wallet::load_seed()
 {
-    nvs_handle_t handle;
-    if (nvs_open(NVS_NS, NVS_READONLY, &handle) != ESP_OK)
+    Nvs nvs(NVS_READONLY);
+    if (!nvs.ok())
         return false;
     size_t len = 64;
-    esp_err_t err = nvs_get_blob(handle, "seed", s_seed, &len);
-    nvs_close(handle);
+    esp_err_t err = nvs_get_blob(nvs.get(), "seed", s_seed, &len);
     if (err == ESP_OK && len == 64) {
         s_seed_loaded = true;
         ESP_LOGI(TAG, "deterministic seed loaded");
@@ -47,16 +46,15 @@ bool Wallet::load_seed()
 
 bool Wallet::save_seed(const unsigned char seed[64], const char* mnemonic)
 {
-    nvs_handle_t handle;
-    if (nvs_open(NVS_NS, NVS_READWRITE, &handle) != ESP_OK)
+    Nvs nvs(NVS_READWRITE);
+    if (!nvs.ok())
         return false;
 
-    esp_err_t err = nvs_set_blob(handle, "seed", seed, 64);
+    esp_err_t err = nvs_set_blob(nvs.get(), "seed", seed, 64);
     if (err == ESP_OK && mnemonic)
-        err = nvs_set_str(handle, "mnemonic", mnemonic);
+        err = nvs_set_str(nvs.get(), "mnemonic", mnemonic);
     if (err == ESP_OK)
-        err = nvs_commit(handle);
-    nvs_close(handle);
+        err = nvs_commit(nvs.get());
 
     if (err == ESP_OK) {
         memcpy(s_seed, seed, 64);
@@ -72,40 +70,28 @@ bool Wallet::seed_exists()
 {
     if (s_seed_loaded)
         return true;
-    nvs_handle_t handle;
-    if (nvs_open(NVS_NS, NVS_READONLY, &handle) != ESP_OK)
+    Nvs nvs(NVS_READONLY);
+    if (!nvs.ok())
         return false;
     size_t len = 0;
-    esp_err_t err = nvs_get_blob(handle, "seed", NULL, &len);
-    nvs_close(handle);
+    esp_err_t err = nvs_get_blob(nvs.get(), "seed", NULL, &len);
     return err == ESP_OK && len == 64;
 }
 
 bool Wallet::load_mnemonic(std::string& out)
 {
-    nvs_handle_t handle;
-    if (nvs_open(NVS_NS, NVS_READONLY, &handle) != ESP_OK)
-        return false;
-    size_t len = 0;
-    if (nvs_get_str(handle, "mnemonic", NULL, &len) != ESP_OK || len == 0) {
-        nvs_close(handle);
-        return false;
-    }
-    out.resize(len - 1);
-    esp_err_t err = nvs_get_str(handle, "mnemonic", out.data(), &len);
-    nvs_close(handle);
-    return err == ESP_OK;
+    Nvs nvs(NVS_READONLY);
+    return nvs.get_str("mnemonic", out);
 }
 
 bool Wallet::erase_seed()
 {
-    nvs_handle_t handle;
-    if (nvs_open(NVS_NS, NVS_READWRITE, &handle) != ESP_OK)
+    Nvs nvs(NVS_READWRITE);
+    if (!nvs.ok())
         return false;
-    esp_err_t e1 = nvs_erase_key(handle, "seed");
-    esp_err_t e2 = nvs_erase_key(handle, "mnemonic");
-    esp_err_t ec = nvs_commit(handle);
-    nvs_close(handle);
+    esp_err_t e1 = nvs_erase_key(nvs.get(), "seed");
+    esp_err_t e2 = nvs_erase_key(nvs.get(), "mnemonic");
+    esp_err_t ec = nvs_commit(nvs.get());
     memset(s_seed, 0, 64);
     s_seed_loaded = false;
     /* P2PK key is independent of the seed and intentionally retained. */
@@ -136,33 +122,35 @@ bool Wallet::ensure_p2pk_keypair(secp256k1_context* ctx)
     if (s_p2pk_loaded)
         return true;
 
-    nvs_handle_t h;
     bool have_priv = false;
-    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
-        size_t sz = sizeof(s_p2pk_priv);
-        if (nvs_get_blob(h, "p2pk_priv", s_p2pk_priv, &sz) == ESP_OK && sz == 32) {
-            have_priv = true;
-        }
-        if (!have_priv) {
-            /* Generate fresh: random 32 bytes that satisfy
-             * secp256k1_ec_seckey_verify (in [1, n-1]). Retry on the
-             * vanishingly unlikely failure. */
-            for (int tries = 0; tries < 8 && !have_priv; tries++) {
-                esp_fill_random(s_p2pk_priv, 32);
-                if (secp256k1_ec_seckey_verify(ctx, s_p2pk_priv))
-                    have_priv = true;
+    {
+        Nvs nvs(NVS_READWRITE);
+        if (nvs.ok()) {
+            size_t sz = sizeof(s_p2pk_priv);
+            if (nvs_get_blob(nvs.get(), "p2pk_priv", s_p2pk_priv, &sz) == ESP_OK
+                && sz == 32) {
+                have_priv = true;
             }
-            if (have_priv) {
-                if (nvs_set_blob(h, "p2pk_priv", s_p2pk_priv, 32) != ESP_OK ||
-                    nvs_commit(h) != ESP_OK) {
-                    ESP_LOGE(TAG, "p2pk: nvs persist failed");
-                    have_priv = false;
-                } else {
-                    ESP_LOGI(TAG, "p2pk: generated and persisted new keypair");
+            if (!have_priv) {
+                /* Generate fresh: random 32 bytes that satisfy
+                 * secp256k1_ec_seckey_verify (in [1, n-1]). Retry on the
+                 * vanishingly unlikely failure. */
+                for (int tries = 0; tries < 8 && !have_priv; tries++) {
+                    esp_fill_random(s_p2pk_priv, 32);
+                    if (secp256k1_ec_seckey_verify(ctx, s_p2pk_priv))
+                        have_priv = true;
+                }
+                if (have_priv) {
+                    if (nvs_set_blob(nvs.get(), "p2pk_priv", s_p2pk_priv, 32) != ESP_OK ||
+                        nvs_commit(nvs.get()) != ESP_OK) {
+                        ESP_LOGE(TAG, "p2pk: nvs persist failed");
+                        have_priv = false;
+                    } else {
+                        ESP_LOGI(TAG, "p2pk: generated and persisted new keypair");
+                    }
                 }
             }
         }
-        nvs_close(h);
     }
 
     if (!have_priv) {
@@ -211,29 +199,24 @@ static void counter_key(char* buf, size_t sz, const std::string& keyset_id)
 
 uint32_t Wallet::load_counter(const std::string& keyset_id)
 {
-    nvs_handle_t handle;
-    if (nvs_open(NVS_NS, NVS_READONLY, &handle) != ESP_OK)
+    Nvs nvs(NVS_READONLY);
+    if (!nvs.ok())
         return 0;
     char key[16];
     counter_key(key, sizeof(key), keyset_id);
     uint32_t val = 0;
-    nvs_get_u32(handle, key, &val);
-    nvs_close(handle);
+    nvs_get_u32(nvs.get(), key, &val);
     return val;
 }
 
 bool Wallet::save_counter(const std::string& keyset_id, uint32_t counter)
 {
-    nvs_handle_t handle;
-    if (nvs_open(NVS_NS, NVS_READWRITE, &handle) != ESP_OK)
+    Nvs nvs(NVS_READWRITE);
+    if (!nvs.ok())
         return false;
     char key[16];
     counter_key(key, sizeof(key), keyset_id);
-    esp_err_t err = nvs_set_u32(handle, key, counter);
-    if (err == ESP_OK)
-        err = nvs_commit(handle);
-    nvs_close(handle);
-    return err == ESP_OK;
+    return nvs_set_u32(nvs.get(), key, counter) == ESP_OK && nvs.commit();
 }
 
 // -------------------------------------------------------------------------
@@ -247,14 +230,10 @@ std::string Wallet::default_unit()
 {
     if (!s_default_unit_loaded) {
         s_default_unit = "sat";
-        nvs_handle_t handle;
-        if (nvs_open(NVS_NS, NVS_READONLY, &handle) == ESP_OK) {
-            char buf[32] = {};
-            size_t len = sizeof(buf);
-            if (nvs_get_str(handle, "def_unit", buf, &len) == ESP_OK && buf[0])
-                s_default_unit = buf;
-            nvs_close(handle);
-        }
+        Nvs nvs(NVS_READONLY);
+        std::string stored;
+        if (nvs.get_str("def_unit", stored) && !stored.empty())
+            s_default_unit = stored;
         s_default_unit_loaded = true;
     }
     return s_default_unit;
@@ -264,14 +243,11 @@ bool Wallet::set_default_unit(const std::string& unit)
 {
     if (unit.empty() || unit.size() > 31)
         return false;
-    nvs_handle_t handle;
-    if (nvs_open(NVS_NS, NVS_READWRITE, &handle) != ESP_OK)
+    Nvs nvs(NVS_READWRITE);
+    if (!nvs.ok())
         return false;
-    esp_err_t err = nvs_set_str(handle, "def_unit", unit.c_str());
-    if (err == ESP_OK)
-        err = nvs_commit(handle);
-    nvs_close(handle);
-    if (err != ESP_OK)
+    if (nvs_set_str(nvs.get(), "def_unit", unit.c_str()) != ESP_OK
+        || !nvs.commit())
         return false;
     s_default_unit = unit;
     s_default_unit_loaded = true;
