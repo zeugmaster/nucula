@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <esp_system.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <freertos/task.h>
 
 #include <string>
@@ -21,6 +22,22 @@
 // Screens
 // -------------------------------------------------------------------------
 
+// Four tasks compose frames (console handlers, keypad UI, nfc task, wifi
+// drain) and the framebuffer in display.cpp has no lock of its own, so
+// every compose+display_update below runs under this mutex. Recursive:
+// nothing nests today, but a screen helper calling another must not
+// deadlock. Function-local static so creation is thread-safe.
+static SemaphoreHandle_t ui_mutex()
+{
+    static SemaphoreHandle_t m = xSemaphoreCreateRecursiveMutex();
+    return m;
+}
+
+struct UiLock {
+    UiLock()  { xSemaphoreTakeRecursive(ui_mutex(), portMAX_DELAY); }
+    ~UiLock() { xSemaphoreGiveRecursive(ui_mutex()); }
+};
+
 static void draw_title_bar(const char *right_label)
 {
     display_fill_rect(0, 0, LCD_W, 9, COLOR_WHITE);
@@ -33,6 +50,7 @@ static void draw_title_bar(const char *right_label)
 
 void ui_show_nfc_status(const char *line1, const char *line2)
 {
+    UiLock lock;
     display_clear();
     draw_title_bar("nfc");
 
@@ -71,6 +89,7 @@ void ui_refresh()
     if (!wallet_store_try_lock(100))
         return;
 
+    UiLock lock;
     display_clear();
 
     // ---- Title bar ----
@@ -182,6 +201,7 @@ void ui_refresh()
 // 123 with usd shows 1.23), * / # hints at the bottom.
 static void show_amount_entry(const char *digits, const char *unit)
 {
+    UiLock lock;
     display_clear();
     draw_title_bar("amount");
 
