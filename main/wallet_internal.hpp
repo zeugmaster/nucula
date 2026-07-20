@@ -17,4 +17,9 @@ inline constexpr const char* NVS_NS = "wallet";
 // beyond it, load_keysets caps what the mint advertises.
 inline constexpr int MAX_KEYSETS = 10;
 
+// NUT-08: blank change outputs needed to cover any change up to
+// max_change, i.e. ceil(log2(max_change + 1)). Defined in
+// wallet_flows.cpp; pure, exposed here for the self-tests.
+int blank_output_count(int max_change);
+
 } // namespace cashu

@@ -163,6 +163,15 @@ private:
     bool load_proofs();
     bool save_keysets();
     bool load_keysets_nvs();
+
+    // Flow plumbing (wallet_flows.cpp). adopt_proofs clears single-use
+    // witnesses, appends to proofs_, and returns the sum; callers persist
+    // and log themselves.
+    int64_t adopt_proofs(std::vector<Proof>& fresh);
+    bool normalize_input_keyset_ids(std::vector<Proof>& inputs);
+    bool verify_forwarded_dleq(const std::vector<Proof>& inputs) const;
+    int  unblind_melt_change(const MeltQuote& resp, const BlindingData& blinding,
+                             const Keyset& ks, const std::string& unit);
     // Returns true when the merge changed anything (new keyset, changed
     // metadata, or newly filled keys) — i.e. when a save is warranted.
     bool merge_keysets(const std::vector<Keyset>& fresh);

@@ -130,6 +130,158 @@ static int log_mint_error(const char* op, const http_response_t& resp)
 }
 
 // -------------------------------------------------------------------------
+// Mint round-trips
+// -------------------------------------------------------------------------
+
+// One mint POST: transport check -> non-200 decode + log line tagged `op`
+// -> deserialize<T>(body). Every flow used to repeat this block verbatim.
+// timeout_ms == 0 uses the client default (melt passes its long timeout).
+template <typename T>
+static bool mint_post(const char* op, const std::string& url,
+                      const char* body, T& out, int timeout_ms = 0)
+{
+    http_response_t resp = {};
+    esp_err_t err = timeout_ms > 0
+        ? http_post_json_timeout(url.c_str(), body, &resp, timeout_ms)
+        : http_post_json(url.c_str(), body, &resp);
+    if (err != ESP_OK || !resp.body) {
+        ESP_LOGE(TAG, "%s POST failed: %s", op, esp_err_to_name(err));
+        http_response_free(&resp);
+        return false;
+    }
+    if (resp.status != 200) {
+        log_mint_error(op, resp);
+        http_response_free(&resp);
+        return false;
+    }
+    bool ok = deserialize(resp.body, out);
+    http_response_free(&resp);
+    if (!ok) {
+        ESP_LOGE(TAG, "%s: failed to parse response", op);
+        return false;
+    }
+    return true;
+}
+
+// GET counterpart. `quiet` drops all failure logging to DEBUG:
+// check_mint_quote probes every mint slot during `claim`, so a miss on
+// the wrong slot is expected, not an error.
+template <typename T>
+static bool mint_get(const char* op, const std::string& url, T& out,
+                     bool quiet = false)
+{
+    http_response_t resp = {};
+    esp_err_t err = http_get(url.c_str(), &resp);
+    if (err != ESP_OK || !resp.body) {
+        if (quiet)
+            ESP_LOGD(TAG, "%s GET failed: %s", op, esp_err_to_name(err));
+        else
+            ESP_LOGE(TAG, "%s GET failed: %s", op, esp_err_to_name(err));
+        http_response_free(&resp);
+        return false;
+    }
+    if (resp.status != 200) {
+        if (quiet)
+            ESP_LOGD(TAG, "%s: mint returned %d", op, resp.status);
+        else
+            log_mint_error(op, resp);
+        http_response_free(&resp);
+        return false;
+    }
+    bool ok = deserialize(resp.body, out);
+    http_response_free(&resp);
+    if (!ok) {
+        if (quiet)
+            ESP_LOGD(TAG, "%s: failed to parse response", op);
+        else
+            ESP_LOGE(TAG, "%s: failed to parse response", op);
+        return false;
+    }
+    return true;
+}
+
+// -------------------------------------------------------------------------
+// Proof plumbing shared by the flows
+// -------------------------------------------------------------------------
+
+// Outgoing inputs never carry their DLEQ (the mint already knows its own
+// signatures; forwarding `r` would be pointless). Witnesses ride along.
+static std::vector<Proof> strip_dleq_for_send(const std::vector<Proof>& in)
+{
+    std::vector<Proof> out;
+    out.reserve(in.size());
+    for (const auto& p : in)
+        out.push_back(Proof{p.id, p.amount, p.secret, p.C,
+                            std::nullopt, p.witness});
+    return out;
+}
+
+// NUT-11: any input whose secret is a P2PK structured secret locked to
+// our pubkey gets a witness signature attached. Inputs locked to someone
+// else are refused; unlocked inputs are a no-op (parse_nut10_secret
+// returns false on raw-hex secrets).
+static bool attach_p2pk_witnesses(secp256k1_context* ctx,
+                                  std::vector<Proof>& inputs)
+{
+    for (auto& p : inputs) {
+        NUT10Secret ns;
+        if (!parse_nut10_secret(p.secret, ns)) continue;
+        if (ns.kind != "P2PK") continue;
+        const unsigned char* priv = Wallet::p2pk_privkey();
+        if (!priv || ns.data != std::string(Wallet::p2pk_pubkey_hex())) {
+            ESP_LOGE(TAG, "swap: input locked to %s, refusing", ns.data.c_str());
+            return false;
+        }
+        unsigned char sig[64];
+        if (!cashu_schnorr_sign_secret(ctx, priv,
+                                       (const unsigned char*)p.secret.c_str(),
+                                       p.secret.size(), sig)) {
+            ESP_LOGE(TAG, "swap: schnorr sign failed");
+            return false;
+        }
+        char sig_hex[129];
+        bytes_to_hex(sig, 64, sig_hex);
+
+        cJSON* witness = cJSON_CreateObject();
+        cJSON* arr = cJSON_CreateArray();
+        cJSON_AddItemToArray(arr, cJSON_CreateString(sig_hex));
+        cJSON_AddItemToObject(witness, "signatures", arr);
+        char* w = cJSON_PrintUnformatted(witness);
+        p.witness = std::string(w ? w : "");
+        if (w) cJSON_free(w);
+        cJSON_Delete(witness);
+    }
+    return true;
+}
+
+// Take ownership of freshly unblinded proofs: clear the single-use
+// witnesses (DLEQ stays so the proof can be forwarded, NUT-12 Carol-mode),
+// append to proofs_, return their sum. Callers keep their own
+// save_proofs() call and log line.
+int64_t Wallet::adopt_proofs(std::vector<Proof>& fresh)
+{
+    int64_t sum = 0;
+    for (auto& p : fresh) {
+        p.witness = std::nullopt;
+        sum += p.amount;
+        proofs_.push_back(p);
+    }
+    return sum;
+}
+
+// NUT-08: blank change outputs needed to cover any change up to
+// max_change, i.e. ceil(log2(max_change + 1)).
+int blank_output_count(int max_change)
+{
+    int n = 0;
+    while (max_change > 0) {
+        n++;
+        max_change >>= 1;
+    }
+    return n;
+}
+
+// -------------------------------------------------------------------------
 // Swap (NUT-03)
 // -------------------------------------------------------------------------
 
@@ -186,41 +338,9 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
     if (!generate_outputs(combined, ks->id, blinding))
         return false;
 
-    // Strip DLEQ from inputs before sending
-    std::vector<Proof> stripped;
-    for (const auto& p : inputs)
-        stripped.push_back(Proof{p.id, p.amount, p.secret, p.C, std::nullopt, p.witness});
-
-    // NUT-11: any input whose secret is a P2PK structured secret locked to
-    // our pubkey gets a witness signature attached. Unlocked inputs are a
-    // no-op (parse_nut10_secret returns false on raw-hex secrets).
-    for (auto& p : stripped) {
-        NUT10Secret ns;
-        if (!parse_nut10_secret(p.secret, ns)) continue;
-        if (ns.kind != "P2PK") continue;
-        if (!s_p2pk_loaded || ns.data != std::string(s_p2pk_pub_hex)) {
-            ESP_LOGE(TAG, "swap: input locked to %s, refusing", ns.data.c_str());
-            return false;
-        }
-        unsigned char sig[64];
-        if (!cashu_schnorr_sign_secret(ctx_, s_p2pk_priv,
-                                       (const unsigned char*)p.secret.c_str(),
-                                       p.secret.size(), sig)) {
-            ESP_LOGE(TAG, "swap: schnorr sign failed");
-            return false;
-        }
-        char sig_hex[129];
-        bytes_to_hex(sig, 64, sig_hex);
-
-        cJSON* witness = cJSON_CreateObject();
-        cJSON* arr = cJSON_CreateArray();
-        cJSON_AddItemToArray(arr, cJSON_CreateString(sig_hex));
-        cJSON_AddItemToObject(witness, "signatures", arr);
-        char* w = cJSON_PrintUnformatted(witness);
-        p.witness = std::string(w ? w : "");
-        if (w) cJSON_free(w);
-        cJSON_Delete(witness);
-    }
+    std::vector<Proof> stripped = strip_dleq_for_send(inputs);
+    if (!attach_p2pk_witnesses(ctx_, stripped))
+        return false;
 
     SwapRequest req{stripped, blinding.outputs};
     std::string body = serialize(req);
@@ -229,28 +349,9 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
         return false;
     }
 
-    std::string url = mint_url_ + "/v1/swap";
-    http_response_t resp = {};
-    esp_err_t err = http_post_json(url.c_str(), body.c_str(), &resp);
-    if (err != ESP_OK || !resp.body) {
-        ESP_LOGE(TAG, "swap POST failed: %s", esp_err_to_name(err));
-        http_response_free(&resp);
-        return false;
-    }
-
-    if (resp.status != 200) {
-        log_mint_error("swap", resp);
-        http_response_free(&resp);
-        return false;
-    }
-
     SwapResponse swap_resp;
-    bool parsed = deserialize(resp.body, swap_resp);
-    http_response_free(&resp);
-    if (!parsed) {
-        ESP_LOGE(TAG, "swap: failed to parse response");
+    if (!mint_post("swap", mint_url_ + "/v1/swap", body.c_str(), swap_resp))
         return false;
-    }
 
     std::vector<Proof> all_proofs;
     if (!unblind_signatures(swap_resp.signatures, blinding, *ks, all_proofs))
@@ -290,32 +391,9 @@ bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
         return false;
     }
 
-    // Copy proofs and normalize their (possibly short-form) keyset ids to our
-    // stored full ids, so DLEQ checks and the swap can locate the keyset and
-    // the mint receives full ids in the request. Refresh from the mint once if
-    // a keyset is unknown.
     std::vector<Proof> inputs = token.proofs;
-    for (int attempt = 0; attempt < 2; ++attempt) {
-        bool unknown = false;
-        for (auto& p : inputs) {
-            bool amb = false;
-            const Keyset* ks = resolve_keyset(keysets_, p.id, &amb);
-            if (amb) {
-                ESP_LOGE(TAG, "receive: ambiguous keyset id %.16s", p.id.c_str());
-                return false;
-            }
-            if (!ks) { unknown = true; continue; }
-            p.id = ks->id;  // normalize to the full stored id
-        }
-        if (!unknown) break;
-        if (attempt == 0) {
-            ESP_LOGW(TAG, "receive: unknown keyset, refreshing from mint");
-            load_keysets();
-            continue;
-        }
-        ESP_LOGE(TAG, "receive: unknown keyset id (after refresh)");
+    if (!normalize_input_keyset_ids(inputs))
         return false;
-    }
 
     // Unit checks: all proofs must share one unit (mint error 11009) and
     // the token's declared unit must match the keyset-resolved one (11010).
@@ -333,10 +411,61 @@ bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
         return false;
     }
 
-    // NUT-12 (Carol-side): if a transferred proof carries a DLEQ with the
-    // sender's blinding factor `r`, verify it against the keyset's pubkey for
-    // that amount before swapping. A missing DLEQ is allowed (warn only) since
-    // senders are not required to forward it.
+    if (!verify_forwarded_dleq(inputs))
+        return false;
+
+    std::vector<Proof> new_proofs, change;
+    if (!swap(inputs, -1, new_proofs, change))
+        return false;
+
+    // All proofs go to us (no specific send amount)
+    proofs_out.clear();
+    proofs_out.insert(proofs_out.end(), new_proofs.begin(), new_proofs.end());
+    proofs_out.insert(proofs_out.end(), change.begin(), change.end());
+
+    int64_t got = adopt_proofs(proofs_out);
+
+    char amt[48];
+    format_amount(amt, sizeof(amt), got, unit.c_str());
+    ESP_LOGI(TAG, "received %s (%d proofs)", amt, (int)proofs_out.size());
+    save_proofs();
+    return true;
+}
+
+// Normalize (possibly short-form) keyset ids on received proofs to our
+// stored full ids, so DLEQ checks and the swap can locate the keyset and
+// the mint receives full ids in the request. Refresh from the mint once
+// if a keyset is unknown.
+bool Wallet::normalize_input_keyset_ids(std::vector<Proof>& inputs)
+{
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        bool unknown = false;
+        for (auto& p : inputs) {
+            bool amb = false;
+            const Keyset* ks = resolve_keyset(keysets_, p.id, &amb);
+            if (amb) {
+                ESP_LOGE(TAG, "receive: ambiguous keyset id %.16s", p.id.c_str());
+                return false;
+            }
+            if (!ks) { unknown = true; continue; }
+            p.id = ks->id;  // normalize to the full stored id
+        }
+        if (!unknown) return true;
+        if (attempt == 0) {
+            ESP_LOGW(TAG, "receive: unknown keyset, refreshing from mint");
+            load_keysets();
+        }
+    }
+    ESP_LOGE(TAG, "receive: unknown keyset id (after refresh)");
+    return false;
+}
+
+// NUT-12 (Carol-side): if a transferred proof carries a DLEQ with the
+// sender's blinding factor `r`, verify it against the keyset's pubkey for
+// that amount before swapping. A missing DLEQ is allowed (warn only)
+// since senders are not required to forward it.
+bool Wallet::verify_forwarded_dleq(const std::vector<Proof>& inputs) const
+{
     for (size_t i = 0; i < inputs.size(); i++) {
         const auto& p = inputs[i];
         if (!p.dleq || !p.dleq->r) {
@@ -385,28 +514,6 @@ bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
             return false;
         }
     }
-
-    std::vector<Proof> new_proofs, change;
-    if (!swap(inputs, -1, new_proofs, change))
-        return false;
-
-    // All proofs go to us (no specific send amount)
-    proofs_out.clear();
-    proofs_out.insert(proofs_out.end(), new_proofs.begin(), new_proofs.end());
-    proofs_out.insert(proofs_out.end(), change.begin(), change.end());
-
-    // Witnesses are single-use and don't survive a swap. DLEQ is preserved
-    // so the proof can be forwarded later (NUT-12 Carol-mode).
-    for (auto& p : proofs_out)
-        p.witness = std::nullopt;
-
-    for (const auto& p : proofs_out)
-        proofs_.push_back(p);
-
-    char amt[48];
-    format_amount(amt, sizeof(amt), proofs_sum(proofs_out), unit.c_str());
-    ESP_LOGI(TAG, "received %s (%d proofs)", amt, (int)proofs_out.size());
-    save_proofs();
     return true;
 }
 
@@ -445,28 +552,11 @@ bool Wallet::request_mint_quote(int amount, const std::string& unit,
         return false;
     }
 
-    std::string url = mint_url_ + "/v1/mint/quote/" + method;
-    http_response_t resp = {};
-    esp_err_t err = http_post_json(url.c_str(), body_str, &resp);
+    bool ok = mint_post("mint quote", mint_url_ + "/v1/mint/quote/" + method,
+                        body_str, quote_out);
     cJSON_free(body_str);
-
-    if (err != ESP_OK || !resp.body) {
-        ESP_LOGE(TAG, "mint quote POST failed: %s", esp_err_to_name(err));
-        http_response_free(&resp);
+    if (!ok)
         return false;
-    }
-    if (resp.status != 200) {
-        log_mint_error("mint quote", resp);
-        http_response_free(&resp);
-        return false;
-    }
-
-    bool ok = deserialize(resp.body, quote_out);
-    http_response_free(&resp);
-    if (!ok) {
-        ESP_LOGE(TAG, "mint quote: failed to parse response");
-        return false;
-    }
 
     // Stamp what we asked for when the mint omits the echo, so mint_tokens
     // targets the right keyset and endpoint.
@@ -489,27 +579,10 @@ bool Wallet::check_mint_quote(const std::string& quote_id,
         return false;
     }
 
-    std::string url = mint_url_ + "/v1/mint/quote/" + method + "/" + quote_id;
-    http_response_t resp = {};
-    esp_err_t err = http_get(url.c_str(), &resp);
-
-    if (err != ESP_OK || !resp.body) {
-        ESP_LOGD(TAG, "check mint quote GET failed: %s", esp_err_to_name(err));
-        http_response_free(&resp);
+    if (!mint_get("check mint quote",
+                  mint_url_ + "/v1/mint/quote/" + method + "/" + quote_id,
+                  quote_out, /*quiet=*/true))
         return false;
-    }
-    if (resp.status != 200) {
-        ESP_LOGD(TAG, "check mint quote: mint returned %d", resp.status);
-        http_response_free(&resp);
-        return false;
-    }
-
-    bool ok = deserialize(resp.body, quote_out);
-    http_response_free(&resp);
-    if (!ok) {
-        ESP_LOGD(TAG, "check mint quote: failed to parse response");
-        return false;
-    }
 
     if (quote_out.method.empty())
         quote_out.method = method;
@@ -548,41 +621,19 @@ bool Wallet::mint_tokens(const MintQuote& quote, int amount)
         return false;
     }
 
-    std::string url = mint_url_ + "/v1/mint/" + method;
-    http_response_t resp = {};
-    esp_err_t err = http_post_json(url.c_str(), body.c_str(), &resp);
-    if (err != ESP_OK || !resp.body) {
-        ESP_LOGE(TAG, "mint POST failed: %s", esp_err_to_name(err));
-        http_response_free(&resp);
-        return false;
-    }
-    if (resp.status != 200) {
-        log_mint_error("mint", resp);
-        http_response_free(&resp);
-        return false;
-    }
-
     MintResponse mint_resp;
-    bool parsed = deserialize(resp.body, mint_resp);
-    http_response_free(&resp);
-    if (!parsed) {
-        ESP_LOGE(TAG, "mint: failed to parse response");
+    if (!mint_post("mint", mint_url_ + "/v1/mint/" + method, body.c_str(),
+                   mint_resp))
         return false;
-    }
 
     std::vector<Proof> new_proofs;
     if (!unblind_signatures(mint_resp.signatures, blinding, *ks, new_proofs))
         return false;
 
-    // Witnesses are single-use; DLEQ stays so the proof can be forwarded.
-    for (auto& p : new_proofs)
-        p.witness = std::nullopt;
-
-    for (const auto& p : new_proofs)
-        proofs_.push_back(p);
+    int64_t got = adopt_proofs(new_proofs);
 
     char amt[48];
-    format_amount(amt, sizeof(amt), proofs_sum(new_proofs), unit.c_str());
+    format_amount(amt, sizeof(amt), got, unit.c_str());
     ESP_LOGI(TAG, "minted %s (%d proofs)", amt, (int)new_proofs.size());
     save_proofs();
     return true;
@@ -625,28 +676,11 @@ bool Wallet::request_melt_quote(const std::string& request, const std::string& u
         return false;
     }
 
-    std::string url = mint_url_ + "/v1/melt/quote/" + method;
-    http_response_t resp = {};
-    esp_err_t err = http_post_json(url.c_str(), body_str, &resp);
+    bool ok = mint_post("melt quote", mint_url_ + "/v1/melt/quote/" + method,
+                        body_str, quote_out);
     cJSON_free(body_str);
-
-    if (err != ESP_OK || !resp.body) {
-        ESP_LOGE(TAG, "melt quote POST failed: %s", esp_err_to_name(err));
-        http_response_free(&resp);
+    if (!ok)
         return false;
-    }
-    if (resp.status != 200) {
-        log_mint_error("melt quote", resp);
-        http_response_free(&resp);
-        return false;
-    }
-
-    bool ok = deserialize(resp.body, quote_out);
-    http_response_free(&resp);
-    if (!ok) {
-        ESP_LOGE(TAG, "melt quote: failed to parse response");
-        return false;
-    }
 
     if (quote_out.unit.empty())
         quote_out.unit = unit;
@@ -668,28 +702,10 @@ bool Wallet::check_melt_quote(const std::string& quote_id,
         return false;
     }
 
-    std::string url = mint_url_ + "/v1/melt/quote/" + method + "/" + quote_id;
-    http_response_t resp = {};
-    esp_err_t err = http_get(url.c_str(), &resp);
-
-    if (err != ESP_OK || !resp.body) {
-        ESP_LOGE(TAG, "check melt quote GET failed: %s", esp_err_to_name(err));
-        http_response_free(&resp);
+    if (!mint_get("check melt quote",
+                  mint_url_ + "/v1/melt/quote/" + method + "/" + quote_id,
+                  quote_out))
         return false;
-    }
-    if (resp.status != 200) {
-        ESP_LOGE(TAG, "check melt quote: mint returned %d: %.*s",
-                 resp.status, (int)resp.body_len, resp.body);
-        http_response_free(&resp);
-        return false;
-    }
-
-    bool ok = deserialize(resp.body, quote_out);
-    http_response_free(&resp);
-    if (!ok) {
-        ESP_LOGE(TAG, "check melt quote: failed to parse response");
-        return false;
-    }
 
     if (quote_out.method.empty())
         quote_out.method = method;
@@ -730,16 +746,8 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
     int max_change = input_sum - quote.amount - input_fee;
     if (max_change < 0) max_change = 0;
 
-    // Generate blank outputs for change (amount=0, mint assigns values)
-    int n_blank = 0;
-    if (max_change > 0) {
-        int tmp = max_change;
-        while (tmp > 0) {
-            n_blank++;
-            tmp >>= 1;
-        }
-    }
-
+    // NUT-08 blank outputs for change (amount=0, mint assigns values)
+    int n_blank = blank_output_count(max_change);
     BlindingData change_blinding;
     if (n_blank > 0) {
         std::vector<int> blank_amounts(n_blank, 0);
@@ -747,14 +755,9 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
             return false;
     }
 
-    // Strip DLEQ from inputs
-    std::vector<Proof> stripped;
-    for (const auto& p : selected)
-        stripped.push_back(Proof{p.id, p.amount, p.secret, p.C, std::nullopt, p.witness});
-
     MeltRequest req;
     req.quote = quote.quote;
-    req.inputs = stripped;
+    req.inputs = strip_dleq_for_send(selected);
     if (n_blank > 0)
         req.outputs = change_blinding.outputs;
 
@@ -764,27 +767,10 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
         return false;
     }
 
-    std::string url = mint_url_ + "/v1/melt/" + method;
-    http_response_t resp = {};
-    esp_err_t err = http_post_json_timeout(url.c_str(), body.c_str(), &resp, 120000);
-    if (err != ESP_OK || !resp.body) {
-        ESP_LOGE(TAG, "melt POST failed: %s", esp_err_to_name(err));
-        http_response_free(&resp);
-        return false;
-    }
-    if (resp.status != 200) {
-        log_mint_error("melt", resp);
-        http_response_free(&resp);
-        return false;
-    }
-
     MeltQuote melt_resp;
-    bool parsed = deserialize(resp.body, melt_resp);
-    http_response_free(&resp);
-    if (!parsed) {
-        ESP_LOGE(TAG, "melt: failed to parse response");
+    if (!mint_post("melt", mint_url_ + "/v1/melt/" + method, body.c_str(),
+                   melt_resp, /*timeout_ms=*/120000))
         return false;
-    }
 
     if (melt_resp.state != "PAID" && melt_resp.state != "PENDING") {
         ESP_LOGE(TAG, "melt: unexpected state: %s", melt_resp.state.c_str());
@@ -794,37 +780,45 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
     // Remove spent proofs
     proofs_ = leftover;
 
-    // Unblind change if returned. The mint may return fewer signatures
-    // than blank outputs we sent (only enough to cover actual change).
-    if (melt_resp.change && !melt_resp.change->empty() && n_blank > 0) {
-        BlindingData truncated = change_blinding;
-        size_t sig_count = melt_resp.change->size();
-        if (sig_count < truncated.outputs.size()) {
-            truncated.outputs.resize(sig_count);
-            truncated.secrets.resize(sig_count);
-            truncated.blinding_factors.resize(sig_count);
-        }
-        std::vector<Proof> change_proofs;
-        if (unblind_signatures(*melt_resp.change, truncated, *ks, change_proofs)) {
-            for (auto& p : change_proofs) {
-                p.witness = std::nullopt;
-                change_amount += p.amount;
-                proofs_.push_back(p);
-            }
-            char amt[48];
-            format_amount(amt, sizeof(amt), change_amount, unit.c_str());
-            ESP_LOGI(TAG, "melt: received %s change (%d proofs)",
-                     amt, (int)change_proofs.size());
-        } else {
-            ESP_LOGW(TAG, "melt: failed to unblind change signatures");
-        }
-    }
+    change_amount = unblind_melt_change(melt_resp, change_blinding, *ks, unit);
 
     save_proofs();
 
     ESP_LOGI(TAG, "melt: state=%s input=%d change=%d",
              melt_resp.state.c_str(), input_sum, change_amount);
     return true;
+}
+
+// Unblind whatever change the mint signed. It may return fewer signatures
+// than the blank outputs we sent (only enough to cover the actual change),
+// so the blinding data is truncated to match. Returns the change amount
+// adopted into proofs_; unblind failure only forfeits change (logged),
+// never the melt itself.
+int Wallet::unblind_melt_change(const MeltQuote& resp,
+                                const BlindingData& blinding,
+                                const Keyset& ks, const std::string& unit)
+{
+    if (!resp.change || resp.change->empty() || blinding.outputs.empty())
+        return 0;
+
+    BlindingData truncated = blinding;
+    size_t sig_count = resp.change->size();
+    if (sig_count < truncated.outputs.size()) {
+        truncated.outputs.resize(sig_count);
+        truncated.secrets.resize(sig_count);
+        truncated.blinding_factors.resize(sig_count);
+    }
+    std::vector<Proof> change_proofs;
+    if (!unblind_signatures(*resp.change, truncated, ks, change_proofs)) {
+        ESP_LOGW(TAG, "melt: failed to unblind change signatures");
+        return 0;
+    }
+    int change_amount = (int)adopt_proofs(change_proofs);
+    char amt[48];
+    format_amount(amt, sizeof(amt), change_amount, unit.c_str());
+    ESP_LOGI(TAG, "melt: received %s change (%d proofs)",
+             amt, (int)change_proofs.size());
+    return change_amount;
 }
 
 } // namespace cashu
