@@ -1,4 +1,4 @@
-idf_component_register(SRCS "nucula.cpp" "crypto.c" "crypto_bls.c" "crypto_test.c" "cashu_json.cpp"
+idf_component_register(SRCS "nucula.cpp" "commands_common.cpp" "commands_wallet.cpp" "commands_seed.cpp" "commands_system.cpp" "crypto.c" "crypto_bls.c" "crypto_test.c" "cashu_json.cpp"
                             "cashu_cbor.cpp" "wifi.c" "http.c" "hex.c" "keyset.cpp"
                             "wallet.cpp" "wallet_nvs.cpp" "wallet_identity.cpp"
                             "wallet_keysets.cpp" "wallet_blind.cpp" "wallet_flows.cpp"
