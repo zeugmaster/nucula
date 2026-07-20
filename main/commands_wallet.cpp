@@ -178,13 +178,8 @@ static void cmd_receive(const char *arg)
         return;
     }
 
-    if (w->keysets().empty() || !w->active_keyset(token.unit)) {
-        nucula_console_write("loading keysets...\r\n");
-        if (!w->load_keysets()) {
-            nucula_console_write("error: failed to load keysets\r\n");
-            return;
-        }
-    }
+    if (!ensure_active_keyset(w, token.unit, /*require_active=*/false))
+        return;
 
     nucula_console_write("swapping...\r\n");
     std::vector<cashu::Proof> received;
@@ -357,18 +352,8 @@ static void cmd_invoice(const char *arg)
                                                        : opts.idx.c_str());
     if (!w) return;
 
-    if (w->keysets().empty() || !w->active_keyset(unit)) {
-        nucula_console_write("loading keysets...\r\n");
-        if (!w->load_keysets()) {
-            nucula_console_write("error: failed to load keysets\r\n");
-            return;
-        }
-        if (!w->active_keyset(unit)) {
-            console_printf("error: mint has no active %s keyset\r\n",
-                           unit.c_str());
-            return;
-        }
-    }
+    if (!ensure_active_keyset(w, unit, /*require_active=*/true))
+        return;
 
     nucula_console_write("requesting mint quote...\r\n");
     cashu::MintQuote quote;
@@ -406,17 +391,10 @@ static void cmd_claim(const char *arg)
         return;
     }
 
-    // Split quote_id and optional trailing options
     std::string quote_id;
     CmdOpts opts;
-    const char *space = strchr(arg, ' ');
-    if (space) {
-        quote_id = std::string(arg, space - arg);
-        if (!parse_cmd_opts(space, opts))
-            return;
-    } else {
-        quote_id = arg;
-    }
+    if (!split_first_token(arg, quote_id, opts))
+        return;
     const std::string method = opts.method.empty() ? std::string("bolt11")
                                                    : opts.method;
 
@@ -461,18 +439,8 @@ static void cmd_claim(const char *arg)
     }
 
     const std::string unit = quote.unit.empty() ? std::string("sat") : quote.unit;
-    if (w->keysets().empty() || !w->active_keyset(unit)) {
-        nucula_console_write("loading keysets...\r\n");
-        if (!w->load_keysets()) {
-            nucula_console_write("error: failed to load keysets\r\n");
-            return;
-        }
-        if (!w->active_keyset(unit)) {
-            console_printf("error: mint has no active %s keyset\r\n",
-                           unit.c_str());
-            return;
-        }
-    }
+    if (!ensure_active_keyset(w, unit, /*require_active=*/true))
+        return;
 
     nucula_console_write("minting tokens...\r\n");
     if (!w->mint_tokens(quote, claimable)) {
@@ -500,17 +468,10 @@ static void cmd_melt(const char *arg)
         return;
     }
 
-    // Split the payment request and optional trailing options
     std::string request;
     CmdOpts opts;
-    const char *space = strchr(arg, ' ');
-    if (space) {
-        request = std::string(arg, space - arg);
-        if (!parse_cmd_opts(space, opts))
-            return;
-    } else {
-        request = arg;
-    }
+    if (!split_first_token(arg, request, opts))
+        return;
     const std::string unit = opts.unit.empty() ? cashu::Wallet::default_unit()
                                                : opts.unit;
     const std::string method = opts.method.empty() ? std::string("bolt11")
@@ -520,18 +481,8 @@ static void cmd_melt(const char *arg)
                                                        : opts.idx.c_str());
     if (!w) return;
 
-    if (w->keysets().empty() || !w->active_keyset(unit)) {
-        nucula_console_write("loading keysets...\r\n");
-        if (!w->load_keysets()) {
-            nucula_console_write("error: failed to load keysets\r\n");
-            return;
-        }
-        if (!w->active_keyset(unit)) {
-            console_printf("error: mint has no active %s keyset\r\n",
-                           unit.c_str());
-            return;
-        }
-    }
+    if (!ensure_active_keyset(w, unit, /*require_active=*/true))
+        return;
 
     nucula_console_write("requesting melt quote...\r\n");
     cashu::MeltQuote quote;

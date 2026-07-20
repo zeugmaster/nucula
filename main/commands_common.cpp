@@ -92,3 +92,39 @@ cashu::Wallet *resolve_wallet(const char *idx_str)
     }
     return nullptr;
 }
+
+// Ensure the wallet has keysets and — when require_active — an active
+// keyset for `unit`, refreshing from the mint once. Prints its own
+// console errors. cmd_receive passes require_active=false: the swap
+// resolves the keyset itself and any actively-backed unit is fine.
+bool ensure_active_keyset(cashu::Wallet *w, const std::string &unit,
+                          bool require_active)
+{
+    if (!w->keysets().empty() && w->active_keyset(unit))
+        return true;
+    nucula_console_write("loading keysets...\r\n");
+    if (!w->load_keysets()) {
+        nucula_console_write("error: failed to load keysets\r\n");
+        return false;
+    }
+    if (require_active && !w->active_keyset(unit)) {
+        console_printf("error: mint has no active %s keyset\r\n", unit.c_str());
+        return false;
+    }
+    return true;
+}
+
+// "First word is the payload, the rest is CmdOpts" — shared by claim
+// (quote id) and melt (payment request).
+bool split_first_token(const char *arg, std::string &first, CmdOpts &opts)
+{
+    const char *space = strchr(arg, ' ');
+    if (space) {
+        first = std::string(arg, space - arg);
+        if (!parse_cmd_opts(space, opts))
+            return false;
+    } else {
+        first = arg;
+    }
+    return true;
+}

@@ -25,6 +25,9 @@ bool parse_cmd_opts(const char *p, CmdOpts &out);
 cashu::Wallet *resolve_wallet(const char *idx_str);
 bool print_unit_balances(cashu::Wallet *w, const char *prefix,
                          const char *label);
+bool ensure_active_keyset(cashu::Wallet *w, const std::string &unit,
+                          bool require_active);
+bool split_first_token(const char *arg, std::string &first, CmdOpts &opts);
 
 void commands_wallet_register(void);
 void commands_seed_register(void);

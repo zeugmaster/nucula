@@ -24,7 +24,7 @@ static void cmd_seed(const char *arg)
     if (!arg || strlen(arg) == 0 || strcmp(arg, "show") == 0) {
         std::string mnemonic;
         if (cashu::Wallet::load_mnemonic(mnemonic)) {
-            nucula_console_write("WARNING: keep your seed phrase secret!\r\n");
+            nucula_console_write("warning: keep your seed phrase secret!\r\n");
             nucula_console_write(mnemonic.c_str());
             nucula_console_write("\r\n");
         } else {
@@ -36,13 +36,13 @@ static void cmd_seed(const char *arg)
     if (strcmp(arg, "generate") == 0) {
         char mnemonic[256];
         if (!bip39_generate(mnemonic, sizeof(mnemonic))) {
-            nucula_console_write("ERROR: mnemonic generation failed\r\n");
+            nucula_console_write("error: mnemonic generation failed\r\n");
             return;
         }
 
         unsigned char seed[64];
         if (!bip39_to_seed(mnemonic, seed)) {
-            nucula_console_write("ERROR: seed derivation failed\r\n");
+            nucula_console_write("error: seed derivation failed\r\n");
             return;
         }
 
@@ -50,7 +50,7 @@ static void cmd_seed(const char *arg)
         cashu::Wallet::erase_seed();
 
         if (!cashu::Wallet::save_seed(seed, mnemonic)) {
-            nucula_console_write("ERROR: failed to save seed\r\n");
+            nucula_console_write("error: failed to save seed\r\n");
             return;
         }
 
@@ -66,13 +66,13 @@ static void cmd_seed(const char *arg)
         while (*words == ' ') words++;
 
         if (!bip39_validate(words)) {
-            nucula_console_write("ERROR: invalid mnemonic (bad checksum or unknown words)\r\n");
+            nucula_console_write("error: invalid mnemonic (bad checksum or unknown words)\r\n");
             return;
         }
 
         unsigned char seed[64];
         if (!bip39_to_seed(words, seed)) {
-            nucula_console_write("ERROR: seed derivation failed\r\n");
+            nucula_console_write("error: seed derivation failed\r\n");
             return;
         }
 
@@ -80,7 +80,7 @@ static void cmd_seed(const char *arg)
         cashu::Wallet::erase_seed();
 
         if (!cashu::Wallet::save_seed(seed, words)) {
-            nucula_console_write("ERROR: failed to save seed\r\n");
+            nucula_console_write("error: failed to save seed\r\n");
             return;
         }
 
