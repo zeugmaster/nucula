@@ -63,28 +63,6 @@ esp_err_t keypad_init(i2c_master_bus_handle_t bus)
     return ESP_OK;
 }
 
-esp_err_t keypad_raw_read(uint8_t *out)
-{
-    if (!s_dev) return ESP_ERR_INVALID_STATE;
-    uint8_t high = 0xFF;
-    esp_err_t ret = i2c_master_transmit(s_dev, &high, 1, 100);
-    if (ret != ESP_OK) return ret;
-    return i2c_master_receive(s_dev, out, 1, 100);
-}
-
-uint8_t keypad_probe_pin(uint8_t pin)
-{
-    if (!s_dev || pin > 6) return 0xFF;
-    uint8_t drive = (uint8_t)(~(1u << pin)) | 0x80; // keep P7 high
-    i2c_master_transmit(s_dev, &drive, 1, 100);
-    vTaskDelay(pdMS_TO_TICKS(1));
-    uint8_t result = 0xFF;
-    i2c_master_receive(s_dev, &result, 1, 100);
-    uint8_t idle = 0xFF;
-    i2c_master_transmit(s_dev, &idle, 1, 100);
-    return result;
-}
-
 // -------------------------------------------------------------------------
 // Matrix scan — returns pressed key char or '\0'
 // -------------------------------------------------------------------------

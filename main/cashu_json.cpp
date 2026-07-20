@@ -92,16 +92,6 @@ bool from_json(const cJSON* j, BlindedMessage& out) {
 // BlindSignature
 // ---------------------------------------------------------------------------
 
-cJSON* to_json(const BlindSignature& v) {
-    cJSON* j = cJSON_CreateObject();
-    cJSON_AddStringToObject(j, "id", v.id.c_str());
-    cJSON_AddNumberToObject(j, "amount", v.amount);
-    cJSON_AddStringToObject(j, "C_", v.C_.c_str());
-    if (v.dleq)
-        cJSON_AddItemToObject(j, "dleq", to_json(*v.dleq));
-    return j;
-}
-
 bool from_json(const cJSON* j, BlindSignature& out) {
     const char* id = get_string(j, "id");
     const char* C_ = get_string(j, "C_");
@@ -210,17 +200,6 @@ bool from_json(const cJSON* j, Keyset& out) {
 // KeysetInfo
 // ---------------------------------------------------------------------------
 
-cJSON* to_json(const KeysetInfo& v) {
-    cJSON* j = cJSON_CreateObject();
-    cJSON_AddStringToObject(j, "id", v.id.c_str());
-    cJSON_AddStringToObject(j, "unit", v.unit.c_str());
-    cJSON_AddBoolToObject(j, "active", v.active);
-    cJSON_AddNumberToObject(j, "input_fee_ppk", v.input_fee_ppk);
-    if (v.final_expiry)
-        cJSON_AddNumberToObject(j, "final_expiry", (double)*v.final_expiry);
-    return j;
-}
-
 bool from_json(const cJSON* j, KeysetInfo& out) {
     const char* id = get_string(j, "id");
     const char* unit = get_string(j, "unit");
@@ -248,12 +227,6 @@ cJSON* to_json(const SwapRequest& v) {
     return j;
 }
 
-cJSON* to_json(const SwapResponse& v) {
-    cJSON* j = cJSON_CreateObject();
-    cJSON_AddItemToObject(j, "signatures", to_json_array(v.signatures));
-    return j;
-}
-
 bool from_json(const cJSON* j, SwapResponse& out) {
     const cJSON* sigs = cJSON_GetObjectItemCaseSensitive(j, "signatures");
     if (!sigs) return false;
@@ -263,25 +236,6 @@ bool from_json(const cJSON* j, SwapResponse& out) {
 // ---------------------------------------------------------------------------
 // MintQuote
 // ---------------------------------------------------------------------------
-
-cJSON* to_json(const MintQuote& v) {
-    cJSON* j = cJSON_CreateObject();
-    cJSON_AddStringToObject(j, "quote", v.quote.c_str());
-    cJSON_AddStringToObject(j, "request", v.request.c_str());
-    cJSON_AddNumberToObject(j, "amount", v.amount);
-    if (!v.unit.empty())
-        cJSON_AddStringToObject(j, "unit", v.unit.c_str());
-    if (!v.method.empty())
-        cJSON_AddStringToObject(j, "method", v.method.c_str());
-    if (!v.state.empty())
-        cJSON_AddStringToObject(j, "state", v.state.c_str());
-    cJSON_AddNumberToObject(j, "expiry", (double)v.expiry);
-    if (v.amount_paid)
-        cJSON_AddNumberToObject(j, "amount_paid", *v.amount_paid);
-    if (v.amount_issued)
-        cJSON_AddNumberToObject(j, "amount_issued", *v.amount_issued);
-    return j;
-}
 
 bool from_json(const cJSON* j, MintQuote& out) {
     const char* quote = get_string(j, "quote");
@@ -320,12 +274,6 @@ cJSON* to_json(const MintRequest& v) {
     return j;
 }
 
-cJSON* to_json(const MintResponse& v) {
-    cJSON* j = cJSON_CreateObject();
-    cJSON_AddItemToObject(j, "signatures", to_json_array(v.signatures));
-    return j;
-}
-
 bool from_json(const cJSON* j, MintResponse& out) {
     const cJSON* sigs = cJSON_GetObjectItemCaseSensitive(j, "signatures");
     if (!sigs) return false;
@@ -335,27 +283,6 @@ bool from_json(const cJSON* j, MintResponse& out) {
 // ---------------------------------------------------------------------------
 // MeltQuote
 // ---------------------------------------------------------------------------
-
-cJSON* to_json(const MeltQuote& v) {
-    cJSON* j = cJSON_CreateObject();
-    cJSON_AddStringToObject(j, "quote", v.quote.c_str());
-    cJSON_AddNumberToObject(j, "amount", v.amount);
-    cJSON_AddNumberToObject(j, "fee_reserve", v.fee_reserve);
-    if (!v.unit.empty())
-        cJSON_AddStringToObject(j, "unit", v.unit.c_str());
-    if (!v.method.empty())
-        cJSON_AddStringToObject(j, "method", v.method.c_str());
-    cJSON_AddStringToObject(j, "state", v.state.c_str());
-    cJSON_AddNumberToObject(j, "expiry", (double)v.expiry);
-    if (v.request)
-        cJSON_AddStringToObject(j, "request", v.request->c_str());
-    if (v.payment_preimage)
-        cJSON_AddStringToObject(j, "payment_preimage",
-                                v.payment_preimage->c_str());
-    if (v.change)
-        cJSON_AddItemToObject(j, "change", to_json_array(*v.change));
-    return j;
-}
 
 bool from_json(const cJSON* j, MeltQuote& out) {
     const char* quote = get_string(j, "quote");
@@ -408,22 +335,6 @@ cJSON* to_json(const MeltRequest& v) {
 // ---------------------------------------------------------------------------
 // Token (V3 JSON format)
 // ---------------------------------------------------------------------------
-
-cJSON* to_json(const Token& v) {
-    cJSON* j = cJSON_CreateObject();
-
-    cJSON* token_arr = cJSON_CreateArray();
-    cJSON* entry = cJSON_CreateObject();
-    cJSON_AddStringToObject(entry, "mint", v.mint.c_str());
-    cJSON_AddItemToObject(entry, "proofs", to_json_array(v.proofs));
-    cJSON_AddItemToArray(token_arr, entry);
-    cJSON_AddItemToObject(j, "token", token_arr);
-
-    if (v.memo)
-        cJSON_AddStringToObject(j, "memo", v.memo->c_str());
-    cJSON_AddStringToObject(j, "unit", v.unit.c_str());
-    return j;
-}
 
 bool from_json(const cJSON* j, Token& out) {
     const cJSON* token_arr = cJSON_GetObjectItemCaseSensitive(j, "token");
@@ -530,16 +441,6 @@ bool proofs_from_json(const char* json_str, std::vector<Proof>& out) {
     return ok;
 }
 
-std::string keysets_to_json(const std::vector<Keyset>& keysets) {
-    cJSON* arr = to_json_array(keysets);
-    if (!arr) return "";
-    char* str = cJSON_PrintUnformatted(arr);
-    std::string result(str ? str : "");
-    if (str) cJSON_free(str);
-    cJSON_Delete(arr);
-    return result;
-}
-
 bool keysets_from_json(const char* json_str, std::vector<Keyset>& out) {
     cJSON* arr = cJSON_Parse(json_str);
     if (!arr) return false;
@@ -554,18 +455,6 @@ bool keysets_from_json(const char* json_str, std::vector<Keyset>& out) {
 
 static const char V3_PREFIX[] = "cashuA";
 static const size_t V3_PREFIX_LEN = 6;
-
-std::string serialize_token_v3(const Token &token) {
-    cJSON *j = to_json(token);
-    if (!j) return "";
-    char *json_str = cJSON_PrintUnformatted(j);
-    cJSON_Delete(j);
-    if (!json_str) return "";
-    std::string encoded = base64url_encode(
-        (const unsigned char *)json_str, strlen(json_str));
-    cJSON_free(json_str);
-    return std::string(V3_PREFIX) + encoded;
-}
 
 bool deserialize_token_v3(const char *token_str, Token &out) {
     size_t len = strlen(token_str);

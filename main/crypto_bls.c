@@ -81,7 +81,6 @@ static int bls_derive_r(const unsigned char *seed, size_t seed_len,
 }
 
 const cashu_suite_t cashu_suite_bls = {
-    .version_byte = 0x02,
     .name = "bls12_381",
     .pubkey_len = 48, /* compressed G1; revisit if v3 uses G2 (96) */
     .scalar_len = 32,

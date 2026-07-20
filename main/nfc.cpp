@@ -422,7 +422,6 @@ const char *nfc_status_str()
         case NfcState::idle:      return "idle";
         case NfcState::waiting:   return "waiting";
         case NfcState::active:    return "active";
-        case NfcState::received:  return "received";
         case NfcState::redeeming: return "redeeming";
         case NfcState::success:   return "success";
         case NfcState::error:     return "error";

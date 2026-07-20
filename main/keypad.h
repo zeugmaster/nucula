@@ -27,12 +27,6 @@ char keypad_get_key(void);
 // Consumes the event from the internal queue.
 char keypad_wait_event(uint32_t timeout_ms);
 
-// Raw PCF8574 read (all 8 pins). For diagnostics only.
-esp_err_t keypad_raw_read(uint8_t *out);
-
-// Drive one pin (0-6) low and read back — for wiring discovery.
-uint8_t keypad_probe_pin(uint8_t pin);
-
 #ifdef __cplusplus
 }
 #endif

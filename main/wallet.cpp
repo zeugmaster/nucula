@@ -2114,7 +2114,6 @@ bool Wallet::drain_pending_tokens(int& accepted, int& failed)
     /* The pending list is rebuilt as we go. Tokens that swap successfully
      * (or fail permanently) are dropped; transient failures are retained. */
     std::vector<std::string> retained;
-    bool any_transient = false;
 
     for (size_t i = 0; i < items.size(); i++) {
         const std::string& raw = items[i];
@@ -2135,7 +2134,6 @@ bool Wallet::drain_pending_tokens(int& accepted, int& failed)
         if (keysets_.empty() && !load_keysets()) {
             ESP_LOGW(TAG, "pending[%d]: keysets unavailable, retaining", (int)i);
             retained.push_back(raw);
-            any_transient = true;
             continue;
         }
 
@@ -2151,7 +2149,6 @@ bool Wallet::drain_pending_tokens(int& accepted, int& failed)
              * a future improvement can add a per-entry attempt counter. */
             ESP_LOGW(TAG, "pending[%d]: redeem failed, retaining", (int)i);
             retained.push_back(raw);
-            any_transient = true;
         }
     }
 
@@ -2193,7 +2190,6 @@ bool Wallet::drain_pending_tokens(int& accepted, int& failed)
 
     ESP_LOGI(TAG, "pending: drain slot %d -> %d ok, %d retained, %d dropped",
              nvs_slot_, accepted, (int)retained.size(), failed);
-    (void)any_transient;
     return true;
 }
 

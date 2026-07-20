@@ -287,7 +287,6 @@ void keypad_ui_task(void *arg)
                 display_nfc_status("waiting", amt_str);   break;
             case NfcState::active:
                 display_nfc_status("reading...", amt_str); break;
-            case NfcState::received:
             case NfcState::redeeming:
                 display_nfc_status("redeeming", amt_str);  break;
             case NfcState::success:

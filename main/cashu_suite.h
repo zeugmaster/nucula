@@ -33,7 +33,6 @@ extern "C" {
 typedef struct cashu_suite cashu_suite_t;
 
 struct cashu_suite {
-    unsigned char version_byte; /* keyset version this scheme serves (0x01 = secp v2) */
     const char   *name;         /* human-readable, e.g. "secp256k1" */
     size_t        pubkey_len;   /* serialized point length (33 secp / 48 BLS G1) */
     size_t        scalar_len;   /* scalar length in bytes (32) */
