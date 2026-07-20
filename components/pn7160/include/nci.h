@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>
 #include <stdbool.h>
 #include "driver/i2c_master.h"
 #include "driver/gpio.h"
@@ -47,6 +48,11 @@
 #define NCI_RF_INTF_ACTIVATED_NTF  0x05
 #define NCI_RF_DEACTIVATE_NTF      0x06
 #define NCI_RF_DISCOVER_NTF        0x03
+
+// NCI Core NTF OIDs seen in the steady-state event loop
+#define NCI_OID_CORE_CONN_CREDITS    0x06
+#define NCI_OID_CORE_GENERIC_ERROR   0x07
+#define NCI_OID_CORE_INTERFACE_ERROR 0x08
 
 // Protocols
 #define NCI_PROTOCOL_ISO_DEP      0x04
@@ -101,6 +107,27 @@ esp_err_t nci_start_discovery_cardemu(nci_context_t *ctx);
 
 // Run the full init + card-emulation config sequence
 esp_err_t nci_setup_cardemu(nci_context_t *ctx, i2c_master_bus_handle_t bus);
+
+// --- Steady-state API for the card-emulation event loop -------------------
+// The app should not touch nci_context_t fields; these cover the loop's
+// needs: wait for a frame, inspect it, answer with DATA, restart discovery.
+
+// Wait up to timeout_ms for IRQ, then read one frame into the context.
+// False on timeout, I2C error, or an empty read.
+bool nci_poll_frame(nci_context_t *ctx, uint32_t timeout_ms);
+
+// The last frame read by nci_poll_frame/nci_transceive, and its length.
+const uint8_t *nci_frame(const nci_context_t *ctx);
+uint32_t       nci_frame_len(const nci_context_t *ctx);
+
+// Build and send one NCI DATA frame on conn 0 carrying `payload`.
+// ESP_ERR_INVALID_SIZE when the payload exceeds one frame.
+esp_err_t nci_send_data(nci_context_t *ctx, const uint8_t *payload, size_t len);
+
+// RF_DEACTIVATE (to idle), drain until its RSP arrives, then replay the
+// discovery command stored by nci_start_discovery_cardemu. Called after a
+// reader deactivates without finishing.
+esp_err_t nci_restart_discovery(nci_context_t *ctx);
 
 #ifdef __cplusplus
 }

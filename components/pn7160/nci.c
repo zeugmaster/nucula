@@ -191,7 +191,8 @@ esp_err_t nci_core_reset(nci_context_t *ctx)
     esp_err_t ret = nci_transceive(ctx, cmd, sizeof(cmd), 1000);
     if (ret != ESP_OK) return ret;
 
-    if (ctx->rx_len < 4 || ctx->rx_buf[0] != 0x40 || ctx->rx_buf[1] != 0x00) {
+    if (ctx->rx_len < 4 || ctx->rx_buf[0] != (NCI_MT_RSP | NCI_GID_CORE) ||
+        ctx->rx_buf[1] != NCI_OID_CORE_RESET) {
         ESP_LOGE(TAG, "Invalid CORE_RESET_RSP");
         return ESP_ERR_INVALID_RESPONSE;
     }
@@ -199,9 +200,11 @@ esp_err_t nci_core_reset(nci_context_t *ctx)
     // NCI 2.0: CORE_RESET_NTF follows RSP
     if (nci_wait_for_irq(200)) {
         nci_read(ctx, ctx->rx_buf, &ctx->rx_len);
-        if (ctx->rx_buf[0] == 0x60 && ctx->rx_buf[1] == 0x00)
+        if (ctx->rx_buf[0] == (NCI_MT_NTF | NCI_GID_CORE) &&
+            ctx->rx_buf[1] == NCI_OID_CORE_RESET)
             ESP_LOGI(TAG, "CORE_RESET_NTF ok");
-        else if (ctx->rx_buf[0] == 0x60 && ctx->rx_buf[1] == 0x07)
+        else if (ctx->rx_buf[0] == (NCI_MT_NTF | NCI_GID_CORE) &&
+                 ctx->rx_buf[1] == NCI_OID_CORE_GENERIC_ERROR)
             ESP_LOGW(TAG, "CORE_GENERIC_ERROR_NTF (anti-tearing)");
         else
             ESP_LOGI(TAG, "post-reset NTF %02X %02X", ctx->rx_buf[0], ctx->rx_buf[1]);
@@ -226,8 +229,8 @@ esp_err_t nci_core_init(nci_context_t *ctx)
     esp_err_t ret = nci_transceive(ctx, cmd, sizeof(cmd), 1000);
     if (ret != ESP_OK) return ret;
 
-    if (ctx->rx_len < 4 || ctx->rx_buf[0] != 0x40 || ctx->rx_buf[1] != 0x01 ||
-        ctx->rx_buf[3] != 0x00) {
+    if (ctx->rx_len < 4 || ctx->rx_buf[0] != (NCI_MT_RSP | NCI_GID_CORE) ||
+        ctx->rx_buf[1] != NCI_OID_CORE_INIT || ctx->rx_buf[3] != 0x00) {
         ESP_LOGE(TAG, "CORE_INIT_RSP bad (status=0x%02X)",
                  ctx->rx_len > 3 ? ctx->rx_buf[3] : 0xFF);
         return ESP_ERR_INVALID_RESPONSE;
@@ -289,7 +292,8 @@ esp_err_t nci_configure_cardemu_mode(nci_context_t *ctx)
     const uint8_t disc_map[] = {0x21, 0x00, 0x04, 0x01, 0x04, 0x02, 0x02};
     ret = nci_transceive(ctx, disc_map, sizeof(disc_map), 500);
     if (ret != ESP_OK) return ret;
-    if (ctx->rx_buf[0] != 0x41 || ctx->rx_buf[1] != 0x00 || ctx->rx_buf[3] != 0x00) {
+    if (ctx->rx_buf[0] != (NCI_MT_RSP | NCI_GID_RF) ||
+        ctx->rx_buf[1] != NCI_OID_RF_DISCOVER_MAP || ctx->rx_buf[3] != 0x00) {
         ESP_LOGE(TAG, "RF_DISCOVER_MAP failed");
         return ESP_ERR_INVALID_RESPONSE;
     }
@@ -298,7 +302,8 @@ esp_err_t nci_configure_cardemu_mode(nci_context_t *ctx)
     const uint8_t sel_rsp[] = {0x20, 0x02, 0x04, 0x01, 0x32, 0x01, 0x20};
     ret = nci_transceive(ctx, sel_rsp, sizeof(sel_rsp), 500);
     if (ret != ESP_OK) return ret;
-    if (ctx->rx_buf[0] != 0x40 || ctx->rx_buf[1] != 0x02 || ctx->rx_buf[3] != 0x00) {
+    if (ctx->rx_buf[0] != (NCI_MT_RSP | NCI_GID_CORE) ||
+        ctx->rx_buf[1] != NCI_OID_CORE_SET_CONFIG || ctx->rx_buf[3] != 0x00) {
         ESP_LOGE(TAG, "SET LA_SEL_INFO failed");
         return ESP_ERR_INVALID_RESPONSE;
     }
@@ -310,7 +315,8 @@ esp_err_t nci_configure_cardemu_mode(nci_context_t *ctx)
     };
     ret = nci_transceive(ctx, routing, sizeof(routing), 500);
     if (ret != ESP_OK) return ret;
-    if (ctx->rx_buf[0] != 0x41 || ctx->rx_buf[1] != 0x01 || ctx->rx_buf[3] != 0x00) {
+    if (ctx->rx_buf[0] != (NCI_MT_RSP | NCI_GID_RF) ||
+        ctx->rx_buf[1] != NCI_OID_RF_SET_ROUTING || ctx->rx_buf[3] != 0x00) {
         ESP_LOGE(TAG, "RF_SET_ROUTING failed");
         return ESP_ERR_INVALID_RESPONSE;
     }
@@ -331,7 +337,8 @@ esp_err_t nci_start_discovery_cardemu(nci_context_t *ctx)
     esp_err_t ret = nci_transceive(ctx, discover, sizeof(discover), 500);
     if (ret != ESP_OK) return ret;
 
-    if (ctx->rx_buf[0] != 0x41 || ctx->rx_buf[1] != 0x03 || ctx->rx_buf[3] != 0x00) {
+    if (ctx->rx_buf[0] != (NCI_MT_RSP | NCI_GID_RF) ||
+        ctx->rx_buf[1] != NCI_OID_RF_DISCOVER || ctx->rx_buf[3] != 0x00) {
         ESP_LOGE(TAG, "RF_DISCOVER failed (status=0x%02X)",
                  ctx->rx_len > 3 ? ctx->rx_buf[3] : 0xFF);
         return ESP_ERR_INVALID_RESPONSE;
@@ -350,5 +357,67 @@ esp_err_t nci_setup_cardemu(nci_context_t *ctx, i2c_master_bus_handle_t bus)
     if ((ret = nci_configure_settings(ctx))    != ESP_OK) return ret;
     if ((ret = nci_configure_cardemu_mode(ctx)) != ESP_OK) return ret;
     if ((ret = nci_start_discovery_cardemu(ctx)) != ESP_OK) return ret;
+    return ESP_OK;
+}
+
+// --- Steady-state API ------------------------------------------------------
+
+bool nci_poll_frame(nci_context_t *ctx, uint32_t timeout_ms)
+{
+    if (!nci_wait_for_irq(timeout_ms))
+        return false;
+    ctx->rx_len = 0;
+    return nci_read(ctx, ctx->rx_buf, &ctx->rx_len) == ESP_OK && ctx->rx_len > 0;
+}
+
+const uint8_t *nci_frame(const nci_context_t *ctx)
+{
+    return ctx->rx_buf;
+}
+
+uint32_t nci_frame_len(const nci_context_t *ctx)
+{
+    return ctx->rx_len;
+}
+
+esp_err_t nci_send_data(nci_context_t *ctx, const uint8_t *payload, size_t len)
+{
+    // Single frame buffer: only one task drives the NCI link (the same
+    // contract the whole context relies on).
+    static uint8_t frame[NCI_MAX_FRAME_SIZE];
+    if (len > sizeof(frame) - 3)
+        return ESP_ERR_INVALID_SIZE;
+    frame[0] = NCI_MT_DATA;          // MT=data, PBF=0, conn id 0
+    frame[1] = (len >> 8) & 0xFF;    // RFU (len fits one frame, so 0)
+    frame[2] = len & 0xFF;
+    if (len > 0)
+        memcpy(&frame[3], payload, len);
+    return nci_write(ctx, frame, 3 + len);
+}
+
+esp_err_t nci_restart_discovery(nci_context_t *ctx)
+{
+    // RF_DEACTIVATE to idle...
+    const uint8_t stop[] = {NCI_MT_CMD | NCI_GID_RF, NCI_OID_RF_DEACTIVATE,
+                            0x01, 0x00};
+    esp_err_t ret = nci_write(ctx, stop, sizeof(stop));
+    if (ret != ESP_OK)
+        return ret;
+    // ...drain until its RSP shows up (NTFs may interleave)...
+    for (int i = 0; i < 10; i++) {
+        if (!nci_wait_for_irq(200))
+            break;
+        if (nci_read(ctx, ctx->rx_buf, &ctx->rx_len) != ESP_OK)
+            break;
+        if (ctx->rx_buf[0] == (NCI_MT_RSP | NCI_GID_RF) &&
+            ctx->rx_buf[1] == NCI_OID_RF_DEACTIVATE)
+            break;
+    }
+    // ...then replay the stored discovery command.
+    ret = nci_write(ctx, ctx->discovery_cmd, ctx->discovery_cmd_len);
+    if (ret != ESP_OK)
+        return ret;
+    if (nci_wait_for_irq(200))
+        nci_read(ctx, ctx->rx_buf, &ctx->rx_len);
     return ESP_OK;
 }
