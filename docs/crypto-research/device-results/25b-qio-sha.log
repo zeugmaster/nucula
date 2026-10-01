@@ -1,0 +1,88 @@
+RESEARCH_COMMAND log i
+RESEARCH_COMMAND bench mpi 2639
+I (16168) bls_test: === MPI variant 2639 ===
+I (16195) bls_test: MPI vs software bit-exactness: OK
+I (16615) bls_test: MPI field exponent comparison: OK
+I (16640) bls_test: mpi unchained x1000      x3       6750 us/op
+I (16665) bls_test: mpi chained x1000        x3       6754 us/op
+I (20268) bls_test: suite_verify n=10 dk     x2    1389060 us/op
+I (27108) bls_test: swap crypto n=10 dk      x2    3418455 us/op
+RESEARCH_COMMAND bench verify 879 11
+I (27248) bls_test: === BLS verifier options=879 capacity=11 MPI=2639 ===
+I (29279) bls_test: suite_verify cold n=10: 1210070 us, valid=1
+I (31422) bls_test: suite_verify n=10 dk     x2    1064583 us/op
+I (36954) bls_test: swap crypto n=10 dk      x2    2764012 us/op
+RESEARCH_COMMAND bench nutroot quick opt=15
+I (37109) nutroot: nutroot witness verification benchmark [full] (timed unit = one verify call, as nutshell's)
+I (37216) nutroot: keypair full scalar      x8  mean     8071 med     8038 min     8038 us
+I (37370) nutroot: sign incl keypair        x8  mean    17970 med    17968 min    17871 us
+I (37459) nutroot: sign retained keypair    x8  mean     9605 med     9595 min     9595 us
+I (37596) nutroot: schnorr verify           x8  mean    15763 med    15762 min    15761 us
+I (37741) nutroot: ECDH full scalar         x8  mean    16720 med    16726 min    16681 us
+I (37758) nutroot: parse compressed key     x8  mean      628 med      617 min      617 us
+I (38044) nutroot: threshold 2/3 checks=2   x3  mean    49919 med    50005 min    49747 us
+I (38436) nutroot: threshold 3/5 checks=3   x3  mean    67808 med    68005 min    67416 us
+I (39352) nutroot: threshold 8/15 checks=8  x3  mean   155956 med   156005 min   155858 us
+I (39353) nutroot: quick correctness: OK, options=15
+RESEARCH_COMMAND bench mpi 6735
+I (39426) bls_test: === MPI variant 6735 ===
+I (39444) bls_test: MPI vs software bit-exactness: OK
+I (39857) bls_test: MPI field exponent comparison: OK
+I (39882) bls_test: mpi unchained x1000      x3       6752 us/op
+I (39907) bls_test: mpi chained x1000        x3       6759 us/op
+I (41783) bls_test: suite_verify cold n=10: 1056491 us, valid=1
+I (43910) bls_test: suite_verify n=10 dk     x2    1056543 us/op
+I (49419) bls_test: swap crypto n=10 dk      x2    2752895 us/op
+RESEARCH_COMMAND selftest
+I (49446) crypto_test: running crypto test vectors
+I (49446) crypto_test: sha256: ok
+I (49448) crypto_test: hash_to_curve 1: OK
+I (49451) crypto_test: hash_to_curve 2: OK
+I (49454) crypto_test: hash_to_curve 3: OK
+I (49466) crypto_test: blind_message 1: OK
+I (49477) crypto_test: blind_message 2: OK
+I (49498) crypto_test: unblind: OK
+I (49548) crypto_test: DLEQ BlindSignature: OK
+I (49619) crypto_test: DLEQ Proof: OK
+I (50384) crypto_test: NUT-13 V2 counter=0: OK
+I (50385) crypto_test: NUT-13 V2 counter=1: OK
+I (50386) crypto_test: NUT-13 V2 counter=2: OK
+I (50387) crypto_test: NUT-13 V2 counter=3: OK
+I (50391) crypto_test: NUT-13 V2 counter=4: OK
+I (50404) crypto_test: NUT-13 V2: all test vectors passed
+I (50405) crypto_test: all crypto tests passed
+I (50405) bls_test: running BLS12-381 (keyset v3) test vectors
+I (50421) bls_test: hash_to_curve_G1: OK
+I (50437) bls_test: mint key K: valid G2 point
+I (50458) bls_test: blind B_ = r*Y: OK
+I (50480) bls_test: sign C_ = a*B_: OK
+I (50502) bls_test: unblind C = r^-1*C_: OK
+I (50770) bls_test: pairing verification: OK
+I (51040) bls_test: tamper rejection: OK
+I (51073) bls_test: batch C_1 = a*Y_1: OK
+I (51074) bls_test: batch challenge: OK
+I (51075) bls_test: batch weight_1 (ctr=4): OK
+I (51075) bls_test: batch weight_2 (ctr=0): OK
+I (51447) bls_test: batch verification: OK
+I (51815) bls_test: batch tamper rejection: OK
+I (51818) bls_test: point validation: OK
+I (51850) bls_test: suite blind: OK
+I (51884) bls_test: suite unblind: OK
+I (54224) bls_test: suite verify_proofs (incl. multi-key): OK
+I (54225) bls_test: suite input validation: OK
+I (57709) bls_test: suite verify_proofs n=10 (chunk boundary): OK
+I (57710) bls_test: NUT-13 v3 secret: OK
+I (57711) bls_test: NUT-13 v3 r (attempt=1): OK
+I (57731) bls_test: MPI vs software bit-exactness: OK
+I (58154) bls_test: MPI field exponent comparison: OK
+I (58154) bls_test: all BLS tests passed
+I (58326) nutroot_current: FAILED at line 92: nutroot_kdf_derive(&kdf,i,0,0,p)&&equal_hex(p,32,keys[i])
+I (58328) nutroot: leaf wire forms: OK
+I (58331) nutroot: leaf parse rejections: OK
+I (58337) nutroot: merkle fold + paths: OK
+I (58381) nutroot: tweak derivations: OK
+I (58382) nutroot: transaction transcripts: OK
+I (58436) nutroot: signature vectors: OK
+I (58826) nutroot: witness verification e2e: OK
+I (58827) nutroot: all nutroot tests passed
+self-tests FAILED

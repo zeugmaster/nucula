@@ -1,4 +1,8 @@
 #include "cashu_suite.h"
+#include "crypto_bls.h"
+#include <stdlib.h>
+#include <limits.h>
+#include <blst_esp.h>
 
 #include <stdbool.h>
 #include <string.h>
@@ -7,6 +11,10 @@
 #include <blst_aux.h>
 #include <blst_mpi.h>
 #include <mbedtls/sha256.h>
+#ifdef ESP_PLATFORM
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#endif
 
 /*
  * BLS12-381 crypto suite (keyset v3, version byte 0x02) over the vendored
@@ -33,6 +41,27 @@ static const unsigned char DST[] = "CASHU_BLS12_381_G1_XMD:SHA-256_SSWU_RO_";
 /* NUT-00: Fiat-Shamir transcript DST for batch verification. */
 static const unsigned char BATCH_DST[] = "Cashu_BLS_Batch_v1";
 #define BATCH_DST_LEN (sizeof(BATCH_DST) - 1)
+
+static unsigned bls_options = CASHU_BLS_WORKSPACE | CASHU_BLS_KEY_CACHE |
+    CASHU_BLS_GROUP_KEYS | CASHU_BLS_BUCKET_MSM | CASHU_BLS_BATCH_AFFINE |
+    CASHU_BLS_PREPARED_GENERATOR | CASHU_BLS_GLV_MSM | CASHU_BLS_GROUP_MSM |
+    CASHU_BLS_BATCH_INVERSE | CASHU_BLS_FAIR_YIELD | CASHU_BLS_HASH_CACHE;
+#ifndef NUCULA_Y_CACHE_SIZE
+#define NUCULA_Y_CACHE_SIZE 64
+#endif
+#ifndef NUCULA_Y_CACHE_AFFINE
+#define NUCULA_Y_CACHE_AFFINE 1
+#endif
+#define BLS_Y_CACHE_SIZE NUCULA_Y_CACHE_SIZE
+static struct { unsigned char digest[32];size_t length;
+#if NUCULA_Y_CACHE_AFFINE
+    blst_p1_affine point;
+#else
+    blst_p1 point;
+#endif
+    int valid;
+} y_cache[BLS_Y_CACHE_SIZE];
+static size_t y_cache_next;
 
 #define G1_LEN 48
 #define G2_LEN 96
@@ -69,10 +98,38 @@ static int scalar_from_be_checked(blst_scalar *out, const unsigned char be[32])
     return 1;
 }
 
-static void hash_to_g1(blst_p1 *out, const unsigned char *msg, size_t len)
+static void hash_to_g1_cached(blst_p1 *out, const unsigned char *msg, size_t len,int allow_eviction)
 {
+    unsigned char digest[32];
+    size_t unused=BLS_Y_CACHE_SIZE;
+    int cache=(bls_options & CASHU_BLS_HASH_CACHE) && mbedtls_sha256(msg,len,digest,0)==0;
+    if (cache) {
+        for(size_t i=0;i<BLS_Y_CACHE_SIZE;i++) {
+            if(!y_cache[i].valid&&unused==BLS_Y_CACHE_SIZE)unused=i;
+            if(y_cache[i].valid&&y_cache[i].length==len&&!memcmp(y_cache[i].digest,digest,32)) {
+#if NUCULA_Y_CACHE_AFFINE
+                blst_p1_from_affine(out,&y_cache[i].point);
+#else
+                *out=y_cache[i].point;
+#endif
+                return;
+            }
+        }
+    }
     blst_hash_to_g1(out, msg, len, DST, DST_LEN, NULL, 0);
+    if (cache && (allow_eviction || unused<BLS_Y_CACHE_SIZE)) {
+        size_t slot=unused<BLS_Y_CACHE_SIZE?unused:y_cache_next++%BLS_Y_CACHE_SIZE;
+        memcpy(y_cache[slot].digest,digest,32);y_cache[slot].length=len;
+#if NUCULA_Y_CACHE_AFFINE
+        blst_p1_to_affine(&y_cache[slot].point,out);
+#else
+        y_cache[slot].point=*out;
+#endif
+        y_cache[slot].valid=1;
+    }
 }
+static void hash_to_g1(blst_p1 *out,const unsigned char *msg,size_t len)
+{ hash_to_g1_cached(out,msg,len,1); }
 
 /* blst_p1_mult takes the scalar as little-endian bytes. */
 static void p1_mul(blst_p1 *out, const blst_p1 *p, const blst_scalar *s)
@@ -236,7 +293,7 @@ static void miller_flush(blst_fp12 *acc,
  * The transcript challenge is streamed through mbedTLS SHA-256 so batches of
  * any size use constant memory; weights are consumed as they are derived.
  */
-static int bls_verify_proofs(void *ctx, size_t n,
+static int bls_verify_proofs_reference(void *ctx, size_t n,
                              const unsigned char *Ks,
                              const unsigned char *Cs,
                              const unsigned char *const *secrets,
@@ -334,6 +391,9 @@ static int bls_verify_proofs(void *ctx, size_t n,
             miller_flush(&acc, chunk_qp, chunk_pp, chunk_len);
             chunk_len = 0;
         }
+#ifdef ESP_PLATFORM
+        if ((i & 3) == 3) vTaskDelay(2);
+#endif
     }
 
     {
@@ -354,6 +414,488 @@ static int bls_verify_proofs(void *ctx, size_t n,
 
 out:
     blst_hw_release();
+    return ok;
+}
+
+
+#define BLS_PAIR_CAPACITY 16
+#define BLS_MSM_CAPACITY 10
+#define BLS_KEY_CACHE_SIZE 16
+#include "bls_generator_lines.h"
+static blst_fp6 *hot_key_lines;
+static unsigned char hot_key_bytes[G2_LEN];
+
+static size_t bls_capacity = 11;
+static struct {
+    unsigned char compressed[G2_LEN];
+    blst_p2_affine point;
+    int valid;
+} key_cache[BLS_KEY_CACHE_SIZE];
+static size_t key_cache_next;
+
+int cashu_bls_configure(unsigned flags, size_t capacity)
+{
+    if (flags > 8191 || !capacity || capacity > BLS_PAIR_CAPACITY) return 0;
+    blst_hw_acquire();
+    bls_options = flags;
+    bls_capacity = capacity;
+    blst_hw_release();
+    return 1;
+}
+unsigned cashu_bls_options(void) { return bls_options; }
+size_t cashu_bls_capacity(void) { return bls_capacity; }
+void cashu_bls_clear_hash_cache(void)
+{
+    blst_hw_acquire();memset(y_cache,0,sizeof(y_cache));y_cache_next=0;blst_hw_release();
+}
+void cashu_bls_clear_key_cache(void)
+{
+    blst_hw_acquire();
+    memset(key_cache, 0, sizeof(key_cache));
+    memset(y_cache,0,sizeof(y_cache));y_cache_next=0;
+    key_cache_next = 0;
+    free(hot_key_lines);
+    hot_key_lines = NULL;
+    blst_hw_release();
+}
+
+static int cached_g2(blst_p2_affine *out, const unsigned char *compressed, unsigned flags)
+{
+    if (!(flags & CASHU_BLS_KEY_CACHE)) return validate_g2(out, compressed);
+    for (size_t i = 0; i < BLS_KEY_CACHE_SIZE; i++) {
+        if (key_cache[i].valid && !memcmp(key_cache[i].compressed, compressed, G2_LEN)) {
+            *out = key_cache[i].point;
+            return 1;
+        }
+    }
+    if (!validate_g2(out, compressed)) return 0;
+    size_t slot = key_cache_next++ % BLS_KEY_CACHE_SIZE;
+    memcpy(key_cache[slot].compressed, compressed, G2_LEN);
+    key_cache[slot].point = *out;
+    key_cache[slot].valid = 1;
+    return 1;
+}
+
+typedef struct {
+    blst_p2_affine *q;
+    blst_p1 *p;
+    blst_p1_affine *pa;
+    unsigned char (*keys)[G2_LEN];
+    const blst_p2_affine **qp;
+    const blst_p1_affine **pap;
+    const blst_p1 **pp;
+    blst_p1_affine c[2*BLS_MSM_CAPACITY];
+    unsigned char scalars[2*BLS_MSM_CAPACITY][32];
+    const blst_p1_affine *cp[2*BLS_MSM_CAPACITY];
+    const unsigned char *sp[2*BLS_MSM_CAPACITY];
+    const void **prepared;
+    size_t pairs, c_count, capacity;
+    unsigned flags;
+    blst_p1 sum;
+    blst_fp12 acc;
+    int have_sum, have_acc;
+    void *scratch;
+    size_t scratch_bytes;
+    blst_p1_affine *table;
+} bls_workspace;
+
+static bls_workspace *new_workspace(size_t capacity)
+{
+    const size_t pair_bytes=sizeof(blst_p2_affine)+sizeof(blst_p1)+sizeof(blst_p1_affine)+G2_LEN+
+        sizeof(const blst_p2_affine *)+sizeof(const blst_p1_affine *)+sizeof(const blst_p1 *)+sizeof(const void *);
+    bls_workspace *w=NULL;
+    while(!(w=calloc(1,sizeof(*w)+capacity*pair_bytes))) {
+        if(capacity==1)return NULL;
+        capacity=capacity>4?4:1;
+    }
+    unsigned char *next=(void *)(w+1);
+#define TAKE_PAIR_ARRAY(member,type) w->member=(void *)next;next+=capacity*sizeof(type)
+    TAKE_PAIR_ARRAY(q,blst_p2_affine);TAKE_PAIR_ARRAY(p,blst_p1);TAKE_PAIR_ARRAY(pa,blst_p1_affine);
+    TAKE_PAIR_ARRAY(keys,unsigned char[G2_LEN]);TAKE_PAIR_ARRAY(qp,const blst_p2_affine *);
+    TAKE_PAIR_ARRAY(pap,const blst_p1_affine *);TAKE_PAIR_ARRAY(pp,const blst_p1 *);TAKE_PAIR_ARRAY(prepared,const void *);
+#undef TAKE_PAIR_ARRAY
+    w->capacity=capacity;return w;
+}
+
+static int compute_msm(bls_workspace *w, blst_p1 *out)
+{
+    if (!w->c_count) return 0;
+    blst_p1 sum;
+    size_t nbits = 256, window = 4;
+    if (w->flags & CASHU_BLS_GLV_MSM) {
+        for (size_t i = w->c_count; i-- > 0;) {
+            unsigned char split[32];
+            blst_p1_glv_expand(&w->c[2*i], split, &w->c[i], w->scalars[i]);
+            memset(w->scalars[2*i], 0, 64);
+            memcpy(w->scalars[2*i], split, 16);
+            memcpy(w->scalars[2*i+1], split+16, 16);
+        }
+        w->c_count *= 2;
+        nbits = 128; window = 3;
+    }
+    for (size_t i = 0; i < w->c_count; i++) {
+        w->cp[i] = &w->c[i];
+        w->sp[i] = w->scalars[i];
+    }
+    if ((w->flags & CASHU_BLS_WINDOW_MSM) && w->c_count > 1) {
+        if (!blst_p1s_precompute_window_workspace(w->table, window, w->cp, w->c_count,
+                                                  w->scratch, w->scratch_bytes)) return 0;
+        blst_p1s_mult_wbits(&sum, w->table, window, w->c_count, w->sp, nbits, w->scratch);
+    } else if ((w->flags & CASHU_BLS_BUCKET_MSM) && w->c_count > 1) {
+        blst_p1s_mult_bucket(&sum, w->cp, w->c_count, w->sp, nbits, w->scratch);
+    } else {
+        for (size_t i = 0; i < w->c_count; i++) {
+            blst_p1 point, product;
+            blst_p1_from_affine(&point, &w->c[i]);
+            blst_p1_mult(&product, &point, w->scalars[i], nbits);
+            if (!i) sum = product;
+            else blst_p1_add_or_double(&sum, &sum, &product);
+        }
+    }
+    *out = sum;
+    w->c_count = 0;
+    return 1;
+}
+
+static int flush_signature_sum(bls_workspace *w)
+{
+    if (!w->c_count) return 1;
+    blst_p1 sum;
+    if (!compute_msm(w, &sum)) return 0;
+    if (!w->have_sum) w->sum = sum;
+    else blst_p1_add_or_double(&w->sum, &w->sum, &sum);
+    w->have_sum = 1;
+    w->c_count = 0;
+    return 1;
+}
+
+static int flush_pairs(bls_workspace *w)
+{
+    if (!w->pairs) return 1;
+    for (size_t i = 0; i < w->pairs; i++) {
+        w->qp[i] = &w->q[i];
+        w->pp[i] = &w->p[i];
+        w->pap[i] = &w->pa[i];
+    }
+    if (w->flags & CASHU_BLS_BATCH_AFFINE)
+        blst_p1s_to_affine(w->pa, w->pp, w->pairs);
+    else
+        for (size_t i = 0; i < w->pairs; i++) blst_p1_to_affine(&w->pa[i], &w->p[i]);
+    blst_fp12 product;
+    int prepared = 0;
+    for (size_t i = 0; i < w->pairs; i++) prepared |= w->prepared[i] != NULL;
+    int ok = prepared ?
+        blst_miller_loop_prepared_workspace(&product, w->qp, w->pap, w->prepared,
+                                            w->pairs, w->scratch, w->capacity) :
+        blst_miller_loop_workspace(&product, w->qp, w->pap, w->pairs, w->scratch, w->capacity);
+    if (!ok) return 0;
+    memset(w->prepared, 0, w->capacity*sizeof(*w->prepared));
+    if (!w->have_acc) w->acc = product;
+    else blst_fp12_mul(&w->acc, &w->acc, &product);
+    w->have_acc = 1;
+    w->pairs = 0;
+    return 1;
+}
+
+/* Two passes reuse the same bounded MSM arena for C and for each repeated
+ * key's Y terms. Every C and K still receives individual subgroup validation;
+ * the original full-width transcript weights are used in both sums. */
+static void bls_pause(unsigned flags)
+{
+#ifdef ESP_PLATFORM
+    /* Hot-key lines are owned by the global cache, so a workspace using them
+     * must keep its pin (the peripheral lock). The default uses only the
+     * immutable generator table and may release safely at completed bursts. */
+    int release = (flags & CASHU_BLS_FAIR_YIELD) && !(flags & CASHU_BLS_PREPARED_HOT_KEY);
+    if (release) blst_hw_release();
+    vTaskDelay(2);
+    if (release) blst_hw_acquire();
+#else
+    (void)flags;
+#endif
+}
+
+static int grouped_msm(bls_workspace *w, size_t n, const unsigned char *Ks,
+                       const unsigned char *Cs, const unsigned char *const *secrets,
+                       const size_t *lens, const unsigned char challenge[32],
+                       const blst_p1_affine *retained)
+{
+    for (size_t i = 0; i < n; i++) {
+        if (retained) w->c[w->c_count] = retained[i];
+        else if (!validate_g1(&w->c[w->c_count], Cs+48*i)) return 0;
+        blst_scalar scalar; derive_batch_weight(&scalar, challenge, (uint32_t)i);
+        blst_lendian_from_scalar(w->scalars[w->c_count++], &scalar);
+        if (w->c_count == BLS_MSM_CAPACITY && !flush_signature_sum(w)) return 0;
+#ifdef ESP_PLATFORM
+        if ((i & 3) == 3) bls_pause(w->flags);
+#endif
+    }
+    if (!flush_signature_sum(w)) return 0;
+    for (size_t first = 0; first < n; first++) {
+        const unsigned char *key = Ks+96*first;
+        size_t previous = 0;
+        while (previous < first && memcmp(Ks+96*previous, key, 96)) previous++;
+        if (previous != first) continue;
+        if (w->pairs == w->capacity && !flush_pairs(w)) return 0;
+        size_t group = w->pairs;
+        if (!cached_g2(&w->q[group], key, w->flags)) return 0;
+        int have_y = 0;
+        for (size_t i = first; i < n; i++) {
+            if (memcmp(Ks+96*i, key, 96)) continue;
+            blst_scalar scalar; derive_batch_weight(&scalar, challenge, (uint32_t)i);
+            /* A scan larger than the cache must not evict every earlier Y.
+             * Admit empty slots, retain existing hits, compute other misses. */
+            blst_p1 y; hash_to_g1_cached(&y,secrets[i],lens[i],n<=BLS_Y_CACHE_SIZE);
+            blst_p1_to_affine(&w->c[w->c_count], &y);
+            blst_lendian_from_scalar(w->scalars[w->c_count++], &scalar);
+            if (w->c_count == BLS_MSM_CAPACITY) {
+                blst_p1 sum; if (!compute_msm(w, &sum)) return 0;
+                if (!have_y) w->p[group] = sum;
+                else blst_p1_add_or_double(&w->p[group], &w->p[group], &sum);
+                have_y = 1;
+            }
+#ifdef ESP_PLATFORM
+            if ((i & 3) == 3) bls_pause(w->flags);
+#endif
+        }
+        if (w->c_count) {
+            blst_p1 sum; if (!compute_msm(w, &sum)) return 0;
+            if (!have_y) w->p[group] = sum;
+            else blst_p1_add_or_double(&w->p[group], &w->p[group], &sum);
+        }
+        if (w->flags & CASHU_BLS_PREPARED_HOT_KEY) {
+            if (!hot_key_lines && first == 0) {
+                hot_key_lines = malloc(68*sizeof(*hot_key_lines));
+                if (hot_key_lines) {
+                    memcpy(hot_key_bytes, key, 96);
+                    blst_precompute_lines(hot_key_lines, &w->q[group]);
+                }
+            }
+            if (hot_key_lines && !memcmp(hot_key_bytes, key, 96)) w->prepared[group] = hot_key_lines;
+        }
+        w->pairs++;
+    }
+    return 1;
+}
+
+static int bls_verify_impl(void *ctx, size_t n,
+                             const unsigned char *Ks, const unsigned char *Cs,
+                             const unsigned char *const *secrets, const size_t *lens,
+                             const blst_p1_affine *retained)
+{
+    if (!n) return 1;
+    if (!Ks || !Cs || !secrets || !lens || n > UINT32_MAX || n > SIZE_MAX/G2_LEN) return 0;
+    for (size_t i = 0; i < n; i++)
+        if (lens[i] > UINT32_MAX || (!secrets[i] && lens[i])) return 0;
+    if (!bls_options) return bls_verify_proofs_reference(ctx, n, Ks, Cs, secrets, lens);
+    (void)ctx;
+    unsigned char challenge[32];
+    if (n > 1) {
+        mbedtls_sha256_context sha;
+        mbedtls_sha256_init(&sha);
+        int ok = mbedtls_sha256_starts(&sha, 0) == 0 &&
+                 mbedtls_sha256_update(&sha, BATCH_DST, BATCH_DST_LEN) == 0;
+        for (size_t i = 0; ok && i < n; i++) {
+            unsigned char len[4] = {lens[i] >> 24, lens[i] >> 16, lens[i] >> 8, lens[i]};
+            ok = mbedtls_sha256_update(&sha, Cs+i*G1_LEN, G1_LEN) == 0 &&
+                 mbedtls_sha256_update(&sha, Ks+i*G2_LEN, G2_LEN) == 0 &&
+                 mbedtls_sha256_update(&sha, len, 4) == 0 &&
+                 mbedtls_sha256_update(&sha, secrets[i], lens[i]) == 0;
+        }
+        ok = ok && mbedtls_sha256_finish(&sha, challenge) == 0;
+        mbedtls_sha256_free(&sha);
+        if (!ok) return 0;
+    }
+    int ok = 0;
+    blst_hw_acquire();
+    bls_workspace *w = new_workspace(n<bls_capacity?n+1:bls_capacity);
+    if (!w) goto release;
+    w->flags = bls_options;
+    size_t msm_count = n<BLS_MSM_CAPACITY?n:BLS_MSM_CAPACITY;
+    if(w->flags & CASHU_BLS_GLV_MSM)msm_count*=2;
+    size_t window = (w->flags & CASHU_BLS_GLV_MSM) ? 3 : 4;
+    for (unsigned attempt = 0; attempt < 3; attempt++) {
+        size_t msm_scratch = blst_p1s_mult_pippenger_scratch_sizeof(msm_count);
+        if (w->flags & CASHU_BLS_WINDOW_MSM) {
+            msm_scratch = blst_p1s_window_workspace_sizeof(msm_count, window);
+            w->table = malloc(blst_p1s_mult_wbits_precompute_sizeof(window, msm_count));
+        }
+        if (!(w->flags & (CASHU_BLS_WINDOW_MSM | CASHU_BLS_BUCKET_MSM))) msm_scratch = 0;
+        w->scratch_bytes = blst_miller_workspace_sizeof(w->capacity);
+        if (msm_scratch > w->scratch_bytes) w->scratch_bytes = msm_scratch;
+        if (!(w->flags & CASHU_BLS_WINDOW_MSM) || w->table) w->scratch = malloc(w->scratch_bytes);
+        if (w->scratch) break;
+        free(w->table); w->table = NULL;
+        if (!attempt) { w->flags &= ~CASHU_BLS_WINDOW_MSM; w->flags |= CASHU_BLS_BUCKET_MSM; }
+        else { w->flags &= ~(CASHU_BLS_WINDOW_MSM | CASHU_BLS_BUCKET_MSM); w->capacity = 1; }
+    }
+    if (!w->scratch) goto cleanup;
+    int repeated = 0;
+    /* Quadratic byte comparisons are bounded; large batches use the linear
+     * original path. No point arithmetic or proof is skipped by this test. */
+    if ((w->flags & CASHU_BLS_GROUP_MSM) && n > 1 && n <= 128)
+        for (size_t i = 1; i < n && !repeated; i++)
+            for (size_t j = 0; j < i; j++)
+                if (!memcmp(Ks+96*i, Ks+96*j, 96)) { repeated = 1; break; }
+    if (repeated) {
+        if (!grouped_msm(w, n, Ks, Cs, secrets, lens, challenge, retained)) goto cleanup;
+        goto final_pair;
+    }
+    for (size_t i = 0; i < n; i++) {
+        blst_p1_affine c;
+        if (retained) c = retained[i];
+        else if (!validate_g1(&c, Cs+i*G1_LEN)) goto cleanup;
+        blst_scalar scalar;
+        if (n > 1) derive_batch_weight(&scalar, challenge, (uint32_t)i);
+        else { memset(&scalar, 0, sizeof(scalar)); scalar.b[0] = 1; }
+        if (n == 1) {
+            blst_p1_from_affine(&w->sum, &c);
+            w->have_sum = 1;
+        } else {
+            w->c[w->c_count] = c;
+            blst_lendian_from_scalar(w->scalars[w->c_count++], &scalar);
+            if (w->c_count == BLS_MSM_CAPACITY && !flush_signature_sum(w)) goto cleanup;
+        }
+        blst_p1 y, weighted;
+        hash_to_g1_cached(&y,secrets[i],lens[i],n<=BLS_Y_CACHE_SIZE);
+        if (n > 1) p1_mul(&weighted, &y, &scalar);
+        else weighted = y;
+        const unsigned char *key = Ks+i*G2_LEN;
+        size_t group = w->pairs;
+        if (w->flags & CASHU_BLS_GROUP_KEYS)
+            for (size_t j = 0; j < w->pairs; j++)
+                if (!memcmp(w->keys[j], key, G2_LEN)) { group = j; break; }
+        if (group < w->pairs) {
+            blst_p1_add_or_double(&w->p[group], &w->p[group], &weighted);
+        } else {
+            if (w->pairs == w->capacity && !flush_pairs(w)) goto cleanup;
+            group = w->pairs++;
+            if (!cached_g2(&w->q[group], key, w->flags)) goto cleanup;
+            if (w->flags & CASHU_BLS_PREPARED_HOT_KEY) {
+                if (!hot_key_lines && i == 0) {
+                    hot_key_lines = malloc(68 * sizeof(*hot_key_lines));
+                    if (hot_key_lines) {
+                        memcpy(hot_key_bytes, key, G2_LEN);
+                        blst_precompute_lines(hot_key_lines, &w->q[group]);
+                    }
+                }
+                if (hot_key_lines && !memcmp(hot_key_bytes, key, G2_LEN))
+                    w->prepared[group] = hot_key_lines;
+            }
+            memcpy(w->keys[group], key, G2_LEN);
+            w->p[group] = weighted;
+        }
+#ifdef ESP_PLATFORM
+        /* All accelerator work is complete; optional fair ownership lets
+         * TLS and other crypto tasks use the peripheral between bursts. */
+        if ((i & 3) == 3) bls_pause(w->flags);
+#endif
+    }
+final_pair:
+    if (!flush_signature_sum(w)) goto cleanup;
+    if (w->pairs == w->capacity && !flush_pairs(w)) goto cleanup;
+    w->prepared[w->pairs] = (w->flags & CASHU_BLS_PREPARED_GENERATOR) ? bls_generator_lines : NULL;
+    w->q[w->pairs] = *blst_p2_affine_generator();
+    w->p[w->pairs] = w->sum;
+    blst_p1_cneg(&w->p[w->pairs++], true);
+    if (!flush_pairs(w)) goto cleanup;
+    blst_fp12 gt;
+    blst_final_exp(&gt, &w->acc);
+    ok = blst_fp12_is_one(&gt);
+cleanup:
+    free(w->scratch);
+    free(w->table);
+    free(w);
+release:
+    blst_hw_release();
+    return ok;
+}
+
+static int bls_verify_proofs(void *ctx, size_t n,
+                             const unsigned char *Ks, const unsigned char *Cs,
+                             const unsigned char *const *secrets, const size_t *lens)
+{ return bls_verify_impl(ctx, n, Ks, Cs, secrets, lens, NULL); }
+
+static void clear_private(void *p, size_t n)
+{ volatile unsigned char *bytes = p; while (n--) *bytes++ = 0; }
+
+/* Validate each external C_ exactly once, retaining the resulting unblinded
+ * affine point through verification. The private entry to bls_verify_impl
+ * cannot be invoked by a caller supplying supposedly validated points. */
+int cashu_bls_unblind_verify(size_t n, const unsigned char *Ks,
+                             const unsigned char *blinded, const unsigned char *rs,
+                             const unsigned char *const *secrets, const size_t *lens,
+                             unsigned char *out)
+{
+    if (!n) return 1;
+    if (!Ks || !blinded || !rs || !secrets || !lens || !out || n > SIZE_MAX/96 || n > UINT32_MAX) return 0;
+    /* Keep memory bounded for unusually large responses. Each chunk still
+     * receives a complete independent cryptographic verification. */
+    if (n > 32) {
+        for (size_t offset = 0; offset < n; offset += 32) {
+            size_t count = n-offset < 32 ? n-offset : 32;
+            if (!cashu_bls_unblind_verify(count, Ks+96*offset, blinded+48*offset,
+                    rs+32*offset, secrets+offset, lens+offset, out+48*offset)) {
+                memset(out, 0, 48*n); return 0;
+            }
+        }
+        return 1;
+    }
+    blst_p1_affine *points = malloc(n * sizeof(*points));
+    if (!points) return 0;
+    int ok = 1;
+    blst_fr *inverses = NULL;
+    if ((cashu_bls_options() & CASHU_BLS_BATCH_INVERSE) && n > 1)
+        inverses = malloc(n*sizeof(*inverses));
+    blst_hw_acquire();
+    if (inverses) {
+        struct { blst_scalar scalar; blst_fr factor, product, reciprocal, inverse; } private;
+        for (size_t i=0;i<n&&ok;i++) {
+            ok=scalar_from_be_checked(&private.scalar,rs+32*i);
+            if (!ok) break;
+            blst_fr_from_scalar(&private.factor,&private.scalar);
+            if (!i) private.product=private.factor;
+            else blst_fr_mul(&private.product,&private.product,&private.factor);
+            inverses[i]=private.product;
+        }
+        if (ok) {
+            blst_fr_inverse(&private.reciprocal,&private.product);
+            for (size_t i=n;i-- > 0;) {
+                if (i) blst_fr_mul(&private.inverse,&private.reciprocal,&inverses[i-1]);
+                else private.inverse=private.reciprocal;
+                inverses[i]=private.inverse;
+                blst_scalar_from_bendian(&private.scalar,rs+32*i);
+                blst_fr_from_scalar(&private.factor,&private.scalar);
+                blst_fr_mul(&private.reciprocal,&private.reciprocal,&private.factor);
+            }
+        }
+        clear_private(&private,sizeof(private));
+    }
+    for (size_t i = 0; i < n && ok; i++) {
+        struct { blst_scalar r, inverse; blst_fr field, inverse_field; } private;
+        blst_p1_affine affine;
+        blst_p1 point, result;
+        ok = scalar_from_be_checked(&private.r, rs+32*i) && validate_g1(&affine, blinded+48*i);
+        if (ok) {
+            blst_fr_from_scalar(&private.field, &private.r);
+            if (inverses) private.inverse_field=inverses[i];
+            else blst_fr_inverse(&private.inverse_field, &private.field);
+            blst_scalar_from_fr(&private.inverse, &private.inverse_field);
+            blst_p1_from_affine(&point, &affine);
+            p1_mul(&result, &point, &private.inverse);
+            blst_p1_to_affine(&points[i], &result);
+            blst_p1_affine_compress(out+48*i, &points[i]);
+        }
+        clear_private(&private, sizeof(private));
+#ifdef ESP_PLATFORM
+        if ((i & 3) == 3) bls_pause(cashu_bls_options());
+#endif
+    }
+    blst_hw_release();
+    if (inverses) { clear_private(inverses,n*sizeof(*inverses));free(inverses); }
+    if (ok) ok = bls_verify_impl(NULL, n, Ks, out, secrets, lens, points);
+    free(points);
+    if (!ok) memset(out, 0, n*48);
     return ok;
 }
 

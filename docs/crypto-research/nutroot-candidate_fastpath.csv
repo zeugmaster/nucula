@@ -1,0 +1,5 @@
+case,accepted,schnorr_verifies
+ordered8,1,8
+reversed8,1,93
+missing8th,0,84
+duplicate8th,0,92

@@ -1,0 +1,109 @@
+options,operation,iterations,mean_us
+15,mpi unchained x1000,3,6751
+15,mpi chained x1000,3,6757
+15,suite_verify n=10 dk,2,1661424
+15,swap crypto n=10 dk,2,4027442
+15,hash_to_g1,10,13349
+15,g1_scalar_mul,10,19223
+15,fp_sqrt,20,2703
+15,fp_inverse,20,1135
+15,point_validate_g1,10,12256
+15,point_validate_g2,6,20763
+15,blind (B_=r*Y),6,32895
+15,unblind (C=1/r*C_),6,33493
+15,pairing_verify n=1,3,331925
+15,batch_verify n=2,2,447499
+15,batch_verify n=4,2,574381
+15,batch_verify n=10,1,964508
+15,suite_verify n=10 dk,2,1661786
+15,swap crypto n=10 dk,2,4027427
+79,mpi unchained x1000,3,6748
+79,mpi chained x1000,3,6757
+79,suite_verify n=10 dk,2,1597256
+79,swap crypto n=10 dk,2,3859678
+79,hash_to_g1,10,10761
+79,g1_scalar_mul,10,19224
+79,fp_sqrt,20,1430
+79,fp_inverse,20,1131
+79,point_validate_g1,10,10956
+79,point_validate_g2,6,18131
+79,blind (B_=r*Y),6,30332
+79,unblind (C=1/r*C_),6,32178
+79,pairing_verify n=1,3,325518
+79,batch_verify n=2,2,429253
+79,batch_verify n=4,2,551650
+79,batch_verify n=10,1,919827
+79,suite_verify n=10 dk,2,1597429
+79,swap crypto n=10 dk,2,3860117
+143,mpi unchained x1000,3,6753
+143,mpi chained x1000,3,6762
+143,suite_verify n=10 dk,2,1659967
+143,swap crypto n=10 dk,2,4022058
+143,hash_to_g1,10,13540
+143,g1_scalar_mul,10,19613
+143,fp_sqrt,20,2703
+143,fp_inverse,20,1449
+143,point_validate_g1,10,12469
+143,point_validate_g2,6,21186
+143,blind (B_=r*Y),6,33583
+143,unblind (C=1/r*C_),6,33809
+143,pairing_verify n=1,3,331788
+143,batch_verify n=2,2,438079
+143,batch_verify n=4,2,568449
+143,batch_verify n=10,1,960691
+143,suite_verify n=10 dk,2,1659845
+143,swap crypto n=10 dk,2,4023220
+271,mpi unchained x1000,3,6748
+271,mpi chained x1000,3,6760
+271,suite_verify n=10 dk,2,1671011
+271,swap crypto n=10 dk,2,4050067
+271,hash_to_g1,10,14027
+271,g1_scalar_mul,10,19428
+271,fp_sqrt,20,2912
+271,fp_inverse,20,1132
+271,point_validate_g1,10,12819
+271,point_validate_g2,6,21484
+271,blind (B_=r*Y),6,33834
+271,unblind (C=1/r*C_),6,34370
+271,pairing_verify n=1,3,335192
+271,batch_verify n=2,2,441230
+271,batch_verify n=4,2,572860
+271,batch_verify n=10,1,969261
+271,suite_verify n=10 dk,2,1670618
+271,swap crypto n=10 dk,2,4050159
+207,mpi unchained x1000,3,6753
+207,mpi chained x1000,3,6757
+207,suite_verify n=10 dk,2,1594379
+207,swap crypto n=10 dk,2,3850668
+207,hash_to_g1,10,10931
+207,g1_scalar_mul,10,19421
+207,fp_sqrt,20,1474
+207,fp_inverse,20,1421
+207,point_validate_g1,10,11169
+207,point_validate_g2,6,18209
+207,blind (B_=r*Y),6,30737
+207,unblind (C=1/r*C_),6,32551
+207,pairing_verify n=1,3,324498
+207,batch_verify n=2,2,427507
+207,batch_verify n=4,2,550168
+207,batch_verify n=10,1,918439
+207,suite_verify n=10 dk,2,1594639
+207,swap crypto n=10 dk,2,3851024
+463,mpi unchained x1000,3,6750
+463,mpi chained x1000,3,6758
+463,suite_verify n=10 dk,2,1594791
+463,swap crypto n=10 dk,2,3850342
+463,hash_to_g1,10,10765
+463,g1_scalar_mul,10,19224
+463,fp_sqrt,20,1430
+463,fp_inverse,20,1420
+463,point_validate_g1,10,11102
+463,point_validate_g2,6,18607
+463,blind (B_=r*Y),6,30638
+463,unblind (C=1/r*C_),6,32770
+463,pairing_verify n=1,3,327008
+463,batch_verify n=2,2,430160
+463,batch_verify n=4,2,550048
+463,batch_verify n=10,1,918797
+463,suite_verify n=10 dk,2,1594284
+463,swap crypto n=10 dk,2,3850047

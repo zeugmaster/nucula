@@ -441,6 +441,25 @@ static void POINTonE1_mult_glv(POINTonE1 *out, const POINTonE1 *in,
     vec_zero(val.l, sizeof(val));   /* scrub the copy of SK */
 }
 
+/* Public-scalar MSM decomposition. Same z^2 decomposition and endomorphism
+ * as POINTonE1_mult_glv; inputs must be subgroup points and scalars < r.
+ * k*P = quotient*(-phi^2(P)) + remainder*P, two 128-bit terms. */
+void blst_p1_glv_expand(POINTonE1_affine out[2], byte split[32],
+                       const POINTonE1_affine *in, const byte scalar[32])
+{
+    POINTonE1_affine point = *in;
+    union { vec256 l; pow256 s; } value;
+    limbs_from_le_bytes(value.l, scalar, 32);
+    div_by_zz(value.l);
+    le_bytes_from_limbs(value.s, value.l, 32);
+    vec_copy(split, value.s+16, 16);
+    vec_copy(split+16, value.s, 16);
+    mul_fp(out[0].X, point.X, beta);
+    mul_fp(out[0].X, out[0].X, beta);
+    cneg_fp(out[0].Y, point.Y, 1);
+    out[1] = point;
+}
+
 static void POINTonE1_sign(POINTonE1 *out, const POINTonE1 *in, const pow256 SK)
 {
     vec384 Z, ZZ;

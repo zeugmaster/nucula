@@ -1,0 +1,128 @@
+RESEARCH_COMMAND log i
+RESEARCH_COMMAND selftest
+I (16188) crypto_test: running crypto test vectors
+I (16189) crypto_test: sha256: ok
+I (16191) crypto_test: hash_to_curve 1: OK
+I (16194) crypto_test: hash_to_curve 2: OK
+I (16197) crypto_test: hash_to_curve 3: OK
+I (16210) crypto_test: blind_message 1: OK
+I (16221) crypto_test: blind_message 2: OK
+I (16257) crypto_test: unblind: OK
+I (16280) crypto_test: DLEQ BlindSignature: OK
+I (16340) crypto_test: DLEQ Proof: OK
+I (17105) crypto_test: NUT-13 V2 counter=0: OK
+I (17106) crypto_test: NUT-13 V2 counter=1: OK
+I (17107) crypto_test: NUT-13 V2 counter=2: OK
+I (17108) crypto_test: NUT-13 V2 counter=3: OK
+I (17112) crypto_test: NUT-13 V2 counter=4: OK
+I (17125) crypto_test: NUT-13 V2: all test vectors passed
+I (17126) crypto_test: all crypto tests passed
+I (17126) bls_test: running BLS12-381 (keyset v3) test vectors
+I (17142) bls_test: hash_to_curve_G1: OK
+I (17158) bls_test: mint key K: valid G2 point
+I (17179) bls_test: blind B_ = r*Y: OK
+I (17201) bls_test: sign C_ = a*B_: OK
+I (17223) bls_test: unblind C = r^-1*C_: OK
+I (17491) bls_test: pairing verification: OK
+I (17761) bls_test: tamper rejection: OK
+I (17794) bls_test: batch C_1 = a*Y_1: OK
+I (17795) bls_test: batch challenge: OK
+I (17796) bls_test: batch weight_1 (ctr=4): OK
+I (17796) bls_test: batch weight_2 (ctr=0): OK
+I (18168) bls_test: batch verification: OK
+I (18537) bls_test: batch tamper rejection: OK
+I (18540) bls_test: point validation: OK
+I (18572) bls_test: suite blind: OK
+I (18606) bls_test: suite unblind: OK
+I (20908) bls_test: suite verify_proofs (incl. multi-key): OK
+I (20909) bls_test: suite input validation: OK
+I (24343) bls_test: suite verify_proofs n=10 (chunk boundary): OK
+I (24344) bls_test: NUT-13 v3 secret: OK
+I (24345) bls_test: NUT-13 v3 r (attempt=1): OK
+I (24365) bls_test: MPI vs software bit-exactness: OK
+I (24788) bls_test: MPI field exponent comparison: OK
+I (24788) bls_test: all BLS tests passed
+I (25134) nutroot_current: current proposal: transcript, per-input witnesses, routing, disclosure, caps and ECDH vectors OK
+I (25137) nutroot: leaf wire forms: OK
+I (25140) nutroot: leaf parse rejections: OK
+I (25147) nutroot: merkle fold + paths: OK
+I (25190) nutroot: tweak derivations: OK
+I (25191) nutroot: transaction transcripts: OK
+I (25244) nutroot: signature vectors: OK
+I (25628) nutroot: witness verification e2e: OK
+I (25629) nutroot: all nutroot tests passed
+self-tests PASSED
+RESEARCH_COMMAND bench verify 8047 11
+I (25906) bls_test: === BLS verifier options=8047 capacity=11 MPI=14927 ===
+I (27936) bls_test: suite_verify cold n=10: 1208710 us, valid=1
+I (29872) bls_test: suite_verify n=10 dk     x2     960564 us/op
+I (35119) bls_test: swap crypto n=10 dk      x2    2621702 us/op
+RESEARCH_COMMAND bench nutroot current opt=95
+I (36572) nutroot_current: NUT-10 a3f04b97154b; 10 distinct keys, 33B point secrets, full-width factors, fresh E per receiver-keyed output; BLS=8047 Nutroot=95
+I (37787) nutroot_current: BLS verify cold n=10          x1 mean 1210112 min 1210112 max 1210112 us
+I (41644) nutroot_current: BLS verify warm n=10          x4 mean 962747 min 962657 max 962782 us
+I (43562) nutroot_current: recover+sign separate n=10    x3 mean 637317 min 637299 max 637328 us
+I (45026) nutroot_current: recover+sign retained n=10    x3 mean 439268 min 439239 max 439288 us
+I (45452) nutroot_current: current witnesses n=10        x3 mean 140076 min 139916 max 140172 us
+I (45802) nutroot_current: commitments individual n=10   x3 mean 114942 min 114933 max 114960 us
+I (46053) nutroot_current: commitments batch n=10        x3 mean 81758 min 81655 max 81935 us
+I (46869) nutroot_current: blind full factors n=10       x3 mean 242964 min 210643 max 307564 us
+I (50752) nutroot_current: unblind+verify separate n=10  x3 mean 1292354 min 1292249 max 1292408 us
+I (54296) nutroot_current: unblind+verify retained n=10  x3 mean 1179279 min 1179231 max 1179303 us
+I (57840) nutroot_current: unblind+verify batch inverse  x3 mean 1179431 min 1179388 max 1179459 us
+I (57850) nutroot_current: KDF cached prefix n=10        x3 mean 1098 min 1088 max 1119 us
+I (57860) nutroot_current: KDF new context n=10          x3 mean 1582 min 1576 max 1595 us
+I (58860) nutroot_current: prepare current outputs n=10  x3 mean 331594 min 299436 max 395767 us
+I (58867) nutroot_current: read prepared outputs n=10    x3 mean 14 min 13 max 18 us
+I (58923) nutroot_current: NUMS offset verify            x5 mean 9601 min 9550 max 9806 us
+I (61025) nutroot_current: leaf slot match at 120        x2 mean 1035594 min 1034189 max 1036999 us
+I (61035) nutroot_current: blst SHA256 33B x100          x3 mean 1528 min 1506 max 1574 us
+I (61045) nutroot_current: IDF SHA256 33B x100           x3 mean 1891 min 1880 max 1913 us
+I (61070) nutroot_current: blst SHA256 1KiB x100         x3 mean 6851 min 6844 max 6865 us
+I (61089) nutroot_current: IDF SHA256 1KiB x100          x3 mean 4046 min 4020 max 4098 us
+I (61266) nutroot_current: BLS Fp2 multiply x100         x3 mean 1818 min 1817 max 1821 us
+I (61276) nutroot_current: BLS Fp2 square x100           x3 mean 1388 min 1386 max 1393 us
+I (61613) nutroot_current: BLS Fp2 inverse x100          x3 mean 110523 min 110242 max 110745 us
+I (61692) nutroot_current: BLS cyclotomic square x100    x3 mean 24470 min 24348 max 24715 us
+I (62202) nutroot_current: BLS final exponent            x5 mean 100284 min 99354 max 100554 us
+I (62295) nutroot_current: secp field mul x1000          x3 mean 9408 min 9405 max 9413 us
+I (62318) nutroot_current: secp field square x1000       x3 mean 5860 min 5828 max 5924 us
+I (62367) nutroot_current: MPI secp field mul x1000      x3 mean 14093 min 14045 max 14150 us
+I (62425) nutroot_current: MPI secp field square x1000   x3 mean 14048 min 14045 max 14054 us
+I (62470) nutroot_current: secp scalar mul x1000         x3 mean 11068 min 11020 max 11164 us
+I (62495) nutroot_current: MPI raw 256-bit x1000         x3 mean 6093 min 6093 max 6093 us
+I (62529) nutroot_current: MPI raw 384-bit x1000         x3 mean 9780 min 9779 max 9784 us
+I (62612) nutroot_current: MPI raw 768-bit x1000         x3 mean 25804 min 25647 max 26112 us
+I (62764) nutroot_current: MPI raw 1152-bit x1000        x3 mean 48790 min 48788 max 48794 us
+I (63008) nutroot_current: MPI raw 1536-bit x1000        x3 mean 79330 min 79209 max 79513 us
+I (63009) nutroot_current: current benchmark correctness: OK
+RESEARCH_COMMAND bench scale 8047 11 16 10 3
+I (63589) bls_test: scale options=8047 capacity=11 MPI=14927 n=16 distinct=10
+I (65140) bls_test: scale cold sample=0 time=1550375 us valid=1
+I (66384) bls_test: scale warm sample=1 time=1241928 us valid=1
+I (67629) bls_test: scale warm sample=2 time=1242970 us valid=1
+I (68874) bls_test: scale warm sample=3 time=1242989 us valid=1
+I (70121) bls_test: scale valid/tampered correctness: OK
+RESEARCH_COMMAND bench scale 8047 11 32 10 3
+I (71198) bls_test: scale options=8047 capacity=11 MPI=14927 n=32 distinct=10
+I (73407) bls_test: scale cold sample=0 time=2208134 us valid=1
+I (75466) bls_test: scale warm sample=1 time=2057128 us valid=1
+I (77526) bls_test: scale warm sample=2 time=2057089 us valid=1
+I (79585) bls_test: scale warm sample=3 time=2057104 us valid=1
+I (81644) bls_test: scale valid/tampered correctness: OK
+RESEARCH_COMMAND bench scale 8047 11 64 10 3
+I (83793) bls_test: scale options=8047 capacity=11 MPI=14927 n=64 distinct=10
+I (87273) bls_test: scale cold sample=0 time=3479376 us valid=1
+I (90605) bls_test: scale warm sample=1 time=3329490 us valid=1
+I (93955) bls_test: scale warm sample=2 time=3347476 us valid=1
+I (97286) bls_test: scale warm sample=3 time=3328339 us valid=1
+I (100614) bls_test: scale valid/tampered correctness: OK
+RESEARCH_COMMAND heap
+free:          60536
+largest block: 25600
+min ever free: 12660
+RESEARCH_COMMAND tasks
+name             prio  stack-min
+console             5      10884
+IDLE                0       1260
+wifi_drain          4      20200

@@ -1,0 +1,1 @@
+PASS: 576 BIP-340 batch/individual comparisons, n=1..32, Strauss/Pippenger, malformed/tampered/duplicate inputs and scratch bounds

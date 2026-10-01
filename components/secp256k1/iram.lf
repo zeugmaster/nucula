@@ -1,0 +1,4 @@
+[mapping:nucula_secp_iram]
+archive: libsecp256k1.a
+entries:
+    secp256k1_port (noflash)

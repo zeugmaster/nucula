@@ -458,6 +458,111 @@ void blst_miller_loop_n(vec384fp12 out, const POINTonE2_affine *const Qs[],
     }
 }
 
+/* ESP port: identical Miller schedule with caller-owned, bounded memory. */
+size_t blst_miller_workspace_sizeof(size_t capacity)
+{
+    if (capacity > ((size_t)-1) / (sizeof(POINTonE2) + sizeof(POINTonE2_affine) + sizeof(POINTonE1_affine)))
+        return 0;
+    return capacity * (sizeof(POINTonE2) + sizeof(POINTonE2_affine) + sizeof(POINTonE1_affine));
+}
+
+int blst_miller_loop_workspace(vec384fp12 out,
+                              const POINTonE2_affine *const Qs[],
+                              const POINTonE1_affine *const Ps[], size_t n,
+                              void *scratch, size_t capacity)
+{
+    if (!scratch || !n || n > capacity || !blst_miller_workspace_sizeof(capacity))
+        return 0;
+    POINTonE2 *T = scratch;
+    POINTonE2_affine *Q = (POINTonE2_affine *)(T + capacity);
+    POINTonE1_affine *Px2 = (POINTonE1_affine *)(Q + capacity);
+    size_t used = 0;
+    for (size_t j = 0; j < n; j++) {
+        if (vec_is_zero(Qs[j], sizeof(*Qs[j])) || vec_is_zero(Ps[j], sizeof(*Ps[j])))
+            continue;
+        size_t i = used++;
+        add_fp(Px2[i].X, Ps[j]->X, Ps[j]->X);
+        neg_fp(Px2[i].X, Px2[i].X);
+        add_fp(Px2[i].Y, Ps[j]->Y, Ps[j]->Y);
+        vec_copy(&Q[i], Qs[j], sizeof(Q[i]));
+        vec_copy(T[i].X, Qs[j]->X, 2*sizeof(T[i].X));
+        vec_copy(T[i].Z, BLS12_381_Rx.p2, sizeof(T[i].Z));
+    }
+    n = used;
+    if (!n) {
+        vec_copy(out, BLS12_381_Rx.p12, sizeof(vec384fp12));
+        return 1;
+    }
+    start_dbl_n(out, T, Px2, n);
+    add_n_dbl_n(out, T, Q, Px2, n, 2);
+    add_n_dbl_n(out, T, Q, Px2, n, 3);
+    add_n_dbl_n(out, T, Q, Px2, n, 9);
+    add_n_dbl_n(out, T, Q, Px2, n, 32);
+    add_n_dbl_n(out, T, Q, Px2, n, 16);
+    conjugate_fp12(out);
+    return 1;
+}
+
+/* The same shared-squaring loop, accepting optional precomputed G2 lines.
+ * Public points only; each non-NULL table must match its validated Q. */
+int blst_miller_loop_prepared_workspace(vec384fp12 out,
+                              const POINTonE2_affine *const Qs[],
+                              const POINTonE1_affine *const Ps[],
+                              const void *const prepared[], size_t n,
+                              void *scratch, size_t capacity)
+{
+    if (!scratch || !n || n > capacity || capacity > 16 || !prepared) return 0;
+    POINTonE2 *T = scratch;
+    POINTonE2_affine *Q = (POINTonE2_affine *)(T + capacity);
+    POINTonE1_affine *Px2 = (POINTonE1_affine *)(Q + capacity);
+    const vec384fp6 *lines[16];
+    size_t used = 0;
+    for (size_t j = 0; j < n; j++) {
+        if (vec_is_zero(Qs[j], sizeof(*Qs[j])) || vec_is_zero(Ps[j], sizeof(*Ps[j]))) continue;
+        size_t i = used++;
+        lines[i] = prepared[j];
+        add_fp(Px2[i].X, Ps[j]->X, Ps[j]->X);
+        neg_fp(Px2[i].X, Px2[i].X);
+        add_fp(Px2[i].Y, Ps[j]->Y, Ps[j]->Y);
+        if (!lines[i]) {
+            vec_copy(&Q[i], Qs[j], sizeof(Q[i]));
+            vec_copy(T[i].X, Qs[j]->X, 2*sizeof(T[i].X));
+            vec_copy(T[i].Z, BLS12_381_Rx.p2, sizeof(T[i].Z));
+        }
+    }
+    if (!used) { vec_copy(out, BLS12_381_Rx.p12, sizeof(vec384fp12)); return 1; }
+    vec384fp6 line;
+    for (size_t i = 0; i < used; i++) {
+        if (lines[i]) post_line_by_Px2(line, lines[i][0], &Px2[i]);
+        else { line_dbl(line, &T[i], &T[i]); line_by_Px2(line, &Px2[i]); }
+        if (!i) {
+            vec_zero(out, sizeof(vec384fp12));
+            vec_copy(out[0][0], line[0], 2*sizeof(vec384fp2));
+            vec_copy(out[1][1], line[2], sizeof(vec384fp2));
+        } else mul_by_xy00z0_fp12(out, out, line);
+    }
+    static const unsigned doubles[] = {2,3,9,32,16};
+    size_t step = 1;
+    for (size_t group = 0; group < 5; group++) {
+        for (size_t i = 0; i < used; i++) {
+            if (lines[i]) post_line_by_Px2(line, lines[i][step], &Px2[i]);
+            else { line_add(line, &T[i], &T[i], &Q[i]); line_by_Px2(line, &Px2[i]); }
+            mul_by_xy00z0_fp12(out, out, line);
+        }
+        step++;
+        for (unsigned j = 0; j < doubles[group]; j++, step++) {
+            sqr_fp12(out, out);
+            for (size_t i = 0; i < used; i++) {
+                if (lines[i]) post_line_by_Px2(line, lines[i][step], &Px2[i]);
+                else { line_dbl(line, &T[i], &T[i]); line_by_Px2(line, &Px2[i]); }
+                mul_by_xy00z0_fp12(out, out, line);
+            }
+        }
+    }
+    conjugate_fp12(out);
+    return 1;
+}
+
 void blst_final_exp(vec384fp12 ret, const vec384fp12 f)
 {   final_exp(ret, f);   }
 

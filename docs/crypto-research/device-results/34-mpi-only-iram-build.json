@@ -1,0 +1,23 @@
+{
+  "label": "34-mpi-only-iram",
+  "options": {
+    "SECP_BLOCKS": "2",
+    "SECP_TEETH": "5",
+    "SECP_WINDOW": "12",
+    "SECP_OPT": "Os",
+    "SECP_IRAM": "OFF",
+    "SECP_HOT_IRAM": "OFF",
+    "SECP_RAM_VERIFY": "OFF",
+    "SECP_RAM_SIGN": "OFF",
+    "MPI_IRAM": "ON",
+    "BLST_OPT": "O3",
+    "MPI_OPT": "O3",
+    "CRYPTO_LTO": "OFF"
+  },
+  "source_manifest_sha256": "f38e17ada0063e7e245fbe7dc765beb79155cfce32a5b283480d29e6b8361281",
+  "build_ok": true,
+  "flash_mode": "QIO80 (bootloader25)",
+  "app_bytes": 1508864,
+  "app_sha256": "f3ef5b6d97cf04af5caec90a0d7a7ff711f7f4b576ca3faa54fad22f1c56cdf7",
+  "device_ok": true
+}

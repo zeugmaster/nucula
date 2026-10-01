@@ -444,3 +444,30 @@ POINTXYZZ_TO_JACOBIAN_IMPL(POINTonE2, 384x, fp2)
 POINTXYZZ_DADD_IMPL(POINTonE2, 384x, fp2)
 POINTXYZZ_DADD_AFFINE_IMPL(POINTonE2, 384x, fp2, BLS12_381_Rx.p2)
 POINTS_MULT_PIPPENGER_IMPL(blst_p2, POINTonE2)
+
+/* ESP port: explicit bucket dispatch avoids hidden small-batch alloca. */
+void blst_p1s_mult_bucket(POINTonE1 *out, const POINTonE1_affine *const points[],
+                         size_t n, const byte *const scalars[], size_t nbits,
+                         void *scratch)
+{
+    POINTonE1s_mult_pippenger(out, points, n, scalars, nbits, scratch, 0);
+}
+
+size_t blst_p1s_window_workspace_sizeof(size_t n, size_t wbits)
+{
+    if (wbits < 2 || wbits > 8 || n > 256) return 0;
+    return (2 * sizeof(POINTonE1_affine) * n) << (wbits - 1);
+}
+
+int blst_p1s_precompute_window_workspace(POINTonE1_affine *table, size_t wbits,
+                                        const POINTonE1_affine *const points[],
+                                        size_t n, void *scratch, size_t bytes)
+{
+    size_t required = blst_p1s_window_workspace_sizeof(n, wbits);
+    if (!n || !required || bytes < required || !scratch) return 0;
+    POINTonE1 *rows = scratch;
+    for (size_t i = 0; i < n; i++)
+        POINTonE1_precompute_row_wbits(rows + (i << (wbits - 1)), wbits, points[i]);
+    POINTonE1s_to_affine_row_wbits(table, rows, wbits, n);
+    return 1;
+}

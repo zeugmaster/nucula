@@ -1,0 +1,8 @@
+{
+  "label": "46-rv32-copy",
+  "diagnostics_ok": false,
+  "failures": [
+    "E (34826) bls_test: MPI option mask out of range"
+  ],
+  "raw_log_private": true
+}

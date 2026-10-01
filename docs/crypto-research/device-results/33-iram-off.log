@@ -1,0 +1,88 @@
+RESEARCH_COMMAND log i
+RESEARCH_COMMAND bench mpi 6735
+I (16200) bls_test: === MPI variant 6735 ===
+I (16219) bls_test: MPI vs software bit-exactness: OK
+I (16644) bls_test: MPI field exponent comparison: OK
+I (16669) bls_test: mpi unchained x1000      x3       6787 us/op
+I (16694) bls_test: mpi chained x1000        x3       6788 us/op
+I (20577) bls_test: suite_verify n=10 dk     x2    1524729 us/op
+I (27971) bls_test: swap crypto n=10 dk      x2    3695406 us/op
+RESEARCH_COMMAND bench verify 879 11
+I (28092) bls_test: === BLS verifier options=879 capacity=11 MPI=6735 ===
+I (30269) bls_test: suite_verify cold n=10: 1345989 us, valid=1
+I (32679) bls_test: suite_verify n=10 dk     x2    1198285 us/op
+I (38744) bls_test: swap crypto n=10 dk      x2    3030526 us/op
+RESEARCH_COMMAND bench nutroot quick opt=15
+I (38880) nutroot: nutroot witness verification benchmark [full] (timed unit = one verify call, as nutshell's)
+I (38988) nutroot: keypair full scalar      x8  mean     8221 med     8191 min     8184 us
+I (39149) nutroot: sign incl keypair        x8  mean    18273 med    18277 min    18240 us
+I (39239) nutroot: sign retained keypair    x8  mean     9795 med     9791 min     9791 us
+I (39378) nutroot: schnorr verify           x8  mean    15964 med    15946 min    15942 us
+I (39523) nutroot: ECDH full scalar         x8  mean    16851 med    16850 min    16849 us
+I (39541) nutroot: parse compressed key     x8  mean      668 med      632 min      632 us
+I (39833) nutroot: threshold 2/3 checks=2   x3  mean    50894 med    51003 min    50676 us
+I (40232) nutroot: threshold 3/5 checks=3   x3  mean    68868 med    69003 min    68600 us
+I (41162) nutroot: threshold 8/15 checks=8  x3  mean   157896 med   158003 min   157683 us
+I (41163) nutroot: quick correctness: OK, options=15
+RESEARCH_COMMAND selftest
+I (41193) crypto_test: running crypto test vectors
+I (41194) crypto_test: sha256: ok
+I (41196) crypto_test: hash_to_curve 1: OK
+I (41199) crypto_test: hash_to_curve 2: OK
+I (41202) crypto_test: hash_to_curve 3: OK
+I (41215) crypto_test: blind_message 1: OK
+I (41226) crypto_test: blind_message 2: OK
+I (41248) crypto_test: unblind: OK
+I (41299) crypto_test: DLEQ BlindSignature: OK
+I (41372) crypto_test: DLEQ Proof: OK
+I (42137) crypto_test: NUT-13 V2 counter=0: OK
+I (42138) crypto_test: NUT-13 V2 counter=1: OK
+I (42139) crypto_test: NUT-13 V2 counter=2: OK
+I (42139) crypto_test: NUT-13 V2 counter=3: OK
+I (42143) crypto_test: NUT-13 V2 counter=4: OK
+I (42157) crypto_test: NUT-13 V2: all test vectors passed
+I (42157) crypto_test: all crypto tests passed
+I (42158) bls_test: running BLS12-381 (keyset v3) test vectors
+I (42174) bls_test: hash_to_curve_G1: OK
+I (42190) bls_test: mint key K: valid G2 point
+I (42212) bls_test: blind B_ = r*Y: OK
+I (42234) bls_test: sign C_ = a*B_: OK
+I (42256) bls_test: unblind C = r^-1*C_: OK
+I (42562) bls_test: pairing verification: OK
+I (42870) bls_test: tamper rejection: OK
+I (42904) bls_test: batch C_1 = a*Y_1: OK
+I (42905) bls_test: batch challenge: OK
+I (42905) bls_test: batch weight_1 (ctr=4): OK
+I (42905) bls_test: batch weight_2 (ctr=0): OK
+I (43315) bls_test: batch verification: OK
+I (43722) bls_test: batch tamper rejection: OK
+I (43725) bls_test: point validation: OK
+I (43758) bls_test: suite blind: OK
+I (43791) bls_test: suite unblind: OK
+I (46337) bls_test: suite verify_proofs (incl. multi-key): OK
+I (46338) bls_test: suite input validation: OK
+I (50227) bls_test: suite verify_proofs n=10 (chunk boundary): OK
+I (50228) bls_test: NUT-13 v3 secret: OK
+I (50229) bls_test: NUT-13 v3 r (attempt=1): OK
+I (50250) bls_test: MPI vs software bit-exactness: OK
+I (50684) bls_test: MPI field exponent comparison: OK
+I (50684) bls_test: all BLS tests passed
+I (51032) nutroot_current: current proposal: transcript, per-input witnesses, routing, disclosure, caps and ECDH vectors OK
+I (51034) nutroot: leaf wire forms: OK
+I (51038) nutroot: leaf parse rejections: OK
+I (51044) nutroot: merkle fold + paths: OK
+I (51090) nutroot: tweak derivations: OK
+I (51091) nutroot: transaction transcripts: OK
+I (51144) nutroot: signature vectors: OK
+I (51546) nutroot: witness verification e2e: OK
+I (51546) nutroot: all nutroot tests passed
+self-tests PASSED
+RESEARCH_COMMAND heap
+free:          71680
+largest block: 36864
+min ever free: 42424
+RESEARCH_COMMAND tasks
+name             prio  stack-min
+console             5       7188
+IDLE                0       1260
+wifi_drain          4      20204

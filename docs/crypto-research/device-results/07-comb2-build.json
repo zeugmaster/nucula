@@ -1,0 +1,20 @@
+{
+  "label": "07-comb2",
+  "options": {
+    "BLOCKS": "2",
+    "TEETH": "5",
+    "WINDOW": "8",
+    "OPT": "Os",
+    "IRAM": "OFF",
+    "RAM_VERIFY": "OFF",
+    "RAM_SIGN": "OFF"
+  },
+  "mpi_iram": false,
+  "source_manifest_sha256": "88b1649606ae09cbf9768cc45fee0e5b9c89b26403a88d0ae35769a7ac44ad58",
+  "build_ok": true,
+  "app_bytes": 1344400,
+  "app_sha256": "fc3abc871212313ce4ec6616a5bb357ea3d684ee0ee492902b725e906b8026fa",
+  "device_ok": true,
+  "diagnostics_ok": true,
+  "diagnostic_failures": []
+}

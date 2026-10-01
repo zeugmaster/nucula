@@ -1,0 +1,24 @@
+RESEARCH_COMMAND log i
+RESEARCH_COMMAND bench nutroot quick opt=3
+I (16117) nutroot: nutroot witness verification benchmark [full] (timed unit = one verify call, as nutshell's)
+I (16290) nutroot: keypair full scalar      x8  mean    15015 med    15012 min    14952 us
+I (16555) nutroot: sign incl keypair        x8  mean    32425 med    32395 min    32395 us
+I (16700) nutroot: sign retained keypair    x8  mean    17235 med    17222 min    17222 us
+I (16846) nutroot: schnorr verify           x8  mean    17792 med    17793 min    17790 us
+I (16991) nutroot: ECDH full scalar         x8  mean    17675 med    17675 min    17674 us
+I (17009) nutroot: parse compressed key     x8  mean     1677 med     1619 min     1619 us
+I (17411) nutroot: threshold 2/3 checks=2   x3  mean    64137 med    64009 min    64009 us
+I (17971) nutroot: threshold 3/5 checks=3   x3  mean    87998 med    88009 min    87976 us
+I (19306) nutroot: threshold 8/15 checks=8  x3  mean   203203 med   203009 min   203009 us
+I (19307) nutroot: quick correctness: OK, options=3
+RESEARCH_COMMAND bench
+I (19699) crypto_test: hash_to_curve x100: 3429 us/op
+I (20672) crypto_test: blind_message x50: 19390 us/op
+I (23507) crypto_test: verify_dleq   x50: 56501 us/op
+RESEARCH_COMMAND heap
+free:          71904
+largest block: 36864
+min ever free: 45316
+RESEARCH_COMMAND tasks
+name             prio  stack-min
+console             5      17140

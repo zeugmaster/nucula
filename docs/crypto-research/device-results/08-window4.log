@@ -1,0 +1,37 @@
+RESEARCH_COMMAND log i
+RESEARCH_COMMAND bench mpi 79
+I (16173) bls_test: === MPI variant 79 ===
+I (16200) bls_test: MPI vs software bit-exactness: OK
+I (16597) bls_test: MPI field exponent comparison: OK
+I (16622) bls_test: mpi unchained x1000      x3       6774 us/op
+I (16647) bls_test: mpi chained x1000        x3       6792 us/op
+I (21052) bls_test: suite_verify n=10 dk     x2    1770497 us/op
+I (29477) bls_test: swap crypto n=10 dk      x2    4210362 us/op
+RESEARCH_COMMAND bench verify 119 11
+I (29593) bls_test: === BLS verifier options=119 capacity=11 MPI=79 ===
+I (32041) bls_test: suite_verify cold n=10: 1585955 us, valid=1
+I (34813) bls_test: suite_verify n=10 dk     x2    1379275 us/op
+I (41678) bls_test: swap crypto n=10 dk      x2    3430300 us/op
+RESEARCH_COMMAND bench nutroot quick opt=3
+I (41776) nutroot: nutroot witness verification benchmark [full] (timed unit = one verify call, as nutshell's)
+I (41963) nutroot: keypair full scalar      x8  mean    15624 med    15609 min    15555 us
+I (42244) nutroot: sign incl keypair        x8  mean    33625 med    33620 min    33620 us
+I (42399) nutroot: sign retained keypair    x8  mean    17858 med    17818 min    17818 us
+I (42576) nutroot: schnorr verify           x8  mean    20491 med    20491 min    20488 us
+I (42729) nutroot: ECDH full scalar         x8  mean    17701 med    17701 min    17698 us
+I (42755) nutroot: parse compressed key     x8  mean     1676 med     1619 min     1618 us
+I (43201) nutroot: threshold 2/3 checks=2   x3  mean    72779 med    73008 min    72322 us
+I (43813) nutroot: threshold 3/5 checks=3   x3  mean    97941 med    98008 min    97808 us
+I (45274) nutroot: threshold 8/15 checks=8  x3  mean   228920 med   229008 min   228746 us
+I (45275) nutroot: quick correctness: OK, options=3
+RESEARCH_COMMAND bench
+I (45656) crypto_test: hash_to_curve x100: 3411 us/op
+I (46660) crypto_test: blind_message x50: 20019 us/op
+I (49526) crypto_test: verify_dleq   x50: 57166 us/op
+RESEARCH_COMMAND heap
+free:          71672
+largest block: 36864
+min ever free: 25812
+RESEARCH_COMMAND tasks
+name             prio  stack-min
+console             5       7348

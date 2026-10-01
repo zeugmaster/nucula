@@ -1,0 +1,11 @@
+{
+  "date": "2026-09-15",
+  "chip": "ESP32-C3 rev0.4",
+  "cpu_mhz": 160,
+  "flash_mode": "DIO",
+  "flash_mhz": 80,
+  "idf": "5.5.1",
+  "wifi": "enabled, disconnected; periodic scan/retry",
+  "original_baseline": "existing on-device firmware",
+  "initial_source_snapshot": "/tmp/nucula-opt-20260915/baseline-source.tar.gz"
+}

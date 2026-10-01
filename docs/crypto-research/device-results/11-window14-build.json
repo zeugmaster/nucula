@@ -1,0 +1,20 @@
+{
+  "label": "11-window14",
+  "options": {
+    "BLOCKS": "11",
+    "TEETH": "6",
+    "WINDOW": "14",
+    "OPT": "Os",
+    "IRAM": "OFF",
+    "RAM_VERIFY": "OFF",
+    "RAM_SIGN": "OFF"
+  },
+  "mpi_iram": false,
+  "source_manifest_sha256": "88b1649606ae09cbf9768cc45fee0e5b9c89b26403a88d0ae35769a7ac44ad58",
+  "build_ok": true,
+  "app_bytes": 1880992,
+  "app_sha256": "13313aeb12ca6053631f60ade8e68a0049f802902bc9420e060bda5cf061dcd7",
+  "device_ok": true,
+  "diagnostics_ok": true,
+  "diagnostic_failures": []
+}

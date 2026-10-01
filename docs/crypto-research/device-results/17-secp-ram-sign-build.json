@@ -1,0 +1,28 @@
+{
+  "label": "17-secp-ram-sign",
+  "options": {
+    "BLOCKS": "11",
+    "TEETH": "6",
+    "WINDOW": "8",
+    "OPT": "Os",
+    "IRAM": "OFF",
+    "RAM_VERIFY": "OFF",
+    "RAM_SIGN": "ON"
+  },
+  "mpi_iram": false,
+  "source_manifest_sha256": "88b1649606ae09cbf9768cc45fee0e5b9c89b26403a88d0ae35769a7ac44ad58",
+  "build_ok": true,
+  "app_bytes": 1364896,
+  "app_sha256": "345717da9cc15c67675ae1a8903073e9957c13900a3840aecbce47ef1c82f74f",
+  "device_ok": true,
+  "diagnostics_ok": false,
+  "diagnostic_failures": [
+    "I (30624) bls_test: suite_verify cold n=10: 524 us, valid=0",
+    "E (30635) bls_test: bench: suite_verify n=10 FAILED",
+    "E (30637) bls_test: bench: suite_verify n=10 FAILED",
+    "E (30640) bls_test: bench: swap verify(in) FAILED",
+    "E (31328) bls_test: bench: swap verify(out) FAILED",
+    "E (31331) bls_test: bench: swap verify(in) FAILED",
+    "E (32010) bls_test: bench: swap verify(out) FAILED"
+  ]
+}

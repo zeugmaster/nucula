@@ -1,0 +1,23 @@
+{
+  "label": "26-small-ram-sign",
+  "options": {
+    "SECP_BLOCKS": "2",
+    "SECP_TEETH": "5",
+    "SECP_WINDOW": "12",
+    "SECP_OPT": "Os",
+    "SECP_IRAM": "OFF",
+    "SECP_HOT_IRAM": "ON",
+    "SECP_RAM_VERIFY": "OFF",
+    "SECP_RAM_SIGN": "ON",
+    "MPI_IRAM": "ON",
+    "BLST_OPT": "O3",
+    "MPI_OPT": "O3",
+    "CRYPTO_LTO": "OFF"
+  },
+  "source_manifest_sha256": "f38e17ada0063e7e245fbe7dc765beb79155cfce32a5b283480d29e6b8361281",
+  "build_ok": true,
+  "flash_mode": "QIO80 (bootloader25)",
+  "app_bytes": 1509392,
+  "app_sha256": "2433f4358f08ca02df4356a16f7db02fa2b0315a73c69f1e731f0c774569729c",
+  "device_ok": true
+}

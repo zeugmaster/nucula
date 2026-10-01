@@ -1,0 +1,23 @@
+{
+  "label": "27-blst-O2",
+  "options": {
+    "SECP_BLOCKS": "2",
+    "SECP_TEETH": "5",
+    "SECP_WINDOW": "12",
+    "SECP_OPT": "Os",
+    "SECP_IRAM": "OFF",
+    "SECP_HOT_IRAM": "ON",
+    "SECP_RAM_VERIFY": "OFF",
+    "SECP_RAM_SIGN": "OFF",
+    "MPI_IRAM": "ON",
+    "BLST_OPT": "O2",
+    "MPI_OPT": "O3",
+    "CRYPTO_LTO": "OFF"
+  },
+  "source_manifest_sha256": "f38e17ada0063e7e245fbe7dc765beb79155cfce32a5b283480d29e6b8361281",
+  "build_ok": true,
+  "flash_mode": "QIO80 (bootloader25)",
+  "app_bytes": 1470592,
+  "app_sha256": "dd0e4ee420be961884b17de8568efde58989af6a4afb34c3b6ea2d5ad6542999",
+  "device_ok": true
+}

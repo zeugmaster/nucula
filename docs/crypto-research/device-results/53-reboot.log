@@ -1,0 +1,63 @@
+RESEARCH_COMMAND log i
+RESEARCH_COMMAND selftest
+I (16157) crypto_test: running crypto test vectors
+I (16157) crypto_test: sha256: ok
+I (16159) crypto_test: hash_to_curve 1: OK
+I (16162) crypto_test: hash_to_curve 2: OK
+I (16165) crypto_test: hash_to_curve 3: OK
+I (16178) crypto_test: blind_message 1: OK
+I (16189) crypto_test: blind_message 2: OK
+I (16225) crypto_test: unblind: OK
+I (16249) crypto_test: DLEQ BlindSignature: OK
+I (16308) crypto_test: DLEQ Proof: OK
+I (17074) crypto_test: NUT-13 V2 counter=0: OK
+I (17075) crypto_test: NUT-13 V2 counter=1: OK
+I (17076) crypto_test: NUT-13 V2 counter=2: OK
+I (17077) crypto_test: NUT-13 V2 counter=3: OK
+I (17081) crypto_test: NUT-13 V2 counter=4: OK
+I (17094) crypto_test: NUT-13 V2: all test vectors passed
+I (17094) crypto_test: all crypto tests passed
+I (17095) bls_test: running BLS12-381 (keyset v3) test vectors
+I (17111) bls_test: hash_to_curve_G1: OK
+I (17127) bls_test: mint key K: valid G2 point
+I (17148) bls_test: blind B_ = r*Y: OK
+I (17170) bls_test: sign C_ = a*B_: OK
+I (17192) bls_test: unblind C = r^-1*C_: OK
+I (17460) bls_test: pairing verification: OK
+I (17730) bls_test: tamper rejection: OK
+I (17762) bls_test: batch C_1 = a*Y_1: OK
+I (17763) bls_test: batch challenge: OK
+I (17764) bls_test: batch weight_1 (ctr=4): OK
+I (17764) bls_test: batch weight_2 (ctr=0): OK
+I (18135) bls_test: batch verification: OK
+I (18504) bls_test: batch tamper rejection: OK
+I (18507) bls_test: point validation: OK
+I (18541) bls_test: suite blind: OK
+I (18574) bls_test: suite unblind: OK
+I (20878) bls_test: suite verify_proofs (incl. multi-key): OK
+I (20879) bls_test: suite input validation: OK
+I (24330) bls_test: suite verify_proofs n=10 (chunk boundary): OK
+I (24331) bls_test: NUT-13 v3 secret: OK
+I (24332) bls_test: NUT-13 v3 r (attempt=1): OK
+I (24353) bls_test: MPI vs software bit-exactness: OK
+I (24776) bls_test: MPI field exponent comparison: OK
+I (24776) bls_test: all BLS tests passed
+I (25124) nutroot_current: current proposal: transcript, per-input witnesses, routing, disclosure, caps and ECDH vectors OK
+I (25126) nutroot: leaf wire forms: OK
+I (25130) nutroot: leaf parse rejections: OK
+I (25136) nutroot: merkle fold + paths: OK
+I (25180) nutroot: tweak derivations: OK
+I (25181) nutroot: transaction transcripts: OK
+I (25233) nutroot: signature vectors: OK
+I (25619) nutroot: witness verification e2e: OK
+I (25619) nutroot: all nutroot tests passed
+self-tests PASSED
+RESEARCH_COMMAND heap
+free:          61324
+largest block: 26624
+min ever free: 34620
+RESEARCH_COMMAND tasks
+name             prio  stack-min
+console             5      11508
+IDLE                0       1260
+wifi_drain          4      20192

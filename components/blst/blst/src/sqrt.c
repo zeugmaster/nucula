@@ -5,10 +5,16 @@
  */
 
 #include "fields.h"
+#if defined(__riscv) && __riscv_xlen == 32
+#include "blst_mpi_hooks.h"
+#endif
 
 #ifdef __OPTIMIZE_SIZE__
 static void recip_sqrt_fp_3mod4(vec384 out, const vec384 inp)
 {
+#if defined(__riscv) && __riscv_xlen == 32
+    if (blst_mpi_fixed_exp_384(out, inp, BLST_MPI_SQRT_EXP)) return;
+#endif
     static const byte BLS_12_381_P_minus_3_div_4[] = {
         TO_BYTES(0xee7fbfffffffeaaa), TO_BYTES(0x07aaffffac54ffff),
         TO_BYTES(0xd9cc34a83dac3d89), TO_BYTES(0xd91dd2e13ce144af),
@@ -47,6 +53,9 @@ static void sqr_n_mul_fp(vec384 out, const vec384 a, size_t count,
 # include "sqrt-addchain.h"
 static void recip_sqrt_fp_3mod4(vec384 out, const vec384 inp)
 {
+#if defined(__riscv) && __riscv_xlen == 32
+    if (blst_mpi_fixed_exp_384(out, inp, BLST_MPI_SQRT_EXP)) return;
+#endif
     RECIP_SQRT_MOD_BLS12_381_P(out, inp, vec384);
 }
 # undef RECIP_SQRT_MOD_BLS12_381_P

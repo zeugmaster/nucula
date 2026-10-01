@@ -6,6 +6,10 @@
 #include <mbedtls/md.h>
 #include "secp256k1_extrakeys.h"
 #include "secp256k1_schnorrsig.h"
+#include <secp256k1_nucula.h>
+static unsigned crypto_options = 1; /* Public joint DLEQ multiplications. */
+void cashu_crypto_configure(unsigned options){crypto_options=options;}
+unsigned cashu_crypto_options(void){return crypto_options;}
 
 static const char DOMAIN_SEPARATOR[] = "Secp256k1_HashToCurve_Cashu_";
 #define DOMAIN_SEPARATOR_LEN 28
@@ -123,7 +127,7 @@ int cashu_unblind(const secp256k1_context *ctx,
                   const secp256k1_pubkey *K)
 {
     secp256k1_pubkey rK = *K;
-    if (!secp256k1_ec_pubkey_tweak_mul(ctx, &rK, r))
+    if (!secp256k1_nucula_secret_multiply(ctx, &rK, K, r))
         return 0;
 
     secp256k1_ec_pubkey_negate(ctx, &rK);
@@ -142,6 +146,15 @@ int cashu_verify_dleq(const secp256k1_context *ctx,
                       const unsigned char *e,
                       const unsigned char *s)
 {
+    if(crypto_options & 1) {
+        secp256k1_pubkey calculated[2];
+        int result=secp256k1_nucula_dleq_points(ctx,calculated,A,B_,C_,e,s);
+        if(result>=0) {
+            if(!result)return 0;
+            secp256k1_pubkey keys[4]={calculated[0],calculated[1],*A,*C_};unsigned char expected[32];
+            return hash_e(ctx,expected,keys,4)&&!memcmp(e,expected,32);
+        }
+    }
     /* R1 = s*G - e*A */
     secp256k1_pubkey sG;
     if (!secp256k1_ec_pubkey_create(ctx, &sG, s))

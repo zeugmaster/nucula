@@ -1,0 +1,49 @@
+{
+  "review_date": "2026-09-13",
+  "repository_head": "85ac407659e271db0e95bb6293f406cbf54ab564",
+  "source_sha256": {
+    "main/crypto_bls.c": "7ab766df3976b3082b0f119e5f8beacc5e70cf99283d2b28cd4dd01345259699",
+    "main/crypto_bls_test.c": "f385b8e436134b9ce0d0748fb7d0632b30b8fc019f9c38c90f29913bde89b913",
+    "main/nutroot.c": "aca1a3af956ae9a4a79d8bd659e37cba4d91164687f2c30ed8377e0420e88534",
+    "main/nutroot.h": "d452ad3d878d3e27fbc81552e3606e4139cac7024aaae33e090704787e0c67d6",
+    "main/nutroot_test.c": "137bad8d3a2341b8e4bf15a3b49e5050a5fcb5c01c035a97f8a5673345246f56",
+    "docs/bench-nutroot-esp32c3.md": "3e3a578393ebaee627d97fa806c99c9a98e7a5e836438b9c9d7be6774fb0ce3a",
+    "components/blst/port/blst_mpi.c": "61737edd922fc45a669984641b6cc3db0770f4fd6f9e8feacb8a13d51672023f",
+    "components/blst/blst/src/pairing.c": "c20f30198d8c5f723b571296a4d16d1834a507e991c95b984e9a057b6c9b006b",
+    "components/blst/blst/src/multi_scalar.c": "26c2288aa5b24243102c5838241fb8dce9bef26b7a1ea144218422ec4ef3b2bd",
+    "components/secp256k1/libsecp256k1/src/ecmult_gen.h": "992ad0e8f2c0dd4cb699af8a5db7c640e904e7696b98f008d9a164933f16ecbf",
+    "components/blst/blst/src/map_to_g1.c": "7a43f77bc4f64d215d2fa38f5465ae3c04aa81d7a98754a62f6e68a28ee26684",
+    "components/blst/blst/src/map_to_g2.c": "57b4f880ba2c6811aea25eb1d56d30cd191c20a1e60036d51989071728c85f5d",
+    "components/blst/blst/src/hash_to_field.c": "6bfe3fa4d38a2253257c7d32ffae840047b4c6386060c9fe195496efa02b6545",
+    "components/blst/blst/src/no_asm.h": "f2daa13ba3d7fe6806d8467f8d3c22f554a2bb5f371d72c40c86c8c4ed8658d9",
+    "main/wallet.cpp": "e6b5b249f5dddd4e511c3c0a8558578a24814ced4bf4129a38f7104f145f6eaf",
+    "main/cashu.hpp": "a3ad707528b81cf3d770780c47086d3275b495071f61eefa5e113c9ebaebe59a",
+    "main/cashu_suite.h": "d4ff7aef656ff773b17bd2bbcf6870cfce0dec2b1f45641ceee19e14e506434c",
+    "sdkconfig": "c55e27f345b2df5f304d3fd9b1b8b459178048ceb39c5584ce82b6ef95974df7",
+    "components/secp256k1/CMakeLists.txt": "06cbeef82b36406676a1fcad4ec0f87fd2e3b8793f8466aa8e2fbb828cba0a44"
+  },
+  "proposals": {
+    "371": {
+      "html_url": "https://github.com/cashubtc/nuts/pull/371",
+      "state": "open",
+      "merged": false,
+      "merged_at": null,
+      "updated_at": "2026-09-10T08:21:00Z",
+      "merge_commit_sha": "4a3a817e29e4d27d58d2aa6d3572c7f54df8984a",
+      "head_repo": "robwoodgate/nuts",
+      "head_sha": "68840ccd6bd71fa2c0a104353d741c78505fd7d1",
+      "base_branch": "main"
+    },
+    "421": {
+      "html_url": "https://github.com/cashubtc/nuts/pull/421",
+      "state": "closed",
+      "merged": true,
+      "merged_at": "2026-09-10T21:10:19Z",
+      "updated_at": "2026-09-10T21:42:54Z",
+      "merge_commit_sha": "4fd8112fdd7dceb5ba2def1a460a884c82735c39",
+      "head_repo": "robwoodgate/nuts",
+      "head_sha": "a3f04b97154b036626d27ca437d75b348a6a4407",
+      "base_branch": "bls-protocol"
+    }
+  }
+}

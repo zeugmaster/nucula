@@ -1,0 +1,19 @@
+RESEARCH_COMMAND log i
+RESEARCH_COMMAND bench mpi 2639
+I (16149) bls_test: === MPI variant 2639 ===
+I (16176) bls_test: MPI vs software bit-exactness: OK
+RESEARCH_COMMAND bench verify 879 11
+RESEARCH_COMMAND bench nutroot quick opt=15
+RESEARCH_COMMAND bench mpi 6735
+RESEARCH_COMMAND selftest
+RESEARCH_COMMAND bench nutroot current opt=15
+RESEARCH_COMMAND bench scale 879 11 10 1 3
+RESEARCH_COMMAND heap
+free:          54268
+largest block: 19456
+min ever free: 19188
+RESEARCH_COMMAND tasks
+name             prio  stack-min
+console             5       5316
+IDLE                0       1260
+wifi_drain          4      20192

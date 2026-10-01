@@ -2,6 +2,7 @@
 #include "sdkconfig.h"
 #endif
 #include "crypto_bls_test.h"
+#include "crypto_bls.h"
 #include "cashu_suite.h"
 #include "hex.h"
 #include <blst.h>
@@ -558,6 +559,11 @@ static const char *BENCH_K_HEX[10] = {
         "d620355c0eb5d02236718cdaf99fba6e19ef5cee2996268eb9a53ae1ee09bce3",
 };
 
+const char *crypto_bls_bench_key_hex(int i)
+{
+    return (i >= 0 && i < 10) ? BENCH_K_HEX[i] : NULL;
+}
+
 /* --------------------------------------------------------------------------
  * Suite-level tests: drive cashu_suite_bls through the byte-oriented vtable
  * exactly as the wallet does. The suite ops manage the MPI lock internally,
@@ -711,8 +717,11 @@ static int test_bls_suite(void)
      * a partial one carrying the folded left side). Tampering the first and
      * the last proof exercises both chunks. Keys/proofs from the bench table. */
     {
-        static unsigned char ks10[10 * 96], cs10[10 * 48];
-        static char sbufs[10][16];
+        struct chunk_fixture { unsigned char ks[10*96],cs[10*48];char secrets[10][16]; };
+        struct chunk_fixture *fixture=calloc(1,sizeof(*fixture));
+        if(!fixture){ESP_LOGE(TAG,"FAILED: chunk test allocation");return 0;}
+        unsigned char *ks10=fixture->ks,*cs10=fixture->cs;
+        char (*sbufs)[16]=fixture->secrets;
         const unsigned char *sec10[10];
         size_t slen10[10];
         blst_hw_acquire();
@@ -733,19 +742,22 @@ static int test_bls_suite(void)
             ESP_LOGE(TAG, "suite verify_proofs n=10: rejected a valid batch");
             pass = 0;
         }
-        vTaskDelay(1);
+        vTaskDelay(2);
         const unsigned char *bad_first[10], *bad_last[10];
         memcpy(bad_first, sec10, sizeof(bad_first));
         memcpy(bad_last, sec10, sizeof(bad_last));
         bad_first[0] = (const unsigned char *)"chunk_x";
         bad_last[9] = (const unsigned char *)"chunk_y";
-        if (s->verify_proofs(NULL, 10, ks10, cs10, bad_first, slen10) != 0 ||
-            s->verify_proofs(NULL, 10, ks10, cs10, bad_last, slen10) != 0) {
+        int bad_first_ok = s->verify_proofs(NULL, 10, ks10, cs10, bad_first, slen10);
+        vTaskDelay(2);
+        int bad_last_ok = s->verify_proofs(NULL, 10, ks10, cs10, bad_last, slen10);
+        if (bad_first_ok != 0 || bad_last_ok != 0) {
             ESP_LOGE(TAG, "suite verify_proofs n=10: accepted a tampered batch");
             pass = 0;
         }
         if (pass)
             ESP_LOGI(TAG, "suite verify_proofs n=10 (chunk boundary): OK");
+        free(fixture);
     }
 
     /* NUT-13 v3 vector (tests/13-tests.md): counter 3, attempt 0 rejected,
@@ -830,7 +842,7 @@ static int test_mpi_bit_exact(void)
             pass = 0;
         }
         if (k % 25 == 24)
-            vTaskDelay(1);
+            vTaskDelay(2);
     }
 
     /* Chained t = t*b: exercises the resident-X skip on the hardware side. */
@@ -864,6 +876,68 @@ static int test_mpi_bit_exact(void)
         ESP_LOGI(TAG, "MPI vs software bit-exactness: OK");
     return pass;
 }
+
+static int test_mpi_field_ops(void)
+{
+    int pass = 1;
+    blst_hw_acquire();
+    for (unsigned i = 0; i < 12 && pass; i++) {
+        uint32_t words[12];
+        det_operand(words, 7000 + i);
+        if (i < 2) {
+            memset(words, 0, sizeof(words));
+            words[0] = i;
+        } else if (i == 2) {
+            memcpy(words, BLS_P_LE, sizeof(words));
+            words[0]--;
+        }
+        blst_fp value, hw_root, sw_root, hw_inv, sw_inv;
+        blst_fp_from_uint32(&value, words);
+        int hw_ok = blst_fp_sqrt(&hw_root, &value);
+        blst_fp_inverse(&hw_inv, &value);
+        blst_mpi_set_enabled(0);
+        int sw_ok = blst_fp_sqrt(&sw_root, &value);
+        blst_fp_inverse(&sw_inv, &value);
+        blst_mpi_set_enabled(1);
+        if (hw_ok != sw_ok || memcmp(&hw_root, &sw_root, sizeof(hw_root)) ||
+            memcmp(&hw_inv, &sw_inv, sizeof(hw_inv))) {
+            ESP_LOGE(TAG, "MPI field exponent mismatch at case %u", i);
+            pass = 0;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    for (unsigned i=0;i<40&&pass;i++) {
+        blst_fp2 a,b,expected,got;
+        uint32_t words[12];
+        for(unsigned j=0;j<4;j++) {
+            det_operand(words,9000+4*i+j);
+            if(i==0)memset(words,0,sizeof(words));
+            if(i==1){memcpy(words,BLS_P_LE,sizeof(words));words[0]--;}
+            blst_fp_from_uint32(j<2?&a.fp[j]:&b.fp[j-2],words);
+        }
+        blst_mpi_set_enabled(0);blst_fp2_mul(&expected,&a,&b);blst_mpi_set_enabled(1);
+        blst_fp2_mul(&got,&a,&b);pass&=!memcmp(&got,&expected,sizeof(got));
+        got=a;blst_fp2_mul(&got,&got,&b);pass&=!memcmp(&got,&expected,sizeof(got));
+        got=b;blst_fp2_mul(&got,&a,&got);pass&=!memcmp(&got,&expected,sizeof(got));
+        blst_mpi_set_enabled(0);blst_fp2_sqr(&expected,&a);blst_mpi_set_enabled(1);
+        got=a;blst_fp2_sqr(&got,&got);pass&=!memcmp(&got,&expected,sizeof(got));
+        if((i&7)==0)vTaskDelay(2);
+    }
+    blst_hw_release();
+    {
+        unsigned char input[1026],reference[32],actual[32];
+        for(unsigned j=0;j<sizeof(input);j++)input[j]=(unsigned char)(31*j+11);
+        static const size_t lengths[]={0,1,33,55,56,63,64,65,127,128,129,1024};
+        unsigned saved=blst_mpi_options();
+        for(unsigned j=0;j<sizeof(lengths)/sizeof(lengths[0]);j++) {
+            blst_mpi_set_options(saved & ~BLST_MPI_SHA256);blst_sha256(reference,input+1,lengths[j]);
+            blst_mpi_set_options(saved);blst_sha256(actual,input+1,lengths[j]);
+            pass&=!memcmp(reference,actual,32);
+        }
+    }
+    ESP_LOGI(TAG, "MPI field exponent comparison: %s", pass ? "OK" : "FAILED");
+    return pass;
+}
 #endif /* CONFIG_IDF_TARGET_ESP32C3 */
 
 int crypto_bls_run_tests(void)
@@ -874,21 +948,23 @@ int crypto_bls_run_tests(void)
     blst_hw_acquire();
     pass &= test_bls_round_trip();
     blst_hw_release();
-    vTaskDelay(1);
+    vTaskDelay(2);
     blst_hw_acquire();
     pass &= test_bls_batch();
     blst_hw_release();
-    vTaskDelay(1);
+    vTaskDelay(2);
     blst_hw_acquire();
     pass &= test_bls_point_validation();
     blst_hw_release();
-    vTaskDelay(1);
+    vTaskDelay(2);
     /* Outside any hold window: the suite ops acquire the (non-recursive)
      * MPI lock themselves. */
     pass &= test_bls_suite();
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
-    vTaskDelay(1);
+    vTaskDelay(2);
     pass &= test_mpi_bit_exact();
+    vTaskDelay(pdMS_TO_TICKS(10));
+    pass &= test_mpi_field_ops();
 #endif
 
     if (pass)
@@ -912,7 +988,7 @@ int crypto_bls_run_tests(void)
             int64_t t0 = esp_timer_get_time();                           \
             __VA_ARGS__;                                                 \
             total += esp_timer_get_time() - t0;                          \
-            vTaskDelay(1);                                               \
+            vTaskDelay(2);                                               \
         }                                                                \
         ESP_LOGI(TAG, "%-24s x%-3d %8lld us/op", label, (iters),         \
                  total / (iters));                                       \
@@ -948,6 +1024,12 @@ static void bench_rows(void)
     blst_p1 tmp;
     BENCH("g1_scalar_mul", 10, { p1_mul(&tmp, &Y, &r); });
 
+    blst_fp field, field_result;
+    uint32_t words[12] = {42};
+    blst_fp_from_uint32(&field, words);
+    BENCH("fp_sqrt", 20, { blst_fp_sqrt(&field_result, &field); });
+    BENCH("fp_inverse", 20, { blst_fp_inverse(&field_result, &field); });
+
     unsigned char y_comp[48];
     blst_p1_compress(y_comp, &Y);
     blst_p1_affine aff1;
@@ -975,9 +1057,11 @@ static void bench_rows(void)
     });
 
     /* Proofs for verification rows: C_i = a*Y_i under the bench key. */
-    static unsigned char cs[BATCH_MAX * 48];
-    static unsigned char ks[BATCH_MAX * 96];
-    static char secret_bufs[BATCH_MAX][16];
+    struct pairing_fixture { unsigned char cs[BATCH_MAX*48],ks[BATCH_MAX*96];char secrets[BATCH_MAX][16]; };
+    struct pairing_fixture *fixture=calloc(1,sizeof(*fixture));
+    if(!fixture){ESP_LOGE(TAG,"FAILED: pairing benchmark allocation");return;}
+    unsigned char *cs=fixture->cs,*ks=fixture->ks;
+    char (*secret_bufs)[16]=fixture->secrets;
     const unsigned char *secrets[BATCH_MAX];
     size_t secret_lens[BATCH_MAX];
     for (int i = 0; i < BATCH_MAX; i++) {
@@ -989,7 +1073,7 @@ static void bench_rows(void)
         p1_mul(&c, &y, &a);
         blst_p1_compress(cs + i * 48, &c);
         memcpy(ks + i * 96, k_comp, 96);
-        vTaskDelay(1);
+        vTaskDelay(2);
     }
 
     BENCH("pairing_verify n=1", 3, {
@@ -1004,6 +1088,7 @@ static void bench_rows(void)
     BENCH("batch_verify n=10", 1, {
         batch_pairing_verification(ks, cs, secrets, secret_lens, 10);
     });
+    free(fixture);
 }
 
 
@@ -1017,8 +1102,11 @@ static void bench_rows(void)
 static void bench_suite_swap(void)
 {
     enum { N = 10 };
-    static unsigned char Ks[N * 96], Cin[N * 48], Cblind[N * 48];
-    static char in_secret_bufs[N][16], out_secret_bufs[N][16];
+    struct swap_fixture { unsigned char keys[N*96],input[N*48],blinded[N*48],output[N*48];char in[N][16],out[N][16]; };
+    struct swap_fixture *fixture=calloc(1,sizeof(*fixture));
+    if(!fixture){ESP_LOGE(TAG,"FAILED: swap benchmark allocation");return;}
+    unsigned char *Ks=fixture->keys,*Cin=fixture->input,*Cblind=fixture->blinded,*Cout=fixture->output;
+    char (*in_secret_bufs)[16]=fixture->in,(*out_secret_bufs)[16]=fixture->out;
     const unsigned char *in_secrets[N], *out_secrets[N];
     size_t in_lens[N], out_lens[N];
     unsigned char r_be[32] = {0};
@@ -1052,12 +1140,19 @@ static void bench_suite_swap(void)
         p1_mul(&b, &yo, &r);
         p1_mul(&cb, &b, &a);
         blst_p1_compress(Cblind + i * 48, &cb);
-        vTaskDelay(1);
+        vTaskDelay(2);
     }
     blst_hw_release();
 
     const cashu_suite_t *s = &cashu_suite_bls;
 
+    if (cashu_bls_options() & CASHU_BLS_KEY_CACHE) {
+        int64_t start = esp_timer_get_time();
+        int valid = s->verify_proofs(NULL, N, Ks, Cin, in_secrets, in_lens);
+        ESP_LOGI(TAG, "suite_verify cold n=10: %lld us, valid=%d",
+                 esp_timer_get_time() - start, valid);
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
     BENCH("suite_verify n=10 dk", 2, {
         if (!s->verify_proofs(NULL, N, Ks, Cin, in_secrets, in_lens))
             ESP_LOGE(TAG, "bench: suite_verify n=10 FAILED");
@@ -1066,23 +1161,23 @@ static void bench_suite_swap(void)
     BENCH("swap crypto n=10 dk", 2, {
         if (!s->verify_proofs(NULL, N, Ks, Cin, in_secrets, in_lens))
             ESP_LOGE(TAG, "bench: swap verify(in) FAILED");
-        vTaskDelay(1);
+        vTaskDelay(2);
         unsigned char B[48];
         for (int i = 0; i < N; i++) {
             size_t bl = sizeof(B);
             s->blind(NULL, out_secrets[i], out_lens[i], r_be, 32, B, &bl);
         }
-        vTaskDelay(1);
-        static unsigned char Cout[N * 48];
+        vTaskDelay(2);
         for (int i = 0; i < N; i++) {
             size_t cl = 48;
             s->unblind(NULL, Cblind + i * 48, 48, r_be, 32,
                        Ks + i * 96, 96, Cout + i * 48, &cl);
         }
-        vTaskDelay(1);
+        vTaskDelay(2);
         if (!s->verify_proofs(NULL, N, Ks, Cout, out_secrets, out_lens))
             ESP_LOGE(TAG, "bench: swap verify(out) FAILED");
     });
+    free(fixture);
 }
 
 void crypto_bls_run_benchmark(void)
@@ -1108,4 +1203,108 @@ void crypto_bls_run_benchmark(void)
     bench_rows();
     bench_suite_swap();
 #endif
+}
+
+void crypto_bls_run_fast_benchmark(void)
+{
+    ESP_LOGI(TAG, "fast benchmark MPI options=%u", blst_mpi_options());
+    blst_mpi_set_enabled(1);
+    blst_hw_acquire();
+    bench_rows();
+    blst_hw_release();
+    bench_suite_swap();
+}
+
+void crypto_bls_run_mpi_benchmark(int options)
+{
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+    static const unsigned variants[] = {0, 1, 2, 3, 7, 15, 23, 39, 47};
+    unsigned saved = blst_mpi_options();
+    for (size_t v = 0; v < sizeof(variants)/sizeof(variants[0]); v++) {
+        unsigned flags = options >= 0 ? (unsigned)options : variants[v];
+        if (!NUCULA_RV32_COPY && (flags & BLST_MPI_RV32_COPY)) {
+            ESP_LOGE(TAG,"FAILED: build with NUCULA_RV32_COPY=ON for this experiment");
+            return;
+        }
+        if (flags > 32767) {
+            ESP_LOGE(TAG, "FAILED: MPI option mask out of range");
+            break;
+        }
+        blst_mpi_set_options(flags);
+        ESP_LOGI(TAG, "=== MPI variant %u ===", flags);
+        if (!test_mpi_bit_exact() || !test_mpi_field_ops())
+            break;
+        uint32_t a[12], b[12], result[12];
+        det_operand(a, 431);
+        det_operand(b, 789);
+        blst_hw_acquire();
+        BENCH("mpi unchained x1000", 3, {
+            for (int j = 0; j < 1000; j++)
+                mpi_mul_mont_n(result, a, b, BLS_P_LE, BLS_P_N0, 12);
+        });
+        memcpy(result, a, sizeof(result));
+        BENCH("mpi chained x1000", 3, {
+            for (int j = 0; j < 1000; j++)
+                mpi_mul_mont_n(result, result, b, BLS_P_LE, BLS_P_N0, 12);
+        });
+        blst_hw_release();
+        bench_suite_swap();
+        if (options >= 0)
+            break;
+    }
+    blst_mpi_set_options(options >= 0 && options <= 32767 ? (unsigned)options : saved);
+#else
+    (void)options;
+#endif
+}
+
+void crypto_bls_run_verifier_benchmark(unsigned options, unsigned capacity)
+{
+    if (!cashu_bls_configure(options, capacity)) {
+        ESP_LOGE(TAG, "invalid BLS configuration");
+        return;
+    }
+    cashu_bls_clear_key_cache();
+    ESP_LOGI(TAG, "=== BLS verifier options=%u capacity=%u MPI=%u ===",
+             options, capacity, blst_mpi_options());
+    bench_suite_swap();
+}
+
+/* Bounded production-verifier scaling fixture. All messages and mint scalars
+ * are synthetic. Distinct-key count is independent of proof count. */
+void crypto_bls_run_scaling(unsigned flags, unsigned capacity, unsigned count,
+                             unsigned distinct, unsigned repetitions)
+{
+    if (!count || count > 64 || !distinct || distinct > 10 || distinct > count ||
+        !repetitions || repetitions > 10 || !cashu_bls_configure(flags,capacity)) {
+        ESP_LOGE(TAG,"FAILED: invalid scaling configuration");return;
+    }
+    typedef struct { unsigned char key[96], signature[48], message[33]; } item;
+    item *items=calloc(count,sizeof(*items));
+    unsigned char *keys=malloc(96*count), *signatures=malloc(48*count);
+    const unsigned char **secrets=malloc(count*sizeof(*secrets));
+    size_t *lengths=malloc(count*sizeof(*lengths));
+    int ok=items&&keys&&signatures&&secrets&&lengths;
+    if(!ok){ESP_LOGE(TAG,"FAILED: scaling fixture allocation");goto done;}
+    for(unsigned i=0;i<count;i++) {
+        for(unsigned j=0;j<33;j++)items[i].message[j]=(unsigned char)(i*71+j*53);
+        secrets[i]=items[i].message;lengths[i]=33;
+        hex_to_bytes(crypto_bls_bench_key_hex(i%distinct),keys+96*i,96);
+        blst_hw_acquire();blst_p1 y,c;blst_scalar scalar;
+        small_scalar(&scalar,2+i%distinct);hash_to_g1(&y,secrets[i],33);p1_mul(&c,&y,&scalar);
+        blst_p1_compress(signatures+48*i,&c);blst_hw_release();vTaskDelay(2);
+    }
+    cashu_bls_clear_key_cache();
+    ESP_LOGI(TAG,"scale options=%u capacity=%u MPI=%u n=%u distinct=%u",flags,capacity,blst_mpi_options(),count,distinct);
+    for(unsigned iteration=0;iteration<=repetitions;iteration++) {
+        int64_t start=esp_timer_get_time();
+        ok&=cashu_suite_bls.verify_proofs(NULL,count,keys,signatures,secrets,lengths);
+        ESP_LOGI(TAG,"scale %s sample=%u time=%lld us valid=%d",iteration?"warm":"cold",iteration,esp_timer_get_time()-start,ok);
+        vTaskDelay(2);
+    }
+    items[count-1].message[15]^=1;
+    ok&=!cashu_suite_bls.verify_proofs(NULL,count,keys,signatures,secrets,lengths);
+    ESP_LOGI(TAG,"scale valid/tampered correctness: %s",ok?"OK":"FAILED");
+done:
+    free(items);free(keys);free(signatures);free(secrets);free(lengths);
 }

@@ -1,0 +1,125 @@
+RESEARCH_COMMAND log i
+RESEARCH_COMMAND bench mpi 2639
+I (16100) bls_test: === MPI variant 2639 ===
+I (16127) bls_test: MPI vs software bit-exactness: OK
+I (16547) bls_test: MPI field exponent comparison: OK
+I (16573) bls_test: mpi unchained x1000      x3       6753 us/op
+I (16598) bls_test: mpi chained x1000        x3       6761 us/op
+I (20280) bls_test: suite_verify n=10 dk     x2    1414132 us/op
+I (27268) bls_test: swap crypto n=10 dk      x2    3491975 us/op
+RESEARCH_COMMAND bench scale 367 11 10 1 3
+I (27642) bls_test: scale options=367 capacity=11 MPI=2639 n=10 distinct=1
+I (28367) bls_test: scale cold sample=0 time=724180 us valid=1
+I (29078) bls_test: scale warm sample=1 time=708175 us valid=1
+I (29789) bls_test: scale warm sample=2 time=708156 us valid=1
+I (30500) bls_test: scale warm sample=3 time=708408 us valid=1
+I (31222) bls_test: scale valid/tampered correctness: OK
+RESEARCH_COMMAND bench scale 879 11 10 1 3
+I (31579) bls_test: scale options=879 capacity=11 MPI=2639 n=10 distinct=1
+I (32224) bls_test: scale cold sample=0 time=644522 us valid=1
+I (32851) bls_test: scale warm sample=1 time=624859 us valid=1
+I (33480) bls_test: scale warm sample=2 time=626033 us valid=1
+I (34106) bls_test: scale warm sample=3 time=623762 us valid=1
+I (34734) bls_test: scale valid/tampered correctness: OK
+RESEARCH_COMMAND bench scale 887 11 10 1 3
+I (35217) bls_test: scale options=887 capacity=11 MPI=2639 n=10 distinct=1
+I (35857) bls_test: scale cold sample=0 time=639637 us valid=1
+I (36484) bls_test: scale warm sample=1 time=624021 us valid=1
+I (37110) bls_test: scale warm sample=2 time=623755 us valid=1
+I (37736) bls_test: scale warm sample=3 time=623762 us valid=1
+I (38364) bls_test: scale valid/tampered correctness: OK
+RESEARCH_COMMAND bench scale 1007 11 10 1 3
+I (38794) bls_test: scale options=1007 capacity=11 MPI=2639 n=10 distinct=1
+I (39434) bls_test: scale cold sample=0 time=639820 us valid=1
+I (40061) bls_test: scale warm sample=1 time=623780 us valid=1
+I (40687) bls_test: scale warm sample=2 time=623909 us valid=1
+I (41313) bls_test: scale warm sample=3 time=623762 us valid=1
+I (41942) bls_test: scale valid/tampered correctness: OK
+RESEARCH_COMMAND bench scale 367 11 10 3 3
+I (42379) bls_test: scale options=367 capacity=11 MPI=2639 n=10 distinct=3
+I (43217) bls_test: scale cold sample=0 time=837651 us valid=1
+I (44011) bls_test: scale warm sample=1 time=791768 us valid=1
+I (44805) bls_test: scale warm sample=2 time=791997 us valid=1
+I (45601) bls_test: scale warm sample=3 time=791998 us valid=1
+I (46393) bls_test: scale valid/tampered correctness: OK
+RESEARCH_COMMAND bench scale 879 11 10 3 3
+I (46884) bls_test: scale options=879 capacity=11 MPI=2639 n=10 distinct=3
+I (47683) bls_test: scale cold sample=0 time=798585 us valid=1
+I (48439) bls_test: scale warm sample=1 time=753082 us valid=1
+I (49194) bls_test: scale warm sample=2 time=752889 us valid=1
+I (49950) bls_test: scale warm sample=3 time=753889 us valid=1
+I (50703) bls_test: scale valid/tampered correctness: OK
+RESEARCH_COMMAND bench scale 879 11 32 1 2
+I (51821) bls_test: scale options=879 capacity=11 MPI=2639 n=32 distinct=1
+I (53442) bls_test: scale cold sample=0 time=1620819 us valid=1
+I (55049) bls_test: scale warm sample=1 time=1604780 us valid=1
+I (56656) bls_test: scale warm sample=2 time=1604780 us valid=1
+I (58275) bls_test: scale valid/tampered correctness: OK
+RESEARCH_COMMAND bench scale 879 11 32 10 2
+I (59369) bls_test: scale options=879 capacity=11 MPI=2639 n=32 distinct=10
+I (61640) bls_test: scale cold sample=0 time=2270468 us valid=1
+I (63760) bls_test: scale warm sample=1 time=2117854 us valid=1
+I (65865) bls_test: scale warm sample=2 time=2102222 us valid=1
+I (67967) bls_test: scale valid/tampered correctness: OK
+RESEARCH_COMMAND selftest
+I (68073) crypto_test: running crypto test vectors
+I (68073) crypto_test: sha256: ok
+I (68075) crypto_test: hash_to_curve 1: OK
+I (68078) crypto_test: hash_to_curve 2: OK
+I (68081) crypto_test: hash_to_curve 3: OK
+I (68093) crypto_test: blind_message 1: OK
+I (68105) crypto_test: blind_message 2: OK
+I (68126) crypto_test: unblind: OK
+I (68177) crypto_test: DLEQ BlindSignature: OK
+I (68250) crypto_test: DLEQ Proof: OK
+I (69017) crypto_test: NUT-13 V2 counter=0: OK
+I (69018) crypto_test: NUT-13 V2 counter=1: OK
+I (69019) crypto_test: NUT-13 V2 counter=2: OK
+I (69019) crypto_test: NUT-13 V2 counter=3: OK
+I (69023) crypto_test: NUT-13 V2 counter=4: OK
+I (69039) crypto_test: NUT-13 V2: all test vectors passed
+I (69040) crypto_test: all crypto tests passed
+I (69040) bls_test: running BLS12-381 (keyset v3) test vectors
+I (69056) bls_test: hash_to_curve_G1: OK
+I (69072) bls_test: mint key K: valid G2 point
+I (69095) bls_test: blind B_ = r*Y: OK
+I (69117) bls_test: sign C_ = a*B_: OK
+I (69140) bls_test: unblind C = r^-1*C_: OK
+I (69411) bls_test: pairing verification: OK
+I (69683) bls_test: tamper rejection: OK
+I (69717) bls_test: batch C_1 = a*Y_1: OK
+I (69718) bls_test: batch challenge: OK
+I (69719) bls_test: batch weight_1 (ctr=4): OK
+I (69719) bls_test: batch weight_2 (ctr=0): OK
+I (70095) bls_test: batch verification: OK
+I (70469) bls_test: batch tamper rejection: OK
+I (70472) bls_test: point validation: OK
+I (70506) bls_test: suite blind: OK
+I (70540) bls_test: suite unblind: OK
+I (72926) bls_test: suite verify_proofs (incl. multi-key): OK
+I (72927) bls_test: suite input validation: OK
+I (76477) bls_test: suite verify_proofs n=10 (chunk boundary): OK
+I (76479) bls_test: NUT-13 v3 secret: OK
+I (76479) bls_test: NUT-13 v3 r (attempt=1): OK
+I (76509) bls_test: MPI vs software bit-exactness: OK
+I (76935) bls_test: MPI field exponent comparison: OK
+I (76936) bls_test: all BLS tests passed
+I (77256) nutroot_current: current proposal: transcript, per-input witnesses, routing, disclosure, caps and ECDH vectors OK
+I (77258) nutroot: leaf wire forms: OK
+I (77262) nutroot: leaf parse rejections: OK
+I (77270) nutroot: merkle fold + paths: OK
+I (77316) nutroot: tweak derivations: OK
+I (77318) nutroot: transaction transcripts: OK
+I (77374) nutroot: signature vectors: OK
+I (77807) nutroot: witness verification e2e: OK
+I (77808) nutroot: all nutroot tests passed
+self-tests PASSED
+RESEARCH_COMMAND heap
+free:          54340
+largest block: 19456
+min ever free: 19188
+RESEARCH_COMMAND tasks
+name             prio  stack-min
+console             5       7188
+IDLE                0       1260
+wifi_drain          4      20192

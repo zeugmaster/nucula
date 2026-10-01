@@ -1,0 +1,96 @@
+{
+  "host-final-45": {
+    "logs": [
+      "host-final-45-bls.log",
+      "host-final-45-current.log",
+      "host-final-45-legacy.log",
+      "host-final-45-nutroot.log",
+      "host-final-45-schnorr.log"
+    ],
+    "source_manifest": "host-final-45-source-sha256.json",
+    "configuration": {
+      "forced_blst_limb_bits": 32,
+      "secp_window_a": 4,
+      "secp_window_g": 12,
+      "comb_blocks": 2,
+      "comb_teeth": 5,
+      "host_patch": "WINDOW_A in frozen upstream ecmult_impl.h only"
+    },
+    "note": "Host ASan/UBSan; 32-bit blst layout; no host elapsed times used as hardware measurements."
+  },
+  "host-cache-47": {
+    "logs": [
+      "host-cache-47-bls.log"
+    ],
+    "source_manifest": "host-cache-47-source-sha256.json",
+    "configuration": {
+      "forced_blst_limb_bits": 32,
+      "secp_window_a": 4,
+      "secp_window_g": 12,
+      "comb_blocks": 2,
+      "comb_teeth": 5,
+      "host_patch": "WINDOW_A in frozen upstream ecmult_impl.h only"
+    },
+    "note": "Host ASan/UBSan; 32-bit blst layout; no host elapsed times used as hardware measurements."
+  },
+  "host-workspace-48": {
+    "logs": [
+      "host-workspace-48-bls.log"
+    ],
+    "source_manifest": "host-workspace-48-source-sha256.json",
+    "configuration": {
+      "forced_blst_limb_bits": 32,
+      "secp_window_a": 4,
+      "secp_window_g": 12,
+      "comb_blocks": 2,
+      "comb_teeth": 5,
+      "host_patch": "WINDOW_A in frozen upstream ecmult_impl.h only"
+    },
+    "note": "Host ASan/UBSan; 32-bit blst layout; no host elapsed times used as hardware measurements."
+  },
+  "host-cache64-49": {
+    "logs": [
+      "host-cache64-49-bls.log"
+    ],
+    "source_manifest": "host-cache64-49-source-sha256.json",
+    "configuration": {
+      "forced_blst_limb_bits": 32,
+      "secp_window_a": 4,
+      "secp_window_g": 12,
+      "comb_blocks": 2,
+      "comb_teeth": 5,
+      "host_patch": "WINDOW_A in frozen upstream ecmult_impl.h only"
+    },
+    "note": "Host ASan/UBSan; 32-bit blst layout; no host elapsed times used as hardware measurements."
+  },
+  "host-final-workspace": {
+    "logs": [
+      "host-final-workspace-bls.log"
+    ],
+    "source_manifest": "host-final-workspace-source-sha256.json",
+    "configuration": {
+      "forced_blst_limb_bits": 32,
+      "secp_window_a": 4,
+      "secp_window_g": 12,
+      "comb_blocks": 2,
+      "comb_teeth": 5,
+      "host_patch": "WINDOW_A in frozen upstream ecmult_impl.h only"
+    },
+    "note": "Host ASan/UBSan; 32-bit blst layout; no host elapsed times used as hardware measurements."
+  },
+  "host-adaptive-51": {
+    "logs": [
+      "host-adaptive-51-nutroot.log"
+    ],
+    "source_manifest": "host-adaptive-51-source-sha256.json",
+    "configuration": {
+      "forced_blst_limb_bits": 32,
+      "secp_window_a": 4,
+      "secp_window_g": 12,
+      "comb_blocks": 2,
+      "comb_teeth": 5,
+      "host_patch": "WINDOW_A in frozen upstream ecmult_impl.h only"
+    },
+    "note": "Host ASan/UBSan; 32-bit blst layout; no host elapsed times used as hardware measurements."
+  }
+}

@@ -1,0 +1,43 @@
+RESEARCH_COMMAND log i
+RESEARCH_COMMAND bench mpi 79
+I (16206) bls_test: === MPI variant 79 ===
+I (16234) bls_test: MPI vs software bit-exactness: OK
+I (16631) bls_test: MPI field exponent comparison: OK
+I (16656) bls_test: mpi unchained x1000      x3       6775 us/op
+I (16681) bls_test: mpi chained x1000        x3       6791 us/op
+I (21115) bls_test: suite_verify n=10 dk     x2    1785158 us/op
+I (29600) bls_test: swap crypto n=10 dk      x2    4240618 us/op
+RESEARCH_COMMAND bench verify 119 11
+I (29760) bls_test: === BLS verifier options=119 capacity=11 MPI=79 ===
+I (30624) bls_test: suite_verify cold n=10: 524 us, valid=0
+E (30635) bls_test: bench: suite_verify n=10 FAILED
+E (30637) bls_test: bench: suite_verify n=10 FAILED
+I (30639) bls_test: suite_verify n=10 dk     x2        854 us/op
+E (30640) bls_test: bench: swap verify(in) FAILED
+E (31328) bls_test: bench: swap verify(out) FAILED
+E (31331) bls_test: bench: swap verify(in) FAILED
+E (32010) bls_test: bench: swap verify(out) FAILED
+I (32013) bls_test: swap crypto n=10 dk      x2     684927 us/op
+RESEARCH_COMMAND bench nutroot quick opt=3
+I (32109) nutroot: nutroot witness verification benchmark [full] (timed unit = one verify call, as nutshell's)
+I (32200) nutroot: keypair full scalar      x8  mean     6853 med     6658 min     6655 us
+I (32345) nutroot: sign incl keypair        x8  mean    16595 med    16612 min    16477 us
+I (32434) nutroot: sign retained keypair    x8  mean     9369 med     9338 min     9332 us
+I (32589) nutroot: schnorr verify           x8  mean    17933 med    17801 min    17793 us
+I (32742) nutroot: ECDH full scalar         x8  mean    17700 med    17699 min    17698 us
+I (32768) nutroot: parse compressed key     x8  mean     1675 med     1618 min     1618 us
+I (33113) nutroot: threshold 2/3 checks=2   x3  mean    65041 med    65009 min    65009 us
+I (33581) nutroot: threshold 3/5 checks=3   x3  mean    88893 med    89009 min    88661 us
+I (34669) nutroot: threshold 8/15 checks=8  x3  mean   206139 med   206009 min   206009 us
+I (34670) nutroot: quick correctness: OK, options=3
+RESEARCH_COMMAND bench
+I (35131) crypto_test: hash_to_curve x100: 3409 us/op
+I (35683) crypto_test: blind_message x50: 10994 us/op
+I (38106) crypto_test: verify_dleq   x50: 48280 us/op
+RESEARCH_COMMAND heap
+free:          49452
+largest block: 14848
+min ever free: 22904
+RESEARCH_COMMAND tasks
+name             prio  stack-min
+console             5       7348

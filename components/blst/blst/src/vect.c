@@ -122,6 +122,10 @@ void mul_mont_384x(vec384x ret, const vec384x a, const vec384x b,
 #if defined(sqr_mont_384x) && !(defined(__ADX__) && !defined(__BLST_PORTABLE__))
 void sqr_mont_384x(vec384x ret, const vec384x a, const vec384 mod, limb_t n0)
 {
+#if defined(__riscv) && __riscv_xlen == 32
+    if (blst_mpi_fp2(ret, a, NULL, mod, n0, 1)) return;
+#endif
+
     vec384 t0, t1;
 
     add_mod_384(t0, a[0], a[1], mod);

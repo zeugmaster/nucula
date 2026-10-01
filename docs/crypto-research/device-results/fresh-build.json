@@ -1,0 +1,32 @@
+{
+  "build_ok": true,
+  "target": "esp32c3",
+  "idf": "v5.5.1",
+  "configuration_diff_keys": [],
+  "app_bytes": 1521264,
+  "app_sha256": "ff55e8805d0523dcb14d66ba349688f43e2b66175df523b3125692ed502b0ea2",
+  "source_build": "52-final",
+  "cmake_options": [
+    "NUCULA_BLST_OPT:STRING=O3",
+    "NUCULA_BLS_CALLER_OPT:STRING=Os",
+    "NUCULA_BLS_LTO:BOOL=OFF",
+    "NUCULA_CRYPTO_LTO:BOOL=OFF",
+    "NUCULA_MPI_HOT_ONLY:BOOL=ON",
+    "NUCULA_MPI_IRAM:BOOL=ON",
+    "NUCULA_MPI_OPT:STRING=O3",
+    "NUCULA_RV32_COPY:BOOL=OFF",
+    "NUCULA_SECP_BLOCKS:STRING=2",
+    "NUCULA_SECP_HOT_IRAM:BOOL=OFF",
+    "NUCULA_SECP_IRAM:BOOL=OFF",
+    "NUCULA_SECP_OPT:STRING=Os",
+    "NUCULA_SECP_RAM_SIGN:BOOL=OFF",
+    "NUCULA_SECP_RAM_VERIFY:BOOL=OFF",
+    "NUCULA_SECP_TEETH:STRING=5",
+    "NUCULA_SECP_WINDOW:STRING=12",
+    "NUCULA_SECP_WINDOW_A:STRING=4",
+    "NUCULA_Y_CACHE_AFFINE:BOOL=ON",
+    "NUCULA_Y_CACHE_SIZE:STRING=64"
+  ],
+  "cmake_options_match_measured_build": true,
+  "note": "Fresh SDK configuration generated from sdkconfig.defaults; separate build directory. Binary hashes may differ from the measured image because of build metadata."
+}

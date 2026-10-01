@@ -1,0 +1,180 @@
+RESEARCH_COMMAND log i
+RESEARCH_COMMAND bench mpi 15
+I (16148) bls_test: === MPI variant 15 ===
+I (16171) bls_test: MPI vs software bit-exactness: OK
+I (16580) bls_test: MPI field exponent comparison: OK
+I (16602) bls_test: mpi unchained x1000      x3       6751 us/op
+I (16624) bls_test: mpi chained x1000        x3       6757 us/op
+I (20840) bls_test: suite_verify n=10 dk     x2    1661424 us/op
+I (28897) bls_test: swap crypto n=10 dk      x2    4027442 us/op
+RESEARCH_COMMAND bench bls fast
+I (28906) bls_test: fast benchmark MPI options=15
+I (29060) bls_test: hash_to_g1               x10     13349 us/op
+I (29261) bls_test: g1_scalar_mul            x10     19223 us/op
+I (29322) bls_test: fp_sqrt                  x20      2703 us/op
+I (29363) bls_test: fp_inverse               x20      1135 us/op
+I (29496) bls_test: point_validate_g1        x10     12256 us/op
+I (29623) bls_test: point_validate_g2        x6      20763 us/op
+I (29822) bls_test: blind (B_=r*Y)           x6      32895 us/op
+I (30027) bls_test: unblind (C=1/r*C_)       x6      33493 us/op
+I (31377) bls_test: pairing_verify n=1       x3     331925 us/op
+I (32275) bls_test: batch_verify n=2         x2     447499 us/op
+I (33426) bls_test: batch_verify n=4         x2     574381 us/op
+I (34393) bls_test: batch_verify n=10        x1     964508 us/op
+I (38609) bls_test: suite_verify n=10 dk     x2    1661786 us/op
+I (46666) bls_test: swap crypto n=10 dk      x2    4027427 us/op
+RESEARCH_COMMAND bench mpi 79
+I (46727) bls_test: === MPI variant 79 ===
+I (46750) bls_test: MPI vs software bit-exactness: OK
+I (47147) bls_test: MPI field exponent comparison: OK
+I (47169) bls_test: mpi unchained x1000      x3       6748 us/op
+I (47191) bls_test: mpi chained x1000        x3       6757 us/op
+I (51229) bls_test: suite_verify n=10 dk     x2    1597256 us/op
+I (58950) bls_test: swap crypto n=10 dk      x2    3859678 us/op
+RESEARCH_COMMAND selftest
+running self-tests (details logged at info level)...
+I (60060) bls_test: running BLS12-381 (keyset v3) test vectors
+I (60076) bls_test: hash_to_curve_G1: OK
+I (60096) bls_test: mint key K: valid G2 point
+I (60118) bls_test: blind B_ = r*Y: OK
+I (60140) bls_test: sign C_ = a*B_: OK
+I (60164) bls_test: unblind C = r^-1*C_: OK
+I (60490) bls_test: pairing verification: OK
+I (60818) bls_test: tamper rejection: OK
+I (60852) bls_test: batch C_1 = a*Y_1: OK
+I (60853) bls_test: batch challenge: OK
+I (60854) bls_test: batch weight_1 (ctr=4): OK
+I (60854) bls_test: batch weight_2 (ctr=0): OK
+I (61286) bls_test: batch verification: OK
+I (61715) bls_test: batch tamper rejection: OK
+I (61717) bls_test: point validation: OK
+I (61750) bls_test: suite blind: OK
+I (61785) bls_test: suite unblind: OK
+I (65141) bls_test: suite verify_proofs (incl. multi-key): OK
+I (65143) bls_test: suite input validation: OK
+E (66717) task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:
+I (70380) bls_test: suite verify_proofs n=10 (chunk boundary): OK
+I (70381) bls_test: NUT-13 v3 secret: OK
+I (70382) bls_test: NUT-13 v3 r (attempt=1): OK
+I (70406) bls_test: MPI vs software bit-exactness: OK
+I (70812) bls_test: MPI field exponent comparison: OK
+I (70812) bls_test: all BLS tests passed
+self-tests PASSED
+RESEARCH_COMMAND bench bls fast
+I (71765) bls_test: fast benchmark MPI options=79
+I (71888) bls_test: hash_to_g1               x10     10761 us/op
+I (72089) bls_test: g1_scalar_mul            x10     19224 us/op
+I (72130) bls_test: fp_sqrt                  x20      1430 us/op
+I (72171) bls_test: fp_inverse               x20      1131 us/op
+I (72284) bls_test: point_validate_g1        x10     10956 us/op
+I (72399) bls_test: point_validate_g2        x6      18131 us/op
+I (72586) bls_test: blind (B_=r*Y)           x6      30332 us/op
+I (72785) bls_test: unblind (C=1/r*C_)       x6      32178 us/op
+I (74094) bls_test: pairing_verify n=1       x3     325518 us/op
+I (74954) bls_test: batch_verify n=2         x2     429253 us/op
+I (76060) bls_test: batch_verify n=4         x2     551650 us/op
+I (76981) bls_test: batch_verify n=10        x1     919827 us/op
+I (81019) bls_test: suite_verify n=10 dk     x2    1597429 us/op
+I (88742) bls_test: swap crypto n=10 dk      x2    3860117 us/op
+RESEARCH_COMMAND bench mpi 143
+I (88789) bls_test: === MPI variant 143 ===
+I (88812) bls_test: MPI vs software bit-exactness: OK
+I (89221) bls_test: MPI field exponent comparison: OK
+I (89243) bls_test: mpi unchained x1000      x3       6753 us/op
+I (89265) bls_test: mpi chained x1000        x3       6762 us/op
+I (93477) bls_test: suite_verify n=10 dk     x2    1659967 us/op
+I (101524) bls_test: swap crypto n=10 dk      x2    4022058 us/op
+RESEARCH_COMMAND bench bls fast
+I (101569) bls_test: fast benchmark MPI options=143
+I (101724) bls_test: hash_to_g1               x10     13540 us/op
+I (101928) bls_test: g1_scalar_mul            x10     19613 us/op
+I (101989) bls_test: fp_sqrt                  x20      2703 us/op
+I (102030) bls_test: fp_inverse               x20      1449 us/op
+I (102164) bls_test: point_validate_g1        x10     12469 us/op
+I (102294) bls_test: point_validate_g2        x6      21186 us/op
+I (102499) bls_test: blind (B_=r*Y)           x6      33583 us/op
+I (102706) bls_test: unblind (C=1/r*C_)       x6      33809 us/op
+I (104057) bls_test: pairing_verify n=1       x3     331788 us/op
+I (104935) bls_test: batch_verify n=2         x2     438079 us/op
+I (106074) bls_test: batch_verify n=4         x2     568449 us/op
+I (107036) bls_test: batch_verify n=10        x1     960691 us/op
+I (111248) bls_test: suite_verify n=10 dk     x2    1659845 us/op
+I (119297) bls_test: swap crypto n=10 dk      x2    4023220 us/op
+RESEARCH_COMMAND bench mpi 271
+I (119336) bls_test: === MPI variant 271 ===
+I (119360) bls_test: MPI vs software bit-exactness: OK
+I (119769) bls_test: MPI field exponent comparison: OK
+I (119791) bls_test: mpi unchained x1000      x3       6748 us/op
+I (119813) bls_test: mpi chained x1000        x3       6760 us/op
+I (124057) bls_test: suite_verify n=10 dk     x2    1671011 us/op
+I (132160) bls_test: swap crypto n=10 dk      x2    4050067 us/op
+RESEARCH_COMMAND bench bls fast
+I (132261) bls_test: fast benchmark MPI options=271
+I (132420) bls_test: hash_to_g1               x10     14027 us/op
+I (132622) bls_test: g1_scalar_mul            x10     19428 us/op
+I (132686) bls_test: fp_sqrt                  x20      2912 us/op
+I (132727) bls_test: fp_inverse               x20      1132 us/op
+I (132862) bls_test: point_validate_g1        x10     12819 us/op
+I (132996) bls_test: point_validate_g2        x6      21484 us/op
+I (133204) bls_test: blind (B_=r*Y)           x6      33834 us/op
+I (133413) bls_test: unblind (C=1/r*C_)       x6      34370 us/op
+I (134782) bls_test: pairing_verify n=1       x3     335192 us/op
+I (135667) bls_test: batch_verify n=2         x2     441230 us/op
+I (136814) bls_test: batch_verify n=4         x2     572860 us/op
+I (137785) bls_test: batch_verify n=10        x1     969261 us/op
+I (142028) bls_test: suite_verify n=10 dk     x2    1670618 us/op
+I (150130) bls_test: swap crypto n=10 dk      x2    4050159 us/op
+RESEARCH_COMMAND bench mpi 207
+I (150253) bls_test: === MPI variant 207 ===
+I (150276) bls_test: MPI vs software bit-exactness: OK
+I (150673) bls_test: MPI field exponent comparison: OK
+I (150695) bls_test: mpi unchained x1000      x3       6753 us/op
+I (150717) bls_test: mpi chained x1000        x3       6757 us/op
+I (154748) bls_test: suite_verify n=10 dk     x2    1594379 us/op
+I (162451) bls_test: swap crypto n=10 dk      x2    3850668 us/op
+RESEARCH_COMMAND bench bls fast
+I (162575) bls_test: fast benchmark MPI options=207
+I (162700) bls_test: hash_to_g1               x10     10931 us/op
+I (162902) bls_test: g1_scalar_mul            x10     19421 us/op
+I (162944) bls_test: fp_sqrt                  x20      1474 us/op
+I (162985) bls_test: fp_inverse               x20      1421 us/op
+I (163101) bls_test: point_validate_g1        x10     11169 us/op
+I (163217) bls_test: point_validate_g2        x6      18209 us/op
+I (163406) bls_test: blind (B_=r*Y)           x6      30737 us/op
+I (163606) bls_test: unblind (C=1/r*C_)       x6      32551 us/op
+I (164914) bls_test: pairing_verify n=1       x3     324498 us/op
+I (165771) bls_test: batch_verify n=2         x2     427507 us/op
+I (166873) bls_test: batch_verify n=4         x2     550168 us/op
+I (167793) bls_test: batch_verify n=10        x1     918439 us/op
+I (171824) bls_test: suite_verify n=10 dk     x2    1594639 us/op
+I (179528) bls_test: swap crypto n=10 dk      x2    3851024 us/op
+RESEARCH_COMMAND bench mpi 463
+I (179676) bls_test: === MPI variant 463 ===
+I (179700) bls_test: MPI vs software bit-exactness: OK
+I (180097) bls_test: MPI field exponent comparison: OK
+I (180119) bls_test: mpi unchained x1000      x3       6750 us/op
+I (180141) bls_test: mpi chained x1000        x3       6758 us/op
+I (184173) bls_test: suite_verify n=10 dk     x2    1594791 us/op
+I (191876) bls_test: swap crypto n=10 dk      x2    3850342 us/op
+RESEARCH_COMMAND bench bls fast
+I (191995) bls_test: fast benchmark MPI options=463
+I (192118) bls_test: hash_to_g1               x10     10765 us/op
+I (192319) bls_test: g1_scalar_mul            x10     19224 us/op
+I (192360) bls_test: fp_sqrt                  x20      1430 us/op
+I (192401) bls_test: fp_inverse               x20      1420 us/op
+I (192519) bls_test: point_validate_g1        x10     11102 us/op
+I (192636) bls_test: point_validate_g2        x6      18607 us/op
+I (192825) bls_test: blind (B_=r*Y)           x6      30638 us/op
+I (193027) bls_test: unblind (C=1/r*C_)       x6      32770 us/op
+I (194344) bls_test: pairing_verify n=1       x3     327008 us/op
+I (195207) bls_test: batch_verify n=2         x2     430160 us/op
+I (196309) bls_test: batch_verify n=4         x2     550048 us/op
+I (197229) bls_test: batch_verify n=10        x1     918797 us/op
+I (201260) bls_test: suite_verify n=10 dk     x2    1594284 us/op
+I (208962) bls_test: swap crypto n=10 dk      x2    3850047 us/op
+RESEARCH_COMMAND heap
+free:          76572
+largest block: 40960
+min ever free: 50068
+RESEARCH_COMMAND tasks
+console             5       7012

@@ -1,0 +1,7 @@
+variant,function,frame_bytes,gcc_classification
+server-baseline,blst_miller_loop_n,10128,"dynamic,bounded"
+server-limit4,blst_miller_loop_n,3216,"dynamic,bounded"
+server-limit11,blst_miller_loop_n,7248,"dynamic,bounded"
+crypto_bls-baseline,bls_verify_proofs.part.0,3488,static
+crypto_bls-chunk8,bls_verify_proofs.part.0,4672,static
+crypto_bls-chunk11,bls_verify_proofs.part.0,5568,static

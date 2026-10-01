@@ -12,6 +12,9 @@
 #include "crypto.h"
 #include "crypto_test.h"
 #include "crypto_bls_test.h"
+#include "nutroot_test.h"
+#include "nutroot.h"
+#include "nutroot_current_test.h"
 #include "wifi.h"
 #include "http.h"
 #include "cashu.hpp"
@@ -944,9 +947,39 @@ usage:
 
 static void cmd_bench(const char *arg)
 {
-    if (arg && strncmp(arg, "bls", 3) == 0) {
+    wallet_store_guard guard;
+    if (arg && strncmp(arg, "legacy ", 7) == 0) {
+        cashu_crypto_configure((unsigned)atoi(arg+7));
+        crypto_run_benchmark(wallet_store_ctx());
+    } else if (arg && strncmp(arg, "contend ", 8) == 0) {
+        crypto_bls_run_contention((unsigned)atoi(arg+8));
+    } else if (arg && strncmp(arg, "scale ", 6) == 0) {
+        unsigned flags,capacity,count,distinct,repetitions;
+        if(sscanf(arg+6,"%u %u %u %u %u",&flags,&capacity,&count,&distinct,&repetitions)==5)
+            crypto_bls_run_scaling(flags,capacity,count,distinct,repetitions);
+        else nucula_console_write("usage: bench scale <flags> <capacity> <n> <distinct> <repetitions>\r\n");
+    } else if (arg && strncmp(arg, "verify ", 7) == 0) {
+        unsigned flags, capacity;
+        if (sscanf(arg + 7, "%u %u", &flags, &capacity) == 2)
+            crypto_bls_run_verifier_benchmark(flags, capacity);
+        else
+            nucula_console_write("usage: bench verify <flags> <capacity>\r\n");
+    } else if (arg && strncmp(arg, "mpi", 3) == 0) {
+        crypto_bls_run_mpi_benchmark(arg[3] == ' ' ? atoi(arg + 4) : -1);
+    } else if (arg && strcmp(arg, "bls fast") == 0) {
+        crypto_bls_run_fast_benchmark();
+    } else if (arg && strncmp(arg, "bls", 3) == 0) {
         nucula_console_write("benchmarking BLS12-381 primitives (slow on the portable path)...\r\n");
         crypto_bls_run_benchmark();
+    } else if (arg && strncmp(arg, "nutroot", 7) == 0) {
+        const char *opt = strstr(arg, "opt=");
+        if (opt) nutroot_set_optimizations((unsigned)atoi(opt + 4));
+        bool full = strstr(arg, "full") != nullptr;
+        nucula_console_write(full
+            ? "benchmarking nutroot witness verification (full sweeps, minutes)...\r\n"
+            : "benchmarking nutroot witness verification...\r\n");
+        if (strstr(arg, "current")) nutroot_current_benchmark(wallet_store_ctx());
+        else nutroot_run_benchmark(wallet_store_ctx(), strstr(arg,"large")?3:strstr(arg, "quick") ? 2 : (full ? 1 : 0));
     } else {
         nucula_console_write("benchmarking crypto primitives...\r\n");
         crypto_run_benchmark(wallet_store_ctx());
@@ -956,10 +989,15 @@ static void cmd_bench(const char *arg)
 
 static void cmd_selftest(const char *arg)
 {
+    wallet_store_guard guard;
     (void)arg;
     nucula_console_write("running self-tests (details logged at info level)...\r\n");
     bool ok = crypto_run_tests(wallet_store_ctx()) != 0;
     if (!crypto_bls_run_tests())
+        ok = false;
+    if (!nutroot_current_run_tests(wallet_store_ctx()))
+        ok = false;
+    if (!nutroot_run_tests(wallet_store_ctx()))
         ok = false;
     if (!cashu::keyset_run_tests())
         ok = false;
@@ -1047,7 +1085,7 @@ extern "C" void app_main(void)
     console_register_cmd("heap",    cmd_heap,     "show heap usage");
     console_register_cmd("tasks",   cmd_tasks,    "show task stack high-water marks");
     console_register_cmd("log",     cmd_log,      "log <e|w|i|d> [tag] — set log level");
-    console_register_cmd("bench",   cmd_bench,    "bench [bls] — benchmark crypto primitives");
+    console_register_cmd("bench",   cmd_bench,    "bench [legacy flags|bls [fast]|mpi mask|verify flags cap|scale flags cap n keys reps|contend flags|nutroot [current|quick|large|full] [opt=N]]");
     console_register_cmd("selftest", cmd_selftest, "run crypto/keyset self-tests");
     console_start();
 
@@ -1072,6 +1110,8 @@ extern "C" void app_main(void)
     crypto_run_tests(ctx);
     if (!crypto_bls_run_tests())
         ESP_LOGE(TAG, "BLS crypto self-test FAILED");
+    if (!nutroot_run_tests(ctx))
+        ESP_LOGE(TAG, "nutroot self-test FAILED");
     if (!cashu::keyset_run_tests())
         ESP_LOGE(TAG, "keyset id derivation self-test FAILED");
     if (!cashu::unit_run_tests())

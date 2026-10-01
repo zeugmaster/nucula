@@ -1,0 +1,28 @@
+{
+  "label": "18-secp-iram",
+  "options": {
+    "BLOCKS": "11",
+    "TEETH": "6",
+    "WINDOW": "8",
+    "OPT": "Os",
+    "IRAM": "ON",
+    "RAM_VERIFY": "OFF",
+    "RAM_SIGN": "OFF"
+  },
+  "mpi_iram": false,
+  "source_manifest_sha256": "88b1649606ae09cbf9768cc45fee0e5b9c89b26403a88d0ae35769a7ac44ad58",
+  "build_ok": true,
+  "app_bytes": 1365168,
+  "app_sha256": "e8e9c169311eafa7ed5e509270d37fc11d9705a3507e72d78c06a217a4c24ef3",
+  "device_ok": true,
+  "diagnostics_ok": false,
+  "diagnostic_failures": [
+    "I (30339) bls_test: suite_verify cold n=10: 518 us, valid=0",
+    "E (30350) bls_test: bench: suite_verify n=10 FAILED",
+    "E (30352) bls_test: bench: suite_verify n=10 FAILED",
+    "E (30355) bls_test: bench: swap verify(in) FAILED",
+    "E (31032) bls_test: bench: swap verify(out) FAILED",
+    "E (31035) bls_test: bench: swap verify(in) FAILED",
+    "E (31714) bls_test: bench: swap verify(out) FAILED"
+  ]
+}

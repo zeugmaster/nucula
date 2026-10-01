@@ -1,0 +1,9 @@
+{
+  "label": "51-adaptive-schnorr",
+  "diagnostics_ok": false,
+  "failures": [
+    "E (28229) nutroot: SANITY FAILED: quick threshold",
+    "I (39817) nutroot: quick correctness: FAILED, options=15"
+  ],
+  "raw_log_private": true
+}

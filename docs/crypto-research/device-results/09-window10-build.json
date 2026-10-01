@@ -1,0 +1,20 @@
+{
+  "label": "09-window10",
+  "options": {
+    "BLOCKS": "11",
+    "TEETH": "6",
+    "WINDOW": "10",
+    "OPT": "Os",
+    "IRAM": "OFF",
+    "RAM_VERIFY": "OFF",
+    "RAM_SIGN": "OFF"
+  },
+  "mpi_iram": false,
+  "source_manifest_sha256": "88b1649606ae09cbf9768cc45fee0e5b9c89b26403a88d0ae35769a7ac44ad58",
+  "build_ok": true,
+  "app_bytes": 1389472,
+  "app_sha256": "fb520c844caa4e9f6e3a575fe6cdeb003cbdde295a72fc25ab2f5abf82ce6a30",
+  "device_ok": true,
+  "diagnostics_ok": true,
+  "diagnostic_failures": []
+}

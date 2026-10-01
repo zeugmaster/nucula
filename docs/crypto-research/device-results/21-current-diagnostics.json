@@ -1,0 +1,9 @@
+{
+  "label": "21-current",
+  "diagnostics_ok": false,
+  "failures": [
+    "E (103765) nutroot: some nutroot tests FAILED",
+    "self-tests FAILED"
+  ],
+  "raw_log_private": true
+}

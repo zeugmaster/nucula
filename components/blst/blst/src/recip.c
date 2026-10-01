@@ -5,6 +5,9 @@
  */
 
 #include "fields.h"
+#if defined(__riscv) && __riscv_xlen == 32
+#include "blst_mpi_hooks.h"
+#endif
 
 #ifdef __OPTIMIZE_SIZE__
 /*
@@ -15,6 +18,9 @@
  */
 static void flt_reciprocal_fp(vec384 out, const vec384 inp)
 {
+#if defined(__riscv) && __riscv_xlen == 32
+    if (blst_mpi_fixed_exp_384(out, inp, BLST_MPI_INVERSE_EXP)) return;
+#endif
     static const byte BLS12_381_P_minus_2[] = {
         TO_BYTES(0xb9feffffffffaaa9), TO_BYTES(0x1eabfffeb153ffff),
         TO_BYTES(0x6730d2a0f6b0f624), TO_BYTES(0x64774b84f38512bf),
@@ -31,6 +37,9 @@ static void flt_reciprocal_fp(vec384 out, const vec384 inp)
 # include "recip-addchain.h"
 static void flt_reciprocal_fp(vec384 out, const vec384 inp)
 {
+#if defined(__riscv) && __riscv_xlen == 32
+    if (blst_mpi_fixed_exp_384(out, inp, BLST_MPI_INVERSE_EXP)) return;
+#endif
     RECIPROCAL_MOD_BLS12_381_P(out, inp, vec384);
 }
 # undef RECIPROCAL_MOD_BLS12_381_P
@@ -57,6 +66,9 @@ static void flt_reciprocal_fp2(vec384x out, const vec384x inp)
 
 static void reciprocal_fp(vec384 out, const vec384 inp)
 {
+#if defined(__riscv) && __riscv_xlen == 32
+    if (blst_mpi_fixed_exp_384(out, inp, BLST_MPI_INVERSE_EXP)) return;
+#endif
     static const vec384 Px8 = {    /* left-aligned value of the modulus */
         TO_LIMB_T(0xcff7fffffffd5558), TO_LIMB_T(0xf55ffff58a9ffffd),
         TO_LIMB_T(0x39869507b587b120), TO_LIMB_T(0x23ba5c279c2895fb),

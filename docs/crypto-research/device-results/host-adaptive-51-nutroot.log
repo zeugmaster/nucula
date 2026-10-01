@@ -1,0 +1,3 @@
+PASS: commitment API valid/tampered n=0,1,2,3,10,32,33,64
+PASS: 64 current per-input keypath signatures, full/reduced/no scratch, final-chunk tamper rejection
+PASS: 2500 Nutroot threshold comparisons (ordered, shuffled, missing, duplicate, malformed hex and JSON types)

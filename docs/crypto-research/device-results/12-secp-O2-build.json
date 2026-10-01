@@ -1,0 +1,20 @@
+{
+  "label": "12-secp-O2",
+  "options": {
+    "BLOCKS": "11",
+    "TEETH": "6",
+    "WINDOW": "8",
+    "OPT": "O2",
+    "IRAM": "OFF",
+    "RAM_VERIFY": "OFF",
+    "RAM_SIGN": "OFF"
+  },
+  "mpi_iram": false,
+  "source_manifest_sha256": "88b1649606ae09cbf9768cc45fee0e5b9c89b26403a88d0ae35769a7ac44ad58",
+  "build_ok": true,
+  "app_bytes": 1383584,
+  "app_sha256": "ee098aea0a61cef077a1bccb89e346988f8f864f457d0d6808432cb1f44b2003",
+  "device_ok": true,
+  "diagnostics_ok": true,
+  "diagnostic_failures": []
+}

@@ -1,0 +1,5 @@
+shape 0 passed
+shape 1 passed
+shape 2 passed
+PASS: combined unblind/verify n=64, chunk boundaries, full-width factors, aliased buffers, tamper, changed length and zero-factor rejection
+PASS: 42 differential valid/tampered cases, cache mutation, allocation failures, count overflow

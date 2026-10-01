@@ -17,11 +17,12 @@ typedef struct {
 } console_config_t;
 
 /* task_stack_size: command handlers run TLS on this stack (receive/melt),
- * and `bench bls`/`selftest` run BLS12-381 pairings here (blst keeps its
- * miller-loop/final-exp temporaries on the stack). Measured HWM ~16.5 KB
- * across the full BLS selftest + bench with the chunked multi-miller
- * verification (each 4-pair chunk holds ~3 KB of affine points and blst
- * per-pair accumulators) — 24 KB leaves ~7.5 KB margin. */
+ * and `bench bls`/`bench nutroot`/`selftest` run BLS12-381 pairings here
+ * (blst keeps its miller-loop/final-exp temporaries on the stack).
+ * Measured HWM ~17.2 KB across the full BLS + nutroot selftests and
+ * benchmarks with the chunked multi-miller verification (each 4-pair chunk
+ * holds ~3 KB of affine points and blst per-pair accumulators; libsecp
+ * schnorr adds ~2 KB) — 24 KB leaves ~7 KB margin. */
 #define CONSOLE_DEFAULT_CONFIG() { \
     .max_line_length = 4096, \
     .tx_buffer_size = 4096, \

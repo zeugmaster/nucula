@@ -1,0 +1,10 @@
+{
+  "label": "01-mpi-variants",
+  "diagnostics_ok": false,
+  "failures": [
+    "E (24163) task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:",
+    "E (65669) task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:"
+  ],
+  "raw_log_private": true,
+  "private_raw_basename": "mpi-variants.log"
+}

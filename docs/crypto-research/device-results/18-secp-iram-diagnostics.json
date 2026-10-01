@@ -1,0 +1,13 @@
+{
+  "label": "18-secp-iram",
+  "diagnostics_ok": false,
+  "failures": [
+    "E (30350) bls_test: bench: suite_verify n=10 FAILED",
+    "E (30352) bls_test: bench: suite_verify n=10 FAILED",
+    "E (30355) bls_test: bench: swap verify(in) FAILED",
+    "E (31032) bls_test: bench: swap verify(out) FAILED",
+    "E (31035) bls_test: bench: swap verify(in) FAILED",
+    "E (31714) bls_test: bench: swap verify(out) FAILED"
+  ],
+  "raw_log_private": true
+}

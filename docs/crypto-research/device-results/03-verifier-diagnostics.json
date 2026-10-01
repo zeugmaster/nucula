@@ -1,0 +1,7 @@
+{
+  "label": "03-verifier",
+  "diagnostics_ok": true,
+  "failures": [],
+  "raw_log_private": true,
+  "private_raw_basename": "verifier-variants.log"
+}

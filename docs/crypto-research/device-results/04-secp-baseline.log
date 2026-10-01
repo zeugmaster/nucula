@@ -1,0 +1,98 @@
+RESEARCH_COMMAND log i
+RESEARCH_COMMAND bench nutroot quick opt=0
+I (16120) nutroot: nutroot witness verification benchmark [full] (timed unit = one verify call, as nutshell's)
+I (16299) nutroot: keypair full scalar      x8  mean    15505 med    15501 min    15446 us
+I (16572) nutroot: sign incl keypair        x8  mean    33410 med    33372 min    33372 us
+I (16718) nutroot: sign retained keypair    x8  mean    17715 med    17701 min    17701 us
+I (16863) nutroot: schnorr verify           x8  mean    17792 med    17792 min    17791 us
+I (17008) nutroot: ECDH full scalar         x8  mean    17676 med    17676 min    17675 us
+I (17026) nutroot: parse compressed key     x8  mean     1677 med     1620 min     1620 us
+I (17655) nutroot: threshold 2/3 checks=5   x3  mean   120003 med   120008 min   119994 us
+I (18884) nutroot: threshold 3/5 checks=12  x3  mean   254046 med   254008 min   254008 us
+I (26346) nutroot: threshold 8/15 checks=92 x3  mean  1733975 med  1734008 min  1733909 us
+I (26347) nutroot: quick correctness: OK, options=0
+RESEARCH_COMMAND bench nutroot quick opt=1
+I (26420) nutroot: nutroot witness verification benchmark [full] (timed unit = one verify call, as nutshell's)
+I (26599) nutroot: keypair full scalar      x8  mean    15505 med    15501 min    15446 us
+I (26872) nutroot: sign incl keypair        x8  mean    33375 med    33372 min    33372 us
+I (27018) nutroot: sign retained keypair    x8  mean    17715 med    17701 min    17701 us
+I (27164) nutroot: schnorr verify           x8  mean    17792 med    17793 min    17791 us
+I (27309) nutroot: ECDH full scalar         x8  mean    17676 med    17676 min    17675 us
+I (27327) nutroot: parse compressed key     x8  mean     1677 med     1620 min     1620 us
+I (27804) nutroot: threshold 2/3 checks=3   x3  mean    81812 med    82008 min    81420 us
+I (28586) nutroot: threshold 3/5 checks=6   x3  mean   142004 med   142008 min   141996 us
+I (31972) nutroot: threshold 8/15 checks=36 x3  mean   714368 med   717218 min   706879 us
+I (31973) nutroot: quick correctness: OK, options=1
+RESEARCH_COMMAND bench nutroot quick opt=3
+I (32116) nutroot: nutroot witness verification benchmark [full] (timed unit = one verify call, as nutshell's)
+I (32296) nutroot: keypair full scalar      x8  mean    15628 med    15505 min    15479 us
+I (32569) nutroot: sign incl keypair        x8  mean    33443 med    33372 min    33372 us
+I (32715) nutroot: sign retained keypair    x8  mean    17820 med    17701 min    17695 us
+I (32861) nutroot: schnorr verify           x8  mean    17793 med    17793 min    17791 us
+I (33009) nutroot: ECDH full scalar         x8  mean    17994 med    17677 min    17675 us
+I (33027) nutroot: parse compressed key     x8  mean     1677 med     1620 min     1620 us
+I (33433) nutroot: threshold 2/3 checks=2   x3  mean    64163 med    64008 min    64008 us
+I (33999) nutroot: threshold 3/5 checks=3   x3  mean    88041 med    88008 min    88008 us
+I (35350) nutroot: threshold 8/15 checks=8  x3  mean   203226 med   203137 min   203008 us
+I (35351) nutroot: quick correctness: OK, options=3
+RESEARCH_COMMAND selftest
+running self-tests (details logged at info level)...
+I (35498) crypto_test: running crypto test vectors
+I (35499) crypto_test: sha256: ok
+I (35501) crypto_test: hash_to_curve 1: OK
+I (35509) crypto_test: hash_to_curve 2: OK
+I (35517) crypto_test: hash_to_curve 3: OK
+I (35540) crypto_test: blind_message 1: OK
+I (35561) crypto_test: blind_message 2: OK
+I (35599) crypto_test: unblind: OK
+I (35662) crypto_test: DLEQ BlindSignature: OK
+I (35753) crypto_test: DLEQ Proof: OK
+I (36519) crypto_test: NUT-13 V2 counter=0: OK
+I (36520) crypto_test: NUT-13 V2 counter=1: OK
+I (36521) crypto_test: NUT-13 V2 counter=2: OK
+I (36522) crypto_test: NUT-13 V2 counter=3: OK
+I (36525) crypto_test: NUT-13 V2 counter=4: OK
+I (36541) crypto_test: NUT-13 V2: all test vectors passed
+I (36542) crypto_test: all crypto tests passed
+I (36542) bls_test: running BLS12-381 (keyset v3) test vectors
+I (36564) bls_test: hash_to_curve_G1: OK
+I (36590) bls_test: mint key K: valid G2 point
+I (36616) bls_test: blind B_ = r*Y: OK
+I (36642) bls_test: sign C_ = a*B_: OK
+I (36669) bls_test: unblind C = r^-1*C_: OK
+I (37054) bls_test: pairing verification: OK
+I (37442) bls_test: tamper rejection: OK
+I (37485) bls_test: batch C_1 = a*Y_1: OK
+I (37487) bls_test: batch challenge: OK
+I (37487) bls_test: batch weight_1 (ctr=4): OK
+I (37488) bls_test: batch weight_2 (ctr=0): OK
+I (38003) bls_test: batch verification: OK
+I (38517) bls_test: batch tamper rejection: OK
+I (38519) bls_test: point validation: OK
+I (38561) bls_test: suite blind: OK
+I (38604) bls_test: suite unblind: OK
+I (42672) bls_test: suite verify_proofs (incl. multi-key): OK
+I (42673) bls_test: suite input validation: OK
+E (43519) task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:
+I (49125) bls_test: suite verify_proofs n=10 (chunk boundary): OK
+I (49127) bls_test: NUT-13 v3 secret: OK
+I (49127) bls_test: NUT-13 v3 r (attempt=1): OK
+I (49152) bls_test: MPI vs software bit-exactness: OK
+I (49582) bls_test: MPI field exponent comparison: OK
+I (49582) bls_test: all BLS tests passed
+I (49585) nutroot: leaf wire forms: OK
+I (49591) nutroot: leaf parse rejections: OK
+I (49598) nutroot: merkle fold + paths: OK
+I (49659) nutroot: tweak derivations: OK
+I (49661) nutroot: transaction transcripts: OK
+I (49734) nutroot: signature vectors: OK
+I (50310) nutroot: witness verification e2e: OK
+I (50311) nutroot: all nutroot tests passed
+self-tests PASSED
+RESEARCH_COMMAND heap
+free:          71808
+largest block: 36864
+min ever free: 45316
+RESEARCH_COMMAND tasks
+name             prio  stack-min
+console             5       6996

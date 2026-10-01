@@ -1,0 +1,4 @@
+shape 0 passed
+shape 1 passed
+shape 2 passed
+PASS: 2100 differential valid/tampered cases, cache mutation, allocation failures, count overflow

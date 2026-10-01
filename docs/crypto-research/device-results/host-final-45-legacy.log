@@ -1,0 +1,1 @@
+PASS: NUT-12 valid/tampered vector, 256 full-width DLEQ point comparisons, 512 secret multiply/alias comparisons, invalid scalars, commitment batches n=1..32 with zero tweaks, tamper and scratch bounds

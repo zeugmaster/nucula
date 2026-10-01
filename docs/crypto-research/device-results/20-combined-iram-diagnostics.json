@@ -1,0 +1,9 @@
+{
+  "label": "20-combined-iram",
+  "diagnostics_ok": false,
+  "failures": [
+    "abort() was called at PC 0x420bb24b on core 0",
+    "Rebooting..."
+  ],
+  "raw_log_private": true
+}

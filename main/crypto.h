@@ -8,6 +8,10 @@
 extern "C" {
 #endif
 
+/* Diagnostic bit0: public-scalar joint DLEQ verification. */
+void cashu_crypto_configure(unsigned options);
+unsigned cashu_crypto_options(void);
+
 /**
  * Hash a message to a point on the secp256k1 curve.
  * Implements the Cashu hash_to_curve function (NUT-00).

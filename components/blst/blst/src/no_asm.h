@@ -1,3 +1,4 @@
+#include "blst_mpi_hooks.h"
 /*
  * Copyright Supranational LLC
  * Licensed under the Apache License, Version 2.0, see LICENSE for details.
@@ -524,6 +525,10 @@ inline limb_t sgn0_pty_mont_384x(const vec384x a, const vec384 p, limb_t n0)
 void mul_mont_384x(vec384x ret, const vec384x a, const vec384x b,
                           const vec384 p, limb_t n0)
 {
+#if defined(__riscv) && __riscv_xlen == 32
+    if (blst_mpi_fp2(ret, a, b, p, n0, 0)) return;
+#endif
+
     vec384 aa, bb, cc;
 
     add_mod_n(aa, a[0], a[1], p, NLIMBS(384));
@@ -554,6 +559,12 @@ void sqr_n_mul_mont_383(vec384 ret, const vec384 a, size_t count,
                         const vec384 p, limb_t n0, const vec384 b)
 {
     __builtin_assume(count != 0);
+#if defined(__riscv) && __riscv_xlen == 32
+    if (blst_mpi_square_chain_384(ret, a, count)) {
+        mul_mont_n(ret, ret, b, p, n0, NLIMBS(384));
+        return;
+    }
+#endif
     while(count--) {
         mul_mont_nonred_n(ret, a, a, p, n0, NLIMBS(384));
         a = ret;
@@ -570,6 +581,10 @@ void sqr_n_mul_mont_383(vec384 ret, const vec384 a, size_t count,
 void sqr_mont_382x(vec384x ret, const vec384x a,
                           const vec384 p, limb_t n0)
 {
+#if defined(__riscv) && __riscv_xlen == 32
+    if (blst_mpi_fp2(ret, a, NULL, p, n0, 1)) return;
+#endif
+
     vec384 t0, t1, t2;
 
     /* a0 * a1 first — before any write to ret (ret may alias a). */
@@ -1118,6 +1133,7 @@ inline void vec_prefetch(const void *ptr, size_t len)
 void blst_sha256_block_data_order(unsigned int *v, const void *inp,
                                                    size_t blocks)
 {
+    if (blst_esp_sha256_blocks(v, inp, blocks)) return;
     static const unsigned int K256[64] = {
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
         0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,

@@ -1,0 +1,37 @@
+options,operation,iterations,mean_us
+0,mpi unchained x1000,3,7794
+0,mpi chained x1000,3,7612
+0,suite_verify n=10 dk,2,1991421
+0,swap crypto n=10 dk,2,4810623
+1,mpi unchained x1000,3,7286
+1,mpi chained x1000,3,7144
+1,suite_verify n=10 dk,2,1911920
+1,swap crypto n=10 dk,2,4628272
+2,mpi unchained x1000,3,7383
+2,mpi chained x1000,3,7248
+2,suite_verify n=10 dk,2,1894645
+2,swap crypto n=10 dk,2,4660748
+3,mpi unchained x1000,3,7153
+3,mpi chained x1000,3,7020
+3,suite_verify n=10 dk,2,1859271
+3,swap crypto n=10 dk,2,4513869
+7,mpi unchained x1000,3,7152
+7,mpi chained x1000,3,7021
+7,suite_verify n=10 dk,2,1714188
+7,swap crypto n=10 dk,2,4171987
+15,mpi unchained x1000,3,6740
+15,mpi chained x1000,3,6759
+15,suite_verify n=10 dk,2,1651093
+15,swap crypto n=10 dk,2,4006971
+23,mpi unchained x1000,3,7411
+23,mpi chained x1000,3,7020
+23,suite_verify n=10 dk,2,1745937
+23,swap crypto n=10 dk,2,4233298
+39,mpi unchained x1000,3,6587
+39,mpi chained x1000,3,5811
+39,suite_verify n=10 dk,2,1699188
+39,swap crypto n=10 dk,2,4130683
+47,mpi unchained x1000,3,6141
+47,mpi chained x1000,3,6140
+47,suite_verify n=10 dk,2,1651175
+47,swap crypto n=10 dk,2,4005961

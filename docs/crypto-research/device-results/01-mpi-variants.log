@@ -1,0 +1,155 @@
+RESEARCH_COMMAND log i
+RESEARCH_COMMAND selftest
+running self-tests (details logged at info level)...
+I (16135) crypto_test: running crypto test vectors
+I (16136) crypto_test: sha256: ok
+I (16138) crypto_test: hash_to_curve 1: OK
+I (16146) crypto_test: hash_to_curve 2: OK
+I (16153) crypto_test: hash_to_curve 3: OK
+I (16177) crypto_test: blind_message 1: OK
+I (16198) crypto_test: blind_message 2: OK
+I (16236) crypto_test: unblind: OK
+I (16298) crypto_test: DLEQ BlindSignature: OK
+I (16389) crypto_test: DLEQ Proof: OK
+I (17155) crypto_test: NUT-13 V2 counter=0: OK
+I (17156) crypto_test: NUT-13 V2 counter=1: OK
+I (17157) crypto_test: NUT-13 V2 counter=2: OK
+I (17158) crypto_test: NUT-13 V2 counter=3: OK
+I (17161) crypto_test: NUT-13 V2 counter=4: OK
+I (17177) crypto_test: NUT-13 V2: all test vectors passed
+I (17178) crypto_test: all crypto tests passed
+I (17178) bls_test: running BLS12-381 (keyset v3) test vectors
+I (17200) bls_test: hash_to_curve_G1: OK
+I (17226) bls_test: mint key K: valid G2 point
+I (17252) bls_test: blind B_ = r*Y: OK
+I (17278) bls_test: sign C_ = a*B_: OK
+I (17305) bls_test: unblind C = r^-1*C_: OK
+I (17692) bls_test: pairing verification: OK
+I (18083) bls_test: tamper rejection: OK
+I (18125) bls_test: batch C_1 = a*Y_1: OK
+I (18127) bls_test: batch challenge: OK
+I (18127) bls_test: batch weight_1 (ctr=4): OK
+I (18128) bls_test: batch weight_2 (ctr=0): OK
+I (18646) bls_test: batch verification: OK
+I (19161) bls_test: batch tamper rejection: OK
+I (19163) bls_test: point validation: OK
+I (19205) bls_test: suite blind: OK
+I (19248) bls_test: suite unblind: OK
+I (23338) bls_test: suite verify_proofs (incl. multi-key): OK
+I (23339) bls_test: suite input validation: OK
+E (24163) task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:
+I (29812) bls_test: suite verify_proofs n=10 (chunk boundary): OK
+I (29814) bls_test: NUT-13 v3 secret: OK
+I (29815) bls_test: NUT-13 v3 r (attempt=1): OK
+I (29839) bls_test: MPI vs software bit-exactness: OK
+I (29839) bls_test: all BLS tests passed
+I (29842) nutroot: leaf wire forms: OK
+I (29848) nutroot: leaf parse rejections: OK
+I (29855) nutroot: merkle fold + paths: OK
+I (29917) nutroot: tweak derivations: OK
+I (29918) nutroot: transaction transcripts: OK
+I (29991) nutroot: signature vectors: OK
+I (30584) nutroot: witness verification e2e: OK
+I (30585) nutroot: all nutroot tests passed
+self-tests PASSED
+RESEARCH_COMMAND bench mpi
+I (30723) bls_test: === MPI variant 0 ===
+I (30748) bls_test: MPI vs software bit-exactness: OK
+I (30774) bls_test: mpi unchained x1000      x3       7794 us/op
+I (30799) bls_test: mpi chained x1000        x3       7612 us/op
+I (35868) bls_test: suite_verify n=10 dk     x2    1991421 us/op
+I (45491) bls_test: swap crypto n=10 dk      x2    4810623 us/op
+I (45492) bls_test: === MPI variant 1 ===
+I (45515) bls_test: MPI vs software bit-exactness: OK
+I (45540) bls_test: mpi unchained x1000      x3       7286 us/op
+I (45564) bls_test: mpi chained x1000        x3       7144 us/op
+I (50410) bls_test: suite_verify n=10 dk     x2    1911920 us/op
+I (59668) bls_test: swap crypto n=10 dk      x2    4628272 us/op
+I (59669) bls_test: === MPI variant 2 ===
+I (59692) bls_test: MPI vs software bit-exactness: OK
+I (59717) bls_test: mpi unchained x1000      x3       7383 us/op
+I (59742) bls_test: mpi chained x1000        x3       7248 us/op
+I (64563) bls_test: suite_verify n=10 dk     x2    1894645 us/op
+E (65669) task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:
+I (73887) bls_test: swap crypto n=10 dk      x2    4660748 us/op
+I (73888) bls_test: === MPI variant 3 ===
+I (73911) bls_test: MPI vs software bit-exactness: OK
+I (73936) bls_test: mpi unchained x1000      x3       7153 us/op
+I (73960) bls_test: mpi chained x1000        x3       7020 us/op
+I (78691) bls_test: suite_verify n=10 dk     x2    1859271 us/op
+I (87721) bls_test: swap crypto n=10 dk      x2    4513869 us/op
+I (87722) bls_test: === MPI variant 7 ===
+I (87745) bls_test: MPI vs software bit-exactness: OK
+I (87770) bls_test: mpi unchained x1000      x3       7152 us/op
+I (87794) bls_test: mpi chained x1000        x3       7021 us/op
+I (92155) bls_test: suite_verify n=10 dk     x2    1714188 us/op
+I (100501) bls_test: swap crypto n=10 dk      x2    4171987 us/op
+I (100502) bls_test: === MPI variant 15 ===
+I (100525) bls_test: MPI vs software bit-exactness: OK
+I (100547) bls_test: mpi unchained x1000      x3       6740 us/op
+I (100569) bls_test: mpi chained x1000        x3       6759 us/op
+I (104768) bls_test: suite_verify n=10 dk     x2    1651093 us/op
+I (112783) bls_test: swap crypto n=10 dk      x2    4006971 us/op
+I (112784) bls_test: === MPI variant 23 ===
+I (112807) bls_test: MPI vs software bit-exactness: OK
+I (112832) bls_test: mpi unchained x1000      x3       7411 us/op
+I (112856) bls_test: mpi chained x1000        x3       7020 us/op
+I (117290) bls_test: suite_verify n=10 dk     x2    1745937 us/op
+I (125759) bls_test: swap crypto n=10 dk      x2    4233298 us/op
+I (125760) bls_test: === MPI variant 39 ===
+I (125783) bls_test: MPI vs software bit-exactness: OK
+I (125805) bls_test: mpi unchained x1000      x3       6587 us/op
+I (125824) bls_test: mpi chained x1000        x3       5811 us/op
+I (130136) bls_test: suite_verify n=10 dk     x2    1699188 us/op
+I (138400) bls_test: swap crypto n=10 dk      x2    4130683 us/op
+I (138400) bls_test: === MPI variant 47 ===
+I (138424) bls_test: MPI vs software bit-exactness: OK
+I (138446) bls_test: mpi unchained x1000      x3       6141 us/op
+I (138467) bls_test: mpi chained x1000        x3       6140 us/op
+I (142663) bls_test: suite_verify n=10 dk     x2    1651175 us/op
+I (150676) bls_test: swap crypto n=10 dk      x2    4005961 us/op
+RESEARCH_COMMAND bench nutroot
+I (150832) nutroot: nutroot witness verification benchmark (timed unit = one verify call, as nutshell's)
+I (150833) nutroot: --- named cases (labels mirror nutshell) ---
+I (151031) nutroot: keypath_bare             x5  mean    23819 med    23824 min    23810 us
+I (151304) nutroot: keypath_tweaked          x5  mean    23449 med    23449 min    23449 us
+I (151632) nutroot: script_threshold_1of1    x5  mean    40501 med    40501 min    40501 us
+I (152254) nutroot: script_threshold_2of3    x3  mean   118239 med   118244 min   118229 us
+I (152582) nutroot: script_after_refund      x5  mean    40640 med    40646 min    40619 us
+I (152909) nutroot: script_hashlock          x5  mean    40278 med    40284 min    40258 us
+I (153380) nutroot: script_multileaf_8       x5  mean    40753 med    40707 min    40704 us
+I (154718) nutroot: script_multileaf_64      x5  mean    41423 med    41425 min    41417 us
+I (155045) nutroot: script_p2bk_blinded      x5  mean    40276 med    40277 min    40275 us
+I (155604) nutroot: multi_input_4_keypath    x3  mean    89071 med    89007 min    89007 us (22267 us/in)
+I (156553) nutroot: multi_input_4_script     x3  mean   155994 med   155918 min   155913 us (38998 us/in)
+I (156554) nutroot: --- inputs sweep (N inputs + N outputs per call) ---
+I (156705) nutroot: inputs_keypath N=1       x3  mean    23769 med    23768 min    23768 us (23769 us/in)
+I (156951) nutroot: inputs_script N=1        x3  mean    40750 med    40752 min    40747 us (40750 us/in)
+I (157510) nutroot: inputs_keypath N=4       x3  mean    89226 med    89161 min    89155 us (22306 us/in)
+I (158458) nutroot: inputs_script N=4        x3  mean   155945 med   155857 min   155855 us (38986 us/in)
+I (160296) nutroot: inputs_keypath N=16      x2  mean   347576 med   347576 min   347574 us (21723 us/in)
+I (163434) nutroot: inputs_script N=16       x2  mean   617896 med   617896 min   617854 us (38618 us/in)
+I (163437) nutroot: --- leaves sweep (1 script input, L-leaf tree) ---
+I (163689) nutroot: leaves L=1 path=0        x3  mean    40777 med    40909 min    40422 us
+I (164050) nutroot: leaves L=8 path=3        x3  mean    40758 med    40189 min    40179 us
+I (165315) nutroot: leaves L=64 path=6       x3  mean    41263 med    40949 min    40947 us
+I (165316) nutroot: --- threshold n-of-m sweep (single-leaf tree) ---
+I (165565) nutroot: thresh 1-of-1 sv=1       x3  mean    40985 med    40961 min    40955 us
+I (166194) nutroot: thresh 2-of-3 sv=5       x3  mean   120375 med   119668 min   119591 us
+I (167408) nutroot: thresh 3-of-5 sv=12      x3  mean   250141 med   250109 min   250046 us
+I (167409) nutroot: --- 10-proof v3 receive (point secrets, distinct keys) ---
+I (173094) nutroot: recv verify n=10         x2  mean  1986360 med  1986360 min  1986179 us
+I (173595) nutroot: recv spendinfo n=10      x3  mean   165944 med   165988 min   165792 us
+I (175086) nutroot: swap sign n=10           x3  mean   495962 med   495936 min   495854 us
+I (176338) nutroot: swap blind n=10          x3  mean   416369 med   416275 min   416234 us
+I (177602) nutroot: swap unblind n=10        x3  mean   420558 med   420591 min   420363 us
+I (181577) nutroot: recv verify out n=10     x2  mean  1986615 med  1986615 min  1986418 us
+I (181578) nutroot: variant A (verify at tap, swap later): tap 2152304 us + later 3319504 us = 5471808 us
+I (181584) nutroot: variant B (immediate swap+verify):     total 5471808 us
+I (181591) nutroot: nutroot overhead vs plain v3 swap (spendinfo+sign): 661906 us
+RESEARCH_COMMAND heap
+free:          76572
+largest block: 40960
+min ever free: 50068
+RESEARCH_COMMAND tasks
+console             5       7012

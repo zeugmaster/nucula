@@ -1,0 +1,221 @@
+RESEARCH_COMMAND log i
+RESEARCH_COMMAND bench mpi 79
+I (16154) bls_test: === MPI variant 79 ===
+I (16178) bls_test: MPI vs software bit-exactness: OK
+I (16575) bls_test: MPI field exponent comparison: OK
+I (16597) bls_test: mpi unchained x1000      x3       6769 us/op
+I (16619) bls_test: mpi chained x1000        x3       6789 us/op
+I (20652) bls_test: suite_verify n=10 dk     x2    1595059 us/op
+I (28366) bls_test: swap crypto n=10 dk      x2    3856138 us/op
+RESEARCH_COMMAND bench verify 0 4
+I (28508) bls_test: === BLS verifier options=0 capacity=4 MPI=79 ===
+I (32543) bls_test: suite_verify n=10 dk     x2    1595423 us/op
+I (40283) bls_test: swap crypto n=10 dk      x2    3868930 us/op
+RESEARCH_COMMAND bench verify 1 4
+I (40403) bls_test: === BLS verifier options=1 capacity=4 MPI=79 ===
+I (44414) bls_test: suite_verify n=10 dk     x2    1584638 us/op
+I (52084) bls_test: swap crypto n=10 dk      x2    3834063 us/op
+RESEARCH_COMMAND bench verify 1 8
+I (52094) bls_test: === BLS verifier options=1 capacity=8 MPI=79 ===
+I (56036) bls_test: suite_verify n=10 dk     x2    1549960 us/op
+I (63568) bls_test: swap crypto n=10 dk      x2    3765127 us/op
+RESEARCH_COMMAND bench verify 1 11
+I (63652) bls_test: === BLS verifier options=1 capacity=11 MPI=79 ===
+I (67555) bls_test: suite_verify n=10 dk     x2    1528821 us/op
+I (74948) bls_test: swap crypto n=10 dk      x2    3695809 us/op
+RESEARCH_COMMAND bench verify 1 16
+I (75057) bls_test: === BLS verifier options=1 capacity=16 MPI=79 ===
+I (78930) bls_test: suite_verify n=10 dk     x2    1515201 us/op
+I (86325) bls_test: swap crypto n=10 dk      x2    3696397 us/op
+RESEARCH_COMMAND bench verify 3 11
+I (86476) bls_test: === BLS verifier options=3 capacity=11 MPI=79 ===
+I (88833) bls_test: suite_verify cold n=10: 1515573 us, valid=1
+I (91508) bls_test: suite_verify n=10 dk     x2    1331142 us/op
+I (98189) bls_test: swap crypto n=10 dk      x2    3339459 us/op
+RESEARCH_COMMAND bench verify 9 11
+I (98341) bls_test: === BLS verifier options=9 capacity=11 MPI=79 ===
+I (102072) bls_test: suite_verify n=10 dk     x2    1441968 us/op
+I (109181) bls_test: swap crypto n=10 dk      x2    3553571 us/op
+RESEARCH_COMMAND bench verify 17 11
+I (109288) bls_test: === BLS verifier options=17 capacity=11 MPI=79 ===
+I (112970) bls_test: suite_verify n=10 dk     x2    1419845 us/op
+I (119981) bls_test: swap crypto n=10 dk      x2    3504601 us/op
+RESEARCH_COMMAND bench verify 33 11
+I (120053) bls_test: === BLS verifier options=33 capacity=11 MPI=79 ===
+I (123905) bls_test: suite_verify n=10 dk     x2    1504770 us/op
+I (131278) bls_test: swap crypto n=10 dk      x2    3685254 us/op
+RESEARCH_COMMAND bench verify 43 11
+I (131418) bls_test: === BLS verifier options=43 capacity=11 MPI=79 ===
+I (133694) bls_test: suite_verify cold n=10: 1431738 us, valid=1
+I (136198) bls_test: suite_verify n=10 dk     x2    1245830 us/op
+I (142517) bls_test: swap crypto n=10 dk      x2    3158667 us/op
+RESEARCH_COMMAND bench verify 51 11
+I (142656) bls_test: === BLS verifier options=51 capacity=11 MPI=79 ===
+I (144906) bls_test: suite_verify cold n=10: 1409316 us, valid=1
+I (147368) bls_test: suite_verify n=10 dk     x2    1224983 us/op
+I (153600) bls_test: swap crypto n=10 dk      x2    3115412 us/op
+RESEARCH_COMMAND bench verify 55 11
+I (153717) bls_test: === BLS verifier options=55 capacity=11 MPI=79 ===
+I (155968) bls_test: suite_verify cold n=10: 1409316 us, valid=1
+I (158430) bls_test: suite_verify n=10 dk     x2    1225061 us/op
+I (164692) bls_test: swap crypto n=10 dk      x2    3130140 us/op
+RESEARCH_COMMAND selftest
+running self-tests (details logged at info level)...
+I (165780) bls_test: running BLS12-381 (keyset v3) test vectors
+I (165797) bls_test: hash_to_curve_G1: OK
+I (165816) bls_test: mint key K: valid G2 point
+I (165838) bls_test: blind B_ = r*Y: OK
+I (165861) bls_test: sign C_ = a*B_: OK
+I (165884) bls_test: unblind C = r^-1*C_: OK
+I (166208) bls_test: pairing verification: OK
+I (166534) bls_test: tamper rejection: OK
+I (166568) bls_test: batch C_1 = a*Y_1: OK
+I (166569) bls_test: batch challenge: OK
+I (166570) bls_test: batch weight_1 (ctr=4): OK
+I (166570) bls_test: batch weight_2 (ctr=0): OK
+I (167001) bls_test: batch verification: OK
+I (167429) bls_test: batch tamper rejection: OK
+I (167431) bls_test: point validation: OK
+I (167464) bls_test: suite blind: OK
+I (167499) bls_test: suite unblind: OK
+I (170289) bls_test: suite verify_proofs (incl. multi-key): OK
+I (170290) bls_test: suite input validation: OK
+I (174290) bls_test: suite verify_proofs n=10 (chunk boundary): OK
+I (174292) bls_test: NUT-13 v3 secret: OK
+I (174292) bls_test: NUT-13 v3 r (attempt=1): OK
+I (174317) bls_test: MPI vs software bit-exactness: OK
+I (174724) bls_test: MPI field exponent comparison: OK
+I (174724) bls_test: all BLS tests passed
+I (174727) nutroot: leaf wire forms: OK
+I (174733) nutroot: leaf parse rejections: OK
+I (174740) nutroot: merkle fold + paths: OK
+I (174801) nutroot: tweak derivations: OK
+I (174803) nutroot: transaction transcripts: OK
+I (174876) nutroot: signature vectors: OK
+I (175470) nutroot: witness verification e2e: OK
+I (175471) nutroot: all nutroot tests passed
+self-tests PASSED
+RESEARCH_COMMAND bench nutroot opt=0
+I (175642) nutroot: nutroot witness verification benchmark (timed unit = one verify call, as nutshell's)
+I (175643) nutroot: --- named cases (labels mirror nutshell) ---
+I (175842) nutroot: keypath_bare             x5  mean    23753 med    23756 min    23744 us
+I (176116) nutroot: keypath_tweaked          x5  mean    23402 med    23405 min    23392 us
+I (176444) nutroot: script_threshold_1of1    x5  mean    40514 med    40470 min    40428 us
+I (177067) nutroot: script_threshold_2of3    x3  mean   118163 med   118172 min   118147 us
+I (177395) nutroot: script_after_refund      x5  mean    40606 med    40567 min    40540 us
+I (177722) nutroot: script_hashlock          x5  mean    40230 med    40235 min    40211 us
+I (178194) nutroot: script_multileaf_8       x5  mean    40695 med    40697 min    40688 us
+I (179537) nutroot: script_multileaf_64      x5  mean    41445 med    41408 min    41408 us
+I (179864) nutroot: script_p2bk_blinded      x5  mean    40242 med    40245 min    40231 us
+I (180422) nutroot: multi_input_4_keypath    x3  mean    88996 med    88853 min    88829 us (22249 us/in)
+I (181370) nutroot: multi_input_4_script     x3  mean   155800 med   155730 min   155713 us (38950 us/in)
+I (181371) nutroot: --- inputs sweep (N inputs + N outputs per call) ---
+I (181522) nutroot: inputs_keypath N=1       x3  mean    23720 med    23723 min    23715 us (23720 us/in)
+I (181769) nutroot: inputs_script N=1        x3  mean    40739 med    40745 min    40727 us (40739 us/in)
+I (182327) nutroot: inputs_keypath N=4       x3  mean    88961 med    88957 min    88951 us (22240 us/in)
+I (183275) nutroot: inputs_script N=4        x3  mean   155683 med   155682 min   155674 us (38920 us/in)
+I (185115) nutroot: inputs_keypath N=16      x2  mean   347325 med   347325 min   347325 us (21707 us/in)
+I (188257) nutroot: inputs_script N=16       x2  mean   617159 med   617159 min   617051 us (38572 us/in)
+I (188258) nutroot: --- leaves sweep (1 script input, L-leaf tree) ---
+I (188507) nutroot: leaves L=1 path=0        x3  mean    40367 med    40379 min    40343 us
+I (188864) nutroot: leaves L=8 path=3        x3  mean    40155 med    40162 min    40141 us
+I (190122) nutroot: leaves L=64 path=6       x3  mean    40903 med    40902 min    40902 us
+I (190123) nutroot: --- threshold n-of-m sweep (single-leaf tree) ---
+I (190373) nutroot: thresh 1-of-1 sv=1       x3  mean    41015 med    41000 min    40889 us
+I (191000) nutroot: thresh 2-of-3 sv=5       x3  mean   119539 med   119504 min   119504 us
+I (192213) nutroot: thresh 3-of-5 sv=12      x3  mean   249898 med   249911 min   249861 us
+I (192215) nutroot: --- 10-proof v3 receive (point secrets, distinct keys) ---
+I (196181) nutroot: recv verify n=10         x2  mean  1232023 med  1232023 min  1228821 us
+I (196681) nutroot: recv spendinfo n=10      x3  mean   165780 med   165760 min   165623 us
+I (198179) nutroot: swap sign n=10           x3  mean   498183 med   498143 min   498080 us
+I (199152) nutroot: swap blind n=10          x3  mean   323187 med   323102 min   323075 us
+I (200179) nutroot: swap unblind n=10        x3  mean   341126 med   341008 min   341001 us
+I (202632) nutroot: recv verify out n=10     x2  mean  1225694 med  1225694 min  1225680 us
+I (202633) nutroot: variant A (verify at tap, swap later): tap 1397803 us + later 2388190 us = 3785993 us
+I (202639) nutroot: variant B (immediate swap+verify):     total 3785993 us
+I (202646) nutroot: nutroot overhead vs plain v3 swap (spendinfo+sign): 663963 us
+RESEARCH_COMMAND bench nutroot opt=1
+I (202654) nutroot: nutroot witness verification benchmark (timed unit = one verify call, as nutshell's)
+I (202662) nutroot: --- named cases (labels mirror nutshell) ---
+I (202862) nutroot: keypath_bare             x5  mean    23752 med    23756 min    23738 us
+I (203136) nutroot: keypath_tweaked          x5  mean    23402 med    23405 min    23392 us
+I (203464) nutroot: script_threshold_1of1    x5  mean    40530 med    40488 min    40488 us
+I (204084) nutroot: script_threshold_2of3    x3  mean   117969 med   117973 min   117959 us
+I (204412) nutroot: script_after_refund      x5  mean    40637 med    40604 min    40576 us
+I (204739) nutroot: script_hashlock          x5  mean    40229 med    40234 min    40210 us
+I (205211) nutroot: script_multileaf_8       x5  mean    40709 med    40711 min    40705 us
+I (206554) nutroot: script_multileaf_64      x5  mean    41462 med    41417 min    41417 us
+I (206881) nutroot: script_p2bk_blinded      x5  mean    40252 med    40257 min    40236 us
+I (207438) nutroot: multi_input_4_keypath    x3  mean    88929 med    88853 min    88829 us (22232 us/in)
+I (208387) nutroot: multi_input_4_script     x3  mean   155876 med   155806 min   155783 us (38969 us/in)
+I (208388) nutroot: --- inputs sweep (N inputs + N outputs per call) ---
+I (208539) nutroot: inputs_keypath N=1       x3  mean    23723 med    23723 min    23723 us (23723 us/in)
+I (208786) nutroot: inputs_script N=1        x3  mean    40757 med    40758 min    40755 us (40757 us/in)
+I (209344) nutroot: inputs_keypath N=4       x3  mean    88961 med    88957 min    88951 us (22240 us/in)
+I (210292) nutroot: inputs_script N=4        x3  mean   155789 med   155798 min   155771 us (38947 us/in)
+I (212132) nutroot: inputs_keypath N=16      x2  mean   347325 med   347325 min   347325 us (21707 us/in)
+I (215275) nutroot: inputs_script N=16       x2  mean   617504 med   617504 min   617389 us (38594 us/in)
+I (215276) nutroot: --- leaves sweep (1 script input, L-leaf tree) ---
+I (215525) nutroot: leaves L=1 path=0        x3  mean    40383 med    40392 min    40366 us
+I (215882) nutroot: leaves L=8 path=3        x3  mean    40178 med    40185 min    40165 us
+I (217139) nutroot: leaves L=64 path=6       x3  mean    40939 med    40939 min    40939 us
+I (217140) nutroot: --- threshold n-of-m sweep (single-leaf tree) ---
+I (217390) nutroot: thresh 1-of-1 sv=1       x3  mean    41034 med    41027 min    40916 us
+I (217865) nutroot: thresh 2-of-3 sv=3       x3  mean    81452 med    81412 min    81412 us
+I (218638) nutroot: thresh 3-of-5 sv=6       x3  mean   139886 med   139775 min   139765 us
+I (218639) nutroot: --- 10-proof v3 receive (point secrets, distinct keys) ---
+I (222576) nutroot: recv verify n=10         x2  mean  1225527 med  1225527 min  1225457 us
+I (223076) nutroot: recv spendinfo n=10      x3  mean   165747 med   165648 min   165638 us
+I (224590) nutroot: swap sign n=10           x3  mean   503251 med   505458 min   498381 us
+I (225568) nutroot: swap blind n=10          x3  mean   324930 med   324346 min   323086 us
+I (226598) nutroot: swap unblind n=10        x3  mean   342394 med   342326 min   341287 us
+I (229052) nutroot: recv verify out n=10     x2  mean  1225635 med  1225635 min  1225620 us
+I (229053) nutroot: variant A (verify at tap, swap later): tap 1391274 us + later 2396210 us = 3787484 us
+I (229059) nutroot: variant B (immediate swap+verify):     total 3787484 us
+I (229066) nutroot: nutroot overhead vs plain v3 swap (spendinfo+sign): 668998 us
+RESEARCH_COMMAND bench nutroot opt=3
+I (229224) nutroot: nutroot witness verification benchmark (timed unit = one verify call, as nutshell's)
+I (229225) nutroot: --- named cases (labels mirror nutshell) ---
+I (229424) nutroot: keypath_bare             x5  mean    23808 med    23756 min    23745 us
+I (229698) nutroot: keypath_tweaked          x5  mean    23402 med    23405 min    23392 us
+I (230026) nutroot: script_threshold_1of1    x5  mean    40485 med    40486 min    40483 us
+I (230646) nutroot: script_threshold_2of3    x3  mean   118023 med   117948 min   117948 us
+I (230974) nutroot: script_after_refund      x5  mean    40592 med    40597 min    40574 us
+I (231301) nutroot: script_hashlock          x5  mean    40227 med    40232 min    40207 us
+I (231773) nutroot: script_multileaf_8       x5  mean    40706 med    40709 min    40698 us
+I (233116) nutroot: script_multileaf_64      x5  mean    41409 med    41415 min    41385 us
+I (233443) nutroot: script_p2bk_blinded      x5  mean    40297 med    40255 min    40232 us
+I (234000) nutroot: multi_input_4_keypath    x3  mean    88845 med    88853 min    88829 us (22211 us/in)
+I (234949) nutroot: multi_input_4_script     x3  mean   155793 med   155798 min   155784 us (38948 us/in)
+I (234950) nutroot: --- inputs sweep (N inputs + N outputs per call) ---
+I (235101) nutroot: inputs_keypath N=1       x3  mean    23723 med    23723 min    23723 us (23723 us/in)
+I (235348) nutroot: inputs_script N=1        x3  mean    40754 med    40756 min    40751 us (40754 us/in)
+I (235906) nutroot: inputs_keypath N=4       x3  mean    88961 med    88957 min    88951 us (22240 us/in)
+I (236855) nutroot: inputs_script N=4        x3  mean   155783 med   155792 min   155767 us (38945 us/in)
+I (238694) nutroot: inputs_keypath N=16      x2  mean   347445 med   347445 min   347314 us (21715 us/in)
+I (241836) nutroot: inputs_script N=16       x2  mean   617467 med   617467 min   617347 us (38591 us/in)
+I (241837) nutroot: --- leaves sweep (1 script input, L-leaf tree) ---
+I (242086) nutroot: leaves L=1 path=0        x3  mean    40380 med    40390 min    40361 us
+I (242444) nutroot: leaves L=8 path=3        x3  mean    40244 med    40183 min    40134 us
+I (243702) nutroot: leaves L=64 path=6       x3  mean    40938 med    40937 min    40937 us
+I (243703) nutroot: --- threshold n-of-m sweep (single-leaf tree) ---
+I (243952) nutroot: thresh 1-of-1 sv=1       x3  mean    40951 med    40914 min    40914 us
+I (244355) nutroot: thresh 2-of-3 sv=2       x3  mean    63642 med    63647 min    63526 us
+I (244915) nutroot: thresh 3-of-5 sv=3       x3  mean    86389 med    86351 min    86351 us
+I (244916) nutroot: --- 10-proof v3 receive (point secrets, distinct keys) ---
+I (248853) nutroot: recv verify n=10         x2  mean  1225486 med  1225486 min  1225410 us
+I (249353) nutroot: recv spendinfo n=10      x3  mean   165821 med   165868 min   165638 us
+I (250851) nutroot: swap sign n=10           x3  mean   498161 med   498108 min   498080 us
+I (251824) nutroot: swap blind n=10          x3  mean   323264 med   323176 min   323071 us
+I (252851) nutroot: swap unblind n=10        x3  mean   341136 med   341135 min   341005 us
+I (255304) nutroot: recv verify out n=10     x2  mean  1225400 med  1225400 min  1225373 us
+I (255305) nutroot: variant A (verify at tap, swap later): tap 1391307 us + later 2387961 us = 3779268 us
+I (255315) nutroot: variant B (immediate swap+verify):     total 3779268 us
+I (255321) nutroot: nutroot overhead vs plain v3 swap (spendinfo+sign): 663982 us
+RESEARCH_COMMAND heap
+free:          71764
+largest block: 36864
+min ever free: 25884
+RESEARCH_COMMAND tasks
+name             prio  stack-min
+console             5       7348

@@ -1,0 +1,20 @@
+{
+  "label": "14-secp-O2-window12",
+  "options": {
+    "BLOCKS": "11",
+    "TEETH": "6",
+    "WINDOW": "12",
+    "OPT": "O2",
+    "IRAM": "OFF",
+    "RAM_VERIFY": "OFF",
+    "RAM_SIGN": "OFF"
+  },
+  "mpi_iram": false,
+  "source_manifest_sha256": "88b1649606ae09cbf9768cc45fee0e5b9c89b26403a88d0ae35769a7ac44ad58",
+  "build_ok": true,
+  "app_bytes": 1506464,
+  "app_sha256": "ce8d4dfde908d7523f2b517aea782c845310d1144355b6bce3cc3d5827573f2a",
+  "device_ok": true,
+  "diagnostics_ok": true,
+  "diagnostic_failures": []
+}

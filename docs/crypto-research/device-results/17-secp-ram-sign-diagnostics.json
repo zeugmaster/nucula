@@ -1,0 +1,13 @@
+{
+  "label": "17-secp-ram-sign",
+  "diagnostics_ok": false,
+  "failures": [
+    "E (30635) bls_test: bench: suite_verify n=10 FAILED",
+    "E (30637) bls_test: bench: suite_verify n=10 FAILED",
+    "E (30640) bls_test: bench: swap verify(in) FAILED",
+    "E (31328) bls_test: bench: swap verify(out) FAILED",
+    "E (31331) bls_test: bench: swap verify(in) FAILED",
+    "E (32010) bls_test: bench: swap verify(out) FAILED"
+  ],
+  "raw_log_private": true
+}

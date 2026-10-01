@@ -2,6 +2,7 @@
 #include "cashu_json.hpp"
 #include "cashu_cbor.hpp"
 #include "crypto.h"
+#include "crypto_bls.h"
 #include "keyset.hpp"
 #include "hex.h"
 #include "http.h"
@@ -958,7 +959,9 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
                                 const Keyset& keyset,
                                 std::vector<Proof>& proofs_out)
 {
-    if (signatures.size() != blinding.outputs.size()) {
+    if (signatures.size() != blinding.outputs.size() ||
+        signatures.size() != blinding.blinding_factors.size() ||
+        signatures.size() != blinding.secrets.size()) {
         ESP_LOGE(TAG, "signature count (%d) != output count (%d)",
                  (int)signatures.size(), (int)blinding.outputs.size());
         return false;
@@ -982,7 +985,14 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
     // (K, unblinded C, secret) per signature and verify the whole mint
     // response in ONE batch call after the loop — the Alice-side
     // equivalent of the per-signature DLEQ check.
+    const bool retained_bls = suite == &cashu_suite_bls;
     std::vector<unsigned char> batch_Ks, batch_Cs;
+    struct PrivateBytes : std::vector<unsigned char> {
+        ~PrivateBytes() {
+            volatile unsigned char *p = data();
+            for (size_t i = 0; i < size(); i++) p[i] = 0;
+        }
+    } batch_rs;
     std::vector<const unsigned char*> batch_secrets;
     std::vector<size_t> batch_secret_lens;
     if (suite->verify_proofs) {
@@ -990,6 +1000,7 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
         batch_Cs.reserve(signatures.size() * plen);
         batch_secrets.reserve(signatures.size());
         batch_secret_lens.reserve(signatures.size());
+        if (retained_bls) batch_rs.reserve(signatures.size() * 32);
     }
 
     for (size_t i = 0; i < signatures.size(); i++) {
@@ -1063,7 +1074,11 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
 
         unsigned char C_ser[CASHU_MAX_POINT_LEN];
         size_t C_len = sizeof(C_ser);
-        if (!suite->unblind((void*)ctx_, C__bytes, plen, r_bytes, 32,
+        if (retained_bls) {
+            memcpy(C_ser, C__bytes, plen);
+            C_len = plen;
+            batch_rs.insert(batch_rs.end(), r_bytes, r_bytes+32);
+        } else if (!suite->unblind((void*)ctx_, C__bytes, plen, r_bytes, 32,
                             K_bytes, klen, C_ser, &C_len)) {
             ESP_LOGE(TAG, "unblind failed");
             return false;
@@ -1083,7 +1098,7 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
         proof.id = keyset.id;
         proof.amount = sig.amount;
         proof.secret = blinding.secrets[i];
-        proof.C = std::string(C_hex);
+        if (!retained_bls) proof.C = std::string(C_hex);
         // Attach the DLEQ for later forwarding (NUT-12 Carol-mode) — only for
         // DLEQ suites: a spurious v3 dleq must not end up in our tokens.
         if (suite->has_dleq && sig.dleq &&
@@ -1097,7 +1112,20 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
         proofs_out.push_back(std::move(proof));
     }
 
-    if (suite->verify_proofs && !batch_secrets.empty()) {
+    if (retained_bls && !batch_secrets.empty()) {
+        if (!cashu_bls_unblind_verify(batch_secrets.size(), batch_Ks.data(), batch_Cs.data(),
+                                     batch_rs.data(), batch_secrets.data(), batch_secret_lens.data(),
+                                     batch_Cs.data())) {
+            ESP_LOGE(TAG, "BLS mint-response verification failed");
+            proofs_out.clear();
+            return false;
+        }
+        for (size_t i = 0; i < proofs_out.size(); i++) {
+            char encoded[97];
+            bytes_to_hex(batch_Cs.data()+48*i, 48, encoded);
+            proofs_out[i].C = encoded;
+        }
+    } else if (suite->verify_proofs && !batch_secrets.empty()) {
         if (!suite->verify_proofs((void*)ctx_, batch_secrets.size(),
                                   batch_Ks.data(), batch_Cs.data(),
                                   batch_secrets.data(),

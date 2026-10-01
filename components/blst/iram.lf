@@ -1,0 +1,4 @@
+[mapping:nucula_mpi_iram]
+archive: libblst.a
+entries:
+    blst_mpi (noflash)

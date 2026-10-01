@@ -1,0 +1,4 @@
+[mapping:nucula_secp_ram_verify]
+archive: libsecp256k1.a
+entries:
+    precomputed_ecmult (noflash)

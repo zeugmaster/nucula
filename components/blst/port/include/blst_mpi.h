@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "blst_mpi_hooks.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,6 +38,28 @@ void blst_hw_release(void);
  * the portable and MPI paths in one binary. */
 void blst_mpi_set_enabled(int enabled);
 int  blst_mpi_enabled(void);
+
+/* Diagnostic switches for reproducible, same-binary accelerator experiments.
+ * Change only between acquisition windows, with wallet operations serialized. */
+enum {
+    BLST_MPI_SESSION = 1u << 0,
+    BLST_MPI_INLINE = 1u << 1,
+    BLST_MPI_CONST_MOD = 1u << 2,
+    BLST_MPI_NO_CACHE = 1u << 3,
+    BLST_MPI_SWAP_CACHE = 1u << 4,
+    BLST_MPI_WORD_COMPARE = 1u << 5,
+};
+/* Calibration-only normal secp field product; caller owns the peripheral.
+ * Software field multiplication is faster on this C3. */
+int blst_mpi_secp_multiply(unsigned char out[32],const unsigned char a[32],const unsigned char b[32]);
+/* Fixed (p+1)/4 power for secp256k1, 32B big-endian normal field values.
+ * Caller must square-check the candidate; acquires peripheral if necessary. */
+int blst_mpi_secp_sqrt(unsigned char out[32], const unsigned char in[32]);
+/* Raw multiplier calibration: caller owns peripheral, 1..48 words,
+ * result contains 2*words little-endian words. Restores BLS mode afterward. */
+int blst_mpi_raw_multiply(uint32_t *out, const uint32_t *a, const uint32_t *b, size_t words);
+void blst_mpi_set_options(unsigned options);
+unsigned blst_mpi_options(void);
 
 /* The symbol the patched no_asm.h calls in place of blst's own mul_mont_n:
  * ret = a*b*R^-1 mod p, R = 2^(32n), fully reduced into [0, p). */

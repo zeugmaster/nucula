@@ -1,0 +1,14 @@
+{
+  "label": "25-qio-sha",
+  "diagnostics_ok": false,
+  "failures": [
+    "assert failed: blst_mpi_set_options blst_mpi.c:136 (!s.lock_held)",
+    "Rebooting...",
+    "assert failed: blst_mpi_set_options blst_mpi.c:136 (!s.lock_held)",
+    "Rebooting...",
+    "E (23873) task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:",
+    "assert failed: blst_mpi_set_options blst_mpi.c:136 (!s.lock_held)",
+    "Rebooting..."
+  ],
+  "raw_log_private": true
+}

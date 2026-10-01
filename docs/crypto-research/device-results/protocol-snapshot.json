@@ -1,0 +1,19 @@
+{
+  "checked_date": "2026-09-15",
+  "source": "https://api.github.com/repos/cashubtc/nuts/pulls/421",
+  "number": 421,
+  "state": "closed",
+  "merged": true,
+  "merged_at": "2026-09-10T21:10:19Z",
+  "updated_at": "2026-09-10T21:42:54Z",
+  "head_sha": "a3f04b97154b036626d27ca437d75b348a6a4407",
+  "base_branch": "bls-protocol",
+  "contents_sha256": {
+    "28.md": "60d71fd6e371ca7b6e93cb36180dd9bfa9815cee5cb1173b958e84c60a531482",
+    "tests-13-tests.md": "b2ba434bf45cfa3cc80021c647926669d2658a91b53180cffca50a2983a4037c",
+    "13.md": "05b4b3a962fe80dd1567cb385a1930c4f3a2cf2baa5230ff4477babc6827b6f0",
+    "10.md": "94a6e473fab06bbb7cf7fc32510af6b012c5bac10116e064b8421753b5414b19",
+    "tests-10-tests.md": "7f257fc9269be2c08d3e5d96aba6c48e5ce6d6e6671b65a8d75a60ccc88c56f1",
+    "tests-28-tests.md": "1f8cca0c9e16a16550a9f4c4f55166f1c9af9f59781004d0bf3cfb86e6afbf70"
+  }
+}

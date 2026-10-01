@@ -1,0 +1,2 @@
+PASS: commitment API valid/tampered n=0,1,2,3,10,32,33,64
+PASS: 2000 Nutroot threshold comparisons (ordered, shuffled, missing, duplicate, malformed hex and JSON types)

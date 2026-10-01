@@ -1,0 +1,9 @@
+{
+  "label": "00-original",
+  "diagnostics_ok": false,
+  "failures": [
+    "E (24248) task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:"
+  ],
+  "raw_log_private": true,
+  "private_raw_basename": "original-device.log"
+}

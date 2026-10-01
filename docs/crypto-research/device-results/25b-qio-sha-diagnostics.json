@@ -1,0 +1,9 @@
+{
+  "label": "25b-qio-sha",
+  "diagnostics_ok": false,
+  "failures": [
+    "I (58326) nutroot_current: FAILED at line 92: nutroot_kdf_derive(&kdf,i,0,0,p)&&equal_hex(p,32,keys[i])",
+    "self-tests FAILED"
+  ],
+  "raw_log_private": true
+}

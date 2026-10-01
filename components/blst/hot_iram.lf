@@ -1,0 +1,10 @@
+[mapping:nucula_mpi_hot_iram]
+archive: libblst.a
+entries:
+    blst_mpi:mpi_mul_mont_n (noflash)
+    blst_mpi:mpi_mont_mul_384 (noflash)
+    blst_mpi:blst_mpi_fp2 (noflash)
+    blst_mpi:fp_add_words (noflash)
+    blst_mpi:blst_hw_acquire (noflash)
+    blst_mpi:blst_hw_release (noflash)
+    blst_mpi:blst_mpi_options (noflash)
