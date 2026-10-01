@@ -21,3 +21,8 @@ main/wifi_config.h
 # IDE
 .vscode/
 .idea/
+
+# Local build/configuration archives and Python caches
+.local-backups/
+__pycache__/
+*.pyc

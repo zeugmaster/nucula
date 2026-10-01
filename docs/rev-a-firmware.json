@@ -1,0 +1,30 @@
+{
+  "hardware_repository": "https://github.com/zeugmaster/nucula-board",
+  "hardware_branch": "rev-A",
+  "hardware_commit": "7584d71f3cb1b120934be2b80cfab4a015ecddfd",
+  "firmware_source_commit": "9750262b9db5fa3c5c0df602c6519b9c3733dcbf",
+  "idf_version": "5.5.1",
+  "target": "esp32c3",
+  "flash_size_bytes": 4194304,
+  "application_offset": "0x30000",
+  "application_size_bytes": 1166960,
+  "application_sha256": "86fd30cfb71542e965e39fc68304aaf5ebc011d9b2c9338f733e71358520fa88",
+  "verification": {
+    "date": "2026-10-01",
+    "method": "esptool verify_flash 0x30000 build/nucula.bin",
+    "result": "digest matched",
+    "scope": "One connected Rev-A prototype; other devices were not individually verified.",
+    "flash_written": false
+  },
+  "configuration": {
+    "wifi_credentials": "Local ignored main/wifi_config.h; credentials and firmware binaries are not published.",
+    "console": "USB Serial/JTAG",
+    "display": "Boost disabled and reset asserted for bring-up.",
+    "keyboard": "May remain disconnected."
+  },
+  "notes": [
+    "Subsequent README, evidence and ignore-rule commits do not change application source.",
+    "Rebuilding at another path or commit changes build metadata and can change the binary hash.",
+    "USB reconnection with a battery attached may require RESET due to the Rev-A VBUS backfeed issue."
+  ]
+}
