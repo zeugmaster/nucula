@@ -32,8 +32,10 @@ int console_register_cmd(const char *name, console_cmd_handler_t handler, const 
 int console_start(void);
 void console_print(const char *str);
 void console_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+/* Best-effort output for background tasks, independent of the log level.
+ * Uses bounded USB waits so an absent host cannot stall the caller. */
+void console_notify(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 #ifdef __cplusplus
 }
 #endif
-

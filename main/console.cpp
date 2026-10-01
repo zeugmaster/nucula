@@ -42,6 +42,22 @@ void console_printf(const char *fmt, ...)
     console_print(buf);
 }
 
+void console_notify(const char *fmt, ...)
+{
+    if (!s_con.initialized) return;
+
+    char buf[256];
+    va_list ap;
+    va_start(ap, fmt);
+    int len = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if (len <= 0) return;
+
+    // The driver bounds both its mutex and buffer waits. Never use
+    // portMAX_DELAY here: NFC must finish even with USB disconnected.
+    usb_serial_jtag_write_bytes(buf, strlen(buf), pdMS_TO_TICKS(50));
+}
+
 static void cmd_help(const char *arg)
 {
     (void)arg;

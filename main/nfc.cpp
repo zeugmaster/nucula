@@ -1,4 +1,5 @@
 #include "nfc.hpp"
+#include "console.h"
 #include "task_config.h"
 #include "ndef.hpp"
 #include "cashu.hpp"
@@ -290,10 +291,13 @@ static void nfc_task(void *arg)
                                                recv_str, sizeof(recv_str));
                 if (rc == 1) {
                     s_state.store(NfcState::success);
+                    console_notify("\r\nNFC payment received: %s\r\n", recv_str);
                     ui_show_nfc_status("paid!", recv_str);
                     ui_refresh();
                 } else if (rc == 0) {
                     s_state.store(NfcState::success);
+                    console_notify("\r\nNFC token queued: %s (offline; redemption pending)\r\n",
+                                   recv_str);
                     ui_show_nfc_status("queued", recv_str);
                     ui_refresh();
                 } else {
