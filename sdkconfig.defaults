@@ -1,4 +1,4 @@
-# Reference board is the XIAO ESP32-C3; without this a fresh clone builds
+# Reference board is Nucula v2 (ESP32-C3); without this a fresh clone builds
 # for the default esp32 target (the pinned target otherwise lives only in
 # the untracked sdkconfig).
 CONFIG_IDF_TARGET="esp32c3"
@@ -51,3 +51,6 @@ CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
 # paying the full handshake + cert-chain verification again. Tickets live
 # inside the cached esp_http_client handles (http.c connection cache).
 CONFIG_ESP_TLS_CLIENT_SESSION_TICKETS=y
+
+# Native USB console avoids UART0 RX on GPIO20 (keyboard INT_N on v2).
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

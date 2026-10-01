@@ -155,6 +155,16 @@ static void ssd1309_send_cmds(const uint8_t *cmds, size_t len)
 
 void display_init(i2c_master_bus_handle_t bus)
 {
+    // Headless prototype bring-up: hold OLED boost off and reset asserted.
+    gpio_set_level(BOARD_OLED_POWER_PIN, 0);
+    gpio_set_direction(BOARD_OLED_POWER_PIN, GPIO_MODE_OUTPUT);
+    gpio_set_level(PIN_RST, 1);
+    gpio_set_direction(PIN_RST, GPIO_MODE_OUTPUT);
+    ESP_LOGW(TAG, "display disconnected: OLED power off");
+    return;
+
+    // Legacy display initialization below is inactive. Before enabling the
+    // v2 panel, implement its inverted reset and switched boost sequencing.
     if (!bus) {
         ESP_LOGW(TAG, "no I2C bus, display disabled");
         return;
@@ -181,7 +191,7 @@ void display_init(i2c_master_bus_handle_t bus)
     i2c_device_config_t dev_cfg = {};
     dev_cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
     dev_cfg.device_address  = SSD1309_ADDR;
-    dev_cfg.scl_speed_hz    = 400000;
+    dev_cfg.scl_speed_hz    = 100000;
 
     esp_err_t err = i2c_master_bus_add_device(bus, &dev_cfg, &s_dev);
     if (err != ESP_OK) {

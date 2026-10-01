@@ -6,7 +6,11 @@ Nucula can store ecash from multiple mints, receive payments over NFC, mint new 
 
 ## Hardware
 
-Reference board: Seeed XIAO ESP32-C3. All three peripherals share one I2C bus; each is probed at boot and the firmware runs fine (console + wallet) with any or all of them absent.
+Target board: **Nucula v2, ESP32-C3-WROOM-02-N4**, with native USB console.
+This configuration supports prototype bring-up with the display and keyboard
+disconnected. NFC and the keypad expander are probed at boot; console and wallet
+remain usable when they are absent. The OLED boost is held off and reset asserted.
+Display power/reset sequencing must be implemented before enabling the panel.
 
 | Component | Role | Interface |
 |-----------|------|-----------|
@@ -17,14 +21,19 @@ Reference board: Seeed XIAO ESP32-C3. All three peripherals share one I2C bus; e
 
 ### Pin Map
 
-| Signal | GPIO | XIAO pin |
-|--------|------|----------|
-| I2C SDA (shared) | 6 | D4 |
-| I2C SCL (shared) | 7 | D5 |
-| PN7160 IRQ | 3 | D1 |
-| PN7160 VEN | 2 | D0 |
-| PN7160 DWL | 4 | D2 |
-| SSD1309 RST | 5 | D3 |
+| Signal | GPIO | Notes |
+|--------|------|-------|
+| I2C SDA (shared) | 4 | External pull-up to 3.0 V |
+| I2C SCL (shared) | 5 | External pull-up to 3.0 V |
+| PN7160 IRQ | 6 | Active high |
+| PN7160 VEN | 7 | High enables NFC |
+| OLED power | 3 | High enables boost input; held low |
+| OLED reset | 10 | High asserts through Q5; held high |
+| Keyboard INT_N | 20 | Active low; driver currently polls I2C |
+
+PN7160 DWL is strapped low on the PCB and has no MCU GPIO. The shared I2C bus
+runs at 100 kHz with ESP internal pull-ups disabled. These assignments differ
+from the older Seeed XIAO wiring.
 
 Pins and addresses live in `main/board.h` (PN7160 control pins in `components/pn7160/include/nci.h`).
 
@@ -40,6 +49,11 @@ cp main/wifi_config.example.h main/wifi_config.h
 # 2. Build, flash, and open serial monitor
 idf.py build flash monitor
 ```
+
+When reusing an existing `sdkconfig`, select **USB Serial/JTAG Controller** as
+the console output in `idf.py menuconfig` (Component config → ESP System
+Settings). `sdkconfig.defaults` selects it for fresh configurations; defaults
+do not override an existing config. UART0 RX shares GPIO20 with keyboard INT_N.
 
 On the very first flash (or after changing the partition table), erase flash first — **this wipes the wallet**, so never do it on a device holding funds:
 

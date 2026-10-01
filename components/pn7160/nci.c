@@ -64,18 +64,15 @@ esp_err_t nci_init(nci_context_t *ctx, i2c_master_bus_handle_t bus)
                         TAG, "gpio_isr_handler_add");
     gpio_intr_disable(PN7160_IRQ_PIN);
 
-    // VEN + DWL: outputs
+    // VEN: output. DWL is strapped low on the PCB; GPIO4 belongs to I2C SDA.
     gpio_config_t out_cfg = {
-        .pin_bit_mask   = (1ULL << PN7160_VEN_PIN) | (1ULL << PN7160_DWL_PIN),
+        .pin_bit_mask   = (1ULL << PN7160_VEN_PIN),
         .mode           = GPIO_MODE_OUTPUT,
         .pull_up_en     = GPIO_PULLUP_DISABLE,
         .pull_down_en   = GPIO_PULLDOWN_DISABLE,
         .intr_type      = GPIO_INTR_DISABLE,
     };
     ESP_RETURN_ON_ERROR(gpio_config(&out_cfg), TAG, "out gpio_config");
-
-    // DWL low = NCI mode (not firmware-download mode)
-    gpio_set_level(PN7160_DWL_PIN, 0);
 
 hw_reset:
     // VEN power cycle
