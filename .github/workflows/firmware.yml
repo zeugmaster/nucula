@@ -1,0 +1,89 @@
+name: Firmware
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+concurrency:
+  group: firmware-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container: espressif/idf:v5.5.1
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Choose embedded firmware version
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os, re
+          version = os.environ['REF_NAME'].removeprefix('v') if os.environ['REF_TYPE'] == 'tag' else '0.0.0-alpha.0'
+          if len(version) > 31 or not re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(alpha|beta|rc)\.(0|[1-9]\d*))?', version):
+              raise SystemExit('Use vX.Y.Z or vX.Y.Z-(alpha|beta|rc).N tags, at most 31 version bytes')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'version={version}\n')
+          PY
+      - name: Test console and packager
+        run: |
+          python scripts/test-console.py . "$IDF_PATH"
+          python scripts/test-package-release.py
+      - name: Build and package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          . "$IDF_PATH/export.sh"
+          idf.py -DPROJECT_VER="$VERSION" build
+          git diff --exit-code -- dependencies.lock
+          python scripts/package-release.py build --commit "$SOURCE_COMMIT"
+          cd "dist/$VERSION"
+          sha256sum --check SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nucula-firmware
+          path: dist/${{ steps.version.outputs.version }}/
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: nucula-firmware
+          path: firmware
+      - name: Create complete draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          cd firmware
+          sha256sum --check SHA256SUMS
+          args=()
+          if [[ "$VERSION" == *-* ]]; then args+=(--prerelease); fi
+          gh release create "$TAG" --verify-tag --draft --title "nucula $VERSION" --generate-notes "${args[@]}" \
+            manifest.json bootloader.bin partition-table.bin nucula.bin source.tar.gz SHA256SUMS
+          echo "Draft created. Validate on hardware, review its notes, then publish it in GitHub Releases." >> "$GITHUB_STEP_SUMMARY"

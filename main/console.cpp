@@ -112,6 +112,7 @@ static void console_task(void *arg)
 {
     (void)arg;
     int pos = 0;
+    bool private_line = false;
 
     vTaskDelay(pdMS_TO_TICKS(500));
     console_print("\r\nnucula> ");
@@ -141,7 +142,9 @@ static void console_task(void *arg)
                 console_print("\r\n");
                 s_con.line_buffer[pos] = '\0';
                 parse_and_run(s_con.line_buffer);
+                memset(s_con.line_buffer, 0, s_con.max_line_length);
                 pos = 0;
+                private_line = false;
                 console_print("nucula> ");
             } else if (c == 127 || c == '\b') {
                 flush_echo(i);
@@ -153,10 +156,18 @@ static void console_task(void *arg)
                 flush_echo(i);
                 console_print("^C\r\n");
                 pos = 0;
+                private_line = false;
+                memset(s_con.line_buffer, 0, s_con.max_line_length);
                 console_print("nucula> ");
             } else if (pos < (int)s_con.max_line_length - 1) {
                 s_con.line_buffer[pos++] = c;
-                if (echo_from < 0)
+                // The web protocol carries credentials. Stop echoing as soon
+                // as its prefix is complete, even across USB packet boundaries.
+                if (pos == 4 && memcmp(s_con.line_buffer, "web ", 4) == 0) {
+                    flush_echo(i);
+                    private_line = true;
+                }
+                if (!private_line && echo_from < 0)
                     echo_from = i;
             } else {
                 flush_echo(i);  // line full: swallow without echo
