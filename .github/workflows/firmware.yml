@@ -51,7 +51,7 @@ jobs:
         run: |
           . "$IDF_PATH/export.sh"
           idf.py -DPROJECT_VER="$VERSION" build
-          git diff --exit-code -- dependencies.lock
+          git -c safe.directory="$GITHUB_WORKSPACE" -C "$GITHUB_WORKSPACE" diff --exit-code -- dependencies.lock
           python scripts/package-release.py build --commit "$SOURCE_COMMIT"
           cd "dist/$VERSION"
           sha256sum --check SHA256SUMS
