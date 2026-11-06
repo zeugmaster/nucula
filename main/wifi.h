@@ -4,6 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,6 +25,14 @@ extern "C" {
  * @return ESP_OK if connected within 15 s, ESP_FAIL otherwise
  */
 esp_err_t wifi_init(void);
+
+/* Persist credentials for the next boot, separately from wallet data.
+ * Passwords are never returned by the USB setup protocol. */
+esp_err_t wifi_save_credentials(const char *ssid, const char *password);
+bool wifi_setup_configured(void);
+bool wifi_setup_restart_required(void);
+void wifi_setup_ssid(char *out, size_t size);
+void wifi_setup_ip(char *out, size_t size);
 
 /**
  * Returns true if WiFi is connected and the device has an IP address.
@@ -48,4 +57,3 @@ EventGroupHandle_t wifi_get_event_group(void);
 #ifdef __cplusplus
 }
 #endif
-

@@ -21,6 +21,7 @@
 #include "keypad.h"
 #include "wallet_store.hpp"
 #include "ui.h"
+#include "web_setup.h"
 
 #define TAG "nucula"
 
@@ -99,15 +100,16 @@ extern "C" void app_main(void)
     // NVS backs the wallet itself (proofs, seed, keysets) — bring it up
     // first and independently of WiFi.
     esp_err_t nvs_err = nvs_flash_init();
-    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES ||
-        nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "NVS needs erase (%s)", esp_err_to_name(nvs_err));
-        if (nvs_flash_erase() == ESP_OK)
-            nvs_err = nvs_flash_init();
+    if (nvs_err != ESP_OK) {
+        // Never erase a wallet during setup or a firmware update. Leave USB
+        // diagnostics available, but do not run a wallet without persistence.
+        console_init(NULL);
+        web_setup_register(false);
+        console_start();
+        console_notify("NVS unavailable (%s); wallet stopped, storage preserved.\r\n",
+                       esp_err_to_name(nvs_err));
+        return;
     }
-    if (nvs_err != ESP_OK)
-        ESP_LOGE(TAG, "NVS init failed: %s — wallet persistence disabled",
-                 esp_err_to_name(nvs_err));
 
     http_init();
 
@@ -123,6 +125,7 @@ extern "C" void app_main(void)
     commands_wallet_register();
     commands_seed_register();
     commands_system_register();
+    web_setup_register(true);
 
     secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
     if (!ctx) {

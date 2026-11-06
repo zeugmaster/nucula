@@ -1,10 +1,11 @@
 #include "wifi.h"
 #include "task_config.h"
-#include "wifi_config.h"
 #include "http.h"
 
 #include <stdatomic.h>
 #include <string.h>
+#include <stdio.h>
+#include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -27,13 +28,52 @@
 static EventGroupHandle_t s_event_group;
 static int s_retry_count;
 static atomic_bool s_connected;
+static wifi_config_t s_config;
+static esp_netif_t *s_netif;
+static bool s_restart_required;
+
+esp_err_t wifi_save_credentials(const char *ssid, const char *password)
+{
+    const size_t ssid_len = strlen(ssid), pass_len = strlen(password);
+    if (!ssid_len || ssid_len > 32 ||
+        (pass_len != 0 && (pass_len < 8 || pass_len > 63)))
+        return ESP_ERR_INVALID_ARG;
+    wifi_config_t next = {0};
+    memcpy(next.sta.ssid, ssid, ssid_len);
+    memcpy(next.sta.password, password, pass_len);
+    next.sta.threshold.authmode = pass_len ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("web_wifi", NVS_READWRITE, &handle);
+    if (err != ESP_OK) return err;
+    err = nvs_set_blob(handle, "station", &next, sizeof(next));
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+    if (err == ESP_OK) s_restart_required = true;
+    memset(&next, 0, sizeof(next));
+    return err;
+}
+
+bool wifi_setup_configured(void) { return s_config.sta.ssid[0] != 0; }
+bool wifi_setup_restart_required(void) { return s_restart_required; }
+void wifi_setup_ssid(char *out, size_t size)
+{
+    if (size) snprintf(out, size, "%.*s", 32, (const char *)s_config.sta.ssid);
+}
+void wifi_setup_ip(char *out, size_t size)
+{
+    esp_netif_ip_info_t info = {0};
+    if (!size) return;
+    out[0] = 0;
+    if (s_connected && s_netif && esp_netif_get_ip_info(s_netif, &info) == ESP_OK)
+        snprintf(out, size, IPSTR, IP2STR(&info.ip));
+}
 
 static void wifi_supervisor_task(void *arg)
 {
     (void)arg;
     bool was_connected = false;
     for (;;) {
-        if (!s_connected) {
+        if (!s_connected && wifi_setup_configured()) {
             if (was_connected) {
                 /* Falling edge: the cached HTTP connections are dead. Done
                  * here (not in the event handler) because closing blocks on
@@ -54,7 +94,7 @@ static void event_handler(void *arg, esp_event_base_t base,
                           int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        if (wifi_setup_configured()) esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_event_sta_disconnected_t *event =
             (wifi_event_sta_disconnected_t *)data;
@@ -118,26 +158,36 @@ esp_err_t wifi_init(void)
 
     WIFI_RETURN_ON_ERROR(esp_netif_init());
     WIFI_RETURN_ON_ERROR(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
+    s_netif = esp_netif_create_default_wifi_sta();
+    if (!s_netif) return ESP_ERR_NO_MEM;
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     WIFI_RETURN_ON_ERROR(esp_wifi_init(&cfg));
+    WIFI_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA));
+
+    /* Migrate credentials saved by earlier firmware's Wi-Fi driver.
+     * New web credentials take precedence. Public builds contain none. */
+    esp_wifi_get_config(WIFI_IF_STA, &s_config);
+    nvs_handle_t handle;
+    esp_err_t stored = nvs_open("web_wifi", NVS_READONLY, &handle);
+    if (stored == ESP_OK) {
+        size_t size = sizeof(s_config);
+        stored = nvs_get_blob(handle, "station", &s_config, &size);
+        nvs_close(handle);
+        if (stored != ESP_OK || size != sizeof(s_config))
+            return stored == ESP_OK ? ESP_ERR_INVALID_SIZE : stored;
+    } else if (stored != ESP_ERR_NVS_NOT_FOUND) {
+        return stored;
+    }
+    WIFI_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM));
 
     WIFI_RETURN_ON_ERROR(esp_event_handler_instance_register(
         WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL, NULL));
     WIFI_RETURN_ON_ERROR(esp_event_handler_instance_register(
         IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL, NULL));
 
-    wifi_config_t wifi_config = {
-        .sta = {
-            .ssid = WIFI_SSID,
-            .password = WIFI_PASS,
-            .threshold.authmode = WIFI_AUTH_OPEN,
-        },
-    };
-
     WIFI_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA));
-    WIFI_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    WIFI_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &s_config));
     WIFI_RETURN_ON_ERROR(esp_wifi_start());
 
     /* Spawn the supervisor before we even check the initial result. The fast
@@ -151,7 +201,11 @@ esp_err_t wifi_init(void)
     if (ok != pdPASS)
         ESP_LOGE(TAG, "failed to spawn wifi_supervisor_task");
 
-    ESP_LOGI(TAG, "connecting to \"%s\"...", WIFI_SSID);
+    if (!wifi_setup_configured()) {
+        ESP_LOGI(TAG, "Wi-Fi is not configured; use USB setup");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "connecting to \"%.*s\"...", 32, (const char *)s_config.sta.ssid);
 
     EventBits_t bits = xEventGroupWaitBits(s_event_group,
                                            WIFI_CONNECTED_BIT,
