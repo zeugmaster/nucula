@@ -8,10 +8,21 @@
 
 static int word_index(const char *word, size_t len)
 {
-    for (int i = 0; i < 2048; i++) {
-        if (strlen(bip39_wordlist[i]) == len &&
-            memcmp(bip39_wordlist[i], word, len) == 0)
-            return i;
+    int lo = 0, hi = 2047;
+    while (lo <= hi) {
+        int mid = lo + ((hi - lo) >> 1);
+        const char *entry = bip39_wordlist[mid];
+        int cmp = strncmp(entry, word, len);
+        if (cmp == 0) {
+            if (entry[len] == '\0')
+                return mid;
+            /* entry is longer than word, so entry > word */
+            hi = mid - 1;
+        } else if (cmp < 0) {
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
     }
     return -1;
 }

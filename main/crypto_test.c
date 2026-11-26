@@ -211,6 +211,35 @@ static int test_dleq(const secp256k1_context *ctx)
         return 0;
     }
     ESP_LOGI(TAG, "DLEQ Proof: OK");
+
+    /* Verify fused verify_dleq_and_unblind matches separate verify + unblind,
+     * and that tampered challenge bytes are rejected. */
+    {
+        unsigned char r_one[32] = {0};
+        r_one[31] = 1;
+        unsigned char C_fused[33], C_sep[33];
+        size_t len_f = sizeof(C_fused), len_s = sizeof(C_sep);
+        if (!cashu_suite_secp256k1.verify_dleq_and_unblind(
+                (void *)ctx, A_bytes, 33, B_bytes, 33, C_bytes, 33,
+                e, s, r_one, 32, C_fused, &len_f) ||
+            !cashu_suite_secp256k1.unblind(
+                (void *)ctx, C_bytes, 33, r_one, 32, A_bytes, 33, C_sep, &len_s) ||
+            len_f != 33 || memcmp(C_fused, C_sep, 33) != 0) {
+            ESP_LOGE(TAG, "DLEQ+unblind fused: mismatch");
+            return 0;
+        }
+        unsigned char bad_e[32];
+        memcpy(bad_e, e, 32);
+        bad_e[0] ^= 0x01;
+        if (cashu_verify_dleq(ctx, &A, &B_, &C_, bad_e, s) ||
+            cashu_suite_secp256k1.verify_dleq_and_unblind(
+                (void *)ctx, A_bytes, 33, B_bytes, 33, C_bytes, 33,
+                bad_e, s, r_one, 32, C_fused, &len_f)) {
+            ESP_LOGE(TAG, "DLEQ negative test: accepted bad challenge");
+            return 0;
+        }
+        ESP_LOGI(TAG, "DLEQ+unblind fused: OK");
+    }
     return 1;
 }
 
@@ -400,5 +429,67 @@ void crypto_run_benchmark(const secp256k1_context *ctx)
                 vTaskDelay(1);
         }
         ESP_LOGI(TAG, "verify_dleq   x%d: %lld us/op", N, total / N);
+    }
+
+    {
+        enum { N = 50 };
+        unsigned char A_bytes[33], C_proof_bytes[33];
+        hex_to_bytes("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+                     A_bytes, 33);
+        hex_to_bytes("024369d2d22a80ecf78f3937da9d5f30c1b9f74f0c32684d583cca0fa6a61cdcfc",
+                     C_proof_bytes, 33);
+        secp256k1_pubkey A, C_proof;
+        cashu_pubkey_parse(ctx, &A, A_bytes);
+        cashu_pubkey_parse(ctx, &C_proof, C_proof_bytes);
+        unsigned char e2[32], s2[32], r2[32];
+        hex_to_bytes("b31e58ac6527f34975ffab13e70a48b6d2b0d35abc4b03f0151f09ee1a9763d4", e2, 32);
+        hex_to_bytes("8fbae004c59e754d71df67e392b6ae4e29293113ddc2ec86592a0431d16306d8", s2, 32);
+        hex_to_bytes("a6d13fcd7a18442e6076f5e1e7c887ad5de40a019824bdfa9fe740d302e8d861", r2, 32);
+        const char *secret = "daf4dd00a2b68a0858a80450f52c8a7d2ccf87d375e43e216e0c571f089f63e9";
+        size_t slen = strlen(secret);
+        total = 0;
+        for (int i = 0; i < N; i++) {
+            t0 = esp_timer_get_time();
+            if (!cashu_verify_dleq_unblinded(ctx, &A, &C_proof,
+                                             (const unsigned char *)secret, slen,
+                                             e2, s2, r2)) {
+                ESP_LOGE(TAG, "bench: verify_dleq_unblinded failed");
+                return;
+            }
+            total += esp_timer_get_time() - t0;
+            if (i % 5 == 4)
+                vTaskDelay(1);
+        }
+        ESP_LOGI(TAG, "dleq_unblinded x%d: %lld us/op", N, total / N);
+    }
+
+    {
+        enum { N = 50 };
+        unsigned char A_bytes[33], B_bytes[33], C_bytes[33], out33[33];
+        hex_to_bytes("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+                     A_bytes, 33);
+        hex_to_bytes("02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
+                     B_bytes, 33);
+        hex_to_bytes("02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
+                     C_bytes, 33);
+        unsigned char e[32], s[32], r[32];
+        hex_to_bytes("9818e061ee51d5c8edc3342369a554998ff7b4381c8652d724cdf46429be73d9", e, 32);
+        hex_to_bytes("9818e061ee51d5c8edc3342369a554998ff7b4381c8652d724cdf46429be73da", s, 32);
+        hex_to_bytes("a6d13fcd7a18442e6076f5e1e7c887ad5de40a019824bdfa9fe740d302e8d861", r, 32);
+        total = 0;
+        for (int i = 0; i < N; i++) {
+            size_t olen = sizeof(out33);
+            t0 = esp_timer_get_time();
+            if (!cashu_suite_secp256k1.verify_dleq_and_unblind(
+                    (void *)ctx, A_bytes, 33, B_bytes, 33, C_bytes, 33,
+                    e, s, r, 32, out33, &olen)) {
+                ESP_LOGE(TAG, "bench: verify_dleq_and_unblind failed");
+                return;
+            }
+            total += esp_timer_get_time() - t0;
+            if (i % 5 == 4)
+                vTaskDelay(1);
+        }
+        ESP_LOGI(TAG, "dleq+unblind  x%d: %lld us/op", N, total / N);
     }
 }

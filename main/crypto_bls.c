@@ -89,6 +89,7 @@ const cashu_suite_t cashu_suite_bls = {
     .blind = bls_blind,
     .unblind = bls_unblind,
     .verify_dleq = bls_verify_dleq,
+    .verify_dleq_and_unblind = NULL,
     .verify_dleq_unblinded = bls_verify_dleq_unblinded,
     .derive_secret = bls_derive_secret,
     .derive_r = bls_derive_r,

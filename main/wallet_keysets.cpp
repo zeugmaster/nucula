@@ -29,7 +29,7 @@ static bool fetch_keyset_infos(const std::string& mint_url,
         return false;
     }
 
-    cJSON* json = cJSON_Parse(resp.body);
+    cJSON* json = cJSON_ParseWithLength(resp.body, resp.body_len);
     http_response_free(&resp);
     if (!json) {
         ESP_LOGE(TAG, "failed to parse /v1/keysets JSON");
@@ -76,7 +76,7 @@ static bool fetch_all_active_keys(const std::string& mint_url,
         http_response_free(&kresp);
         return false;
     }
-    cJSON* kjson = cJSON_Parse(kresp.body);
+    cJSON* kjson = cJSON_ParseWithLength(kresp.body, kresp.body_len);
     http_response_free(&kresp);
     if (kjson) {
         from_json_keyset_response(kjson, keys_resp);

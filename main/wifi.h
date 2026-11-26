@@ -40,10 +40,11 @@ void wifi_setup_ip(char *out, size_t size);
 bool wifi_is_connected(void);
 
 /**
- * Toggle radio power save. Default is WIFI_PS_MIN_MODEM (doze between DTIM
- * beacons, ~100-300 ms first-packet latency). Pass true to disable power
- * save for a latency-critical window (an active NFC payment), false to
- * restore it.
+ * Toggle radio power save (reference-counted). Default is WIFI_PS_MIN_MODEM
+ * (doze between DTIM beacons, ~100-300 ms first-packet latency). Pass true to
+ * disable power save for a latency-critical window (active HTTP requests or an
+ * NFC payment), false to release that hold; modem sleep resumes when all holds
+ * are released.
  */
 void wifi_set_low_latency(bool on);
 

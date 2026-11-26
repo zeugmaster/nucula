@@ -74,6 +74,7 @@ bool Wallet::erase_nvs()
                  nvs_slot_, esp_err_to_name(err));
         return false;
     }
+    pending_count_ = -1;
     ESP_LOGI(TAG, "erased NVS slot %d", nvs_slot_);
     return true;
 }
@@ -224,6 +225,7 @@ bool Wallet::load_keysets_nvs()
 
     if (err == ESP_OK && count > 0) {
         std::vector<Keyset> loaded;
+        loaded.reserve(count < MAX_KEYSETS ? count : MAX_KEYSETS);
         for (int i = 0; i < count && i < MAX_KEYSETS; i++) {
             char ks_key[16];
             snprintf(ks_key, sizeof(ks_key), "k_%d_%d", nvs_slot_, i);
@@ -231,7 +233,7 @@ bool Wallet::load_keysets_nvs()
             if (!nvs.get_blob(ks_key, blob))
                 continue;
             Keyset ks{};
-            if (deserialize(blob.c_str(), ks))
+            if (deserialize(blob.data(), blob.size(), ks))
                 loaded.push_back(std::move(ks));
         }
         if (!loaded.empty()) {
@@ -293,6 +295,7 @@ bool Wallet::merge_keysets(const std::vector<Keyset>& fresh)
 
 bool Wallet::load_from_nvs()
 {
+    pending_count_ = -1;
     load_proofs();
     load_keysets_nvs();
     return !keysets_.empty() || !proofs_.empty();
@@ -333,7 +336,9 @@ static int pending_count_for_slot(int slot)
 
 int Wallet::pending_count() const
 {
-    return pending_count_for_slot(nvs_slot_);
+    if (pending_count_ < 0)
+        pending_count_ = pending_count_for_slot(nvs_slot_);
+    return pending_count_;
 }
 
 bool Wallet::stash_pending_token(const std::string& raw_token)
@@ -367,6 +372,7 @@ bool Wallet::stash_pending_token(const std::string& raw_token)
         ESP_LOGE(TAG, "pending: commit failed: %s", esp_err_to_name(err));
         return false;
     }
+    pending_count_ = (int)n;
     ESP_LOGI(TAG, "pending: stashed token %d (slot %d)", (int)n - 1, nvs_slot_);
     return true;
 }
@@ -381,6 +387,7 @@ bool Wallet::list_pending_tokens(std::vector<std::string>& out)
     pend_count_key(ck, sizeof(ck), nvs_slot_);
     uint8_t n = 0;
     nvs_get_u8(nvs.get(), ck, &n);
+    out.reserve(n);
     for (int i = 0; i < (int)n; i++) {
         char ik[16];
         pend_item_key(ik, sizeof(ik), nvs_slot_, i);
@@ -398,8 +405,10 @@ bool Wallet::drain_pending_tokens(int& accepted, int& failed)
     failed = 0;
 
     std::vector<std::string> items;
-    if (!list_pending_tokens(items) || items.empty())
+    if (!list_pending_tokens(items) || items.empty()) {
+        pending_count_ = 0;
         return true;
+    }
 
     /* The pending list is rebuilt as we go. Tokens that swap successfully
      * (or fail permanently) are dropped; transient failures are retained. */
@@ -472,11 +481,13 @@ bool Wallet::drain_pending_tokens(int& accepted, int& failed)
     }
     esp_err_t cerr = nvs_commit(nvs.get());
     if (werr != ESP_OK || cerr != ESP_OK) {
+        pending_count_ = -1;
         ESP_LOGE(TAG, "pending: rewrite failed (%s/%s) — retained tokens may be lost",
                  esp_err_to_name(werr), esp_err_to_name(cerr));
         return false;
     }
 
+    pending_count_ = (int)retained.size();
     ESP_LOGI(TAG, "pending: drain slot %d -> %d ok, %d retained, %d dropped",
              nvs_slot_, accepted, (int)retained.size(), failed);
     return true;

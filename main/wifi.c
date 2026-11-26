@@ -9,6 +9,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include "freertos/semphr.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -26,6 +27,8 @@
 #define WIFI_FALLBACK_DNS_MAIN   "1.1.1.1"
 #define WIFI_FALLBACK_DNS_BACKUP "8.8.8.8"
 static EventGroupHandle_t s_event_group;
+static SemaphoreHandle_t s_ps_mutex;
+static int s_low_latency_refs;
 static int s_retry_count;
 static atomic_bool s_connected;
 static wifi_config_t s_config;
@@ -155,6 +158,9 @@ esp_err_t wifi_init(void)
     s_event_group = xEventGroupCreate();
     if (!s_event_group)
         return ESP_ERR_NO_MEM;
+    s_ps_mutex = xSemaphoreCreateMutex();
+    if (!s_ps_mutex)
+        return ESP_ERR_NO_MEM;
 
     WIFI_RETURN_ON_ERROR(esp_netif_init());
     WIFI_RETURN_ON_ERROR(esp_event_loop_create_default());
@@ -215,8 +221,11 @@ esp_err_t wifi_init(void)
     if (bits & WIFI_CONNECTED_BIT) {
         /* Battery device: let the radio doze between DTIM beacons. Costs
          * ~100-300 ms first-packet latency; wifi_set_low_latency(true)
-         * lifts it for the NFC payment window. */
-        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+         * lifts it for active HTTP requests and the NFC payment window. */
+        xSemaphoreTake(s_ps_mutex, portMAX_DELAY);
+        if (s_low_latency_refs == 0)
+            esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+        xSemaphoreGive(s_ps_mutex);
         return ESP_OK;
     }
 
@@ -231,7 +240,17 @@ bool wifi_is_connected(void)
 
 void wifi_set_low_latency(bool on)
 {
-    esp_wifi_set_ps(on ? WIFI_PS_NONE : WIFI_PS_MIN_MODEM);
+    if (!s_ps_mutex)
+        return;
+    xSemaphoreTake(s_ps_mutex, portMAX_DELAY);
+    if (on) {
+        if (s_low_latency_refs++ == 0)
+            esp_wifi_set_ps(WIFI_PS_NONE);
+    } else if (s_low_latency_refs > 0) {
+        if (--s_low_latency_refs == 0)
+            esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    }
+    xSemaphoreGive(s_ps_mutex);
 }
 
 EventGroupHandle_t wifi_get_event_group(void)

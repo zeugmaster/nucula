@@ -19,6 +19,14 @@ static char                     s_held   = '\0'; // key currently held down
 static const uint8_t s_col_pins[3] = {2, 0, 4};
 static const uint8_t s_row_pins[4] = {1, 6, 5, 3};
 
+// Idle state drives all 3 columns LOW while keeping all 4 rows (and P7) HIGH
+// with weak internal pull-ups. When no key is pressed, zero current flows and
+// a single 1-byte I2C read detects whether ANY key is down (7x less I2C bus
+// traffic and 0 extra 1 ms sleeps vs. scanning all 3 columns every 20 ms).
+#define KEYPAD_COL_MASK     ((uint8_t)((1u << 2) | (1u << 0) | (1u << 4)))
+#define KEYPAD_ROW_MASK     ((uint8_t)((1u << 1) | (1u << 6) | (1u << 5) | (1u << 3)))
+#define KEYPAD_ALL_COLS_LOW ((uint8_t)(~KEYPAD_COL_MASK))
+
 static const char s_keymap[4][3] = {
     {'1', '2', '3'},
     {'4', '5', '6'},
@@ -52,7 +60,7 @@ esp_err_t keypad_init(i2c_master_bus_handle_t bus)
         ESP_LOGE(TAG, "PCF8574 add failed: %s", esp_err_to_name(ret));
         return ret;
     }
-    uint8_t idle = 0xFF;
+    uint8_t idle = KEYPAD_ALL_COLS_LOW;
     ret = i2c_master_transmit(s_dev, &idle, 1, 100);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "PCF8574 write failed: %s", esp_err_to_name(ret));
@@ -72,7 +80,16 @@ static char scan_matrix(void)
 {
     if (!s_dev) return '\0';
 
-    for (int c = 0; c < 3; c++) {
+    // Fast idle probe: all columns are already driven LOW; if every row still
+    // reads HIGH, no key is pressed and we skip the 3-column scan completely.
+    uint8_t probe = 0xFF;
+    if (i2c_master_receive(s_dev, &probe, 1, 200) != ESP_OK)
+        return '\0';
+    if ((probe & KEYPAD_ROW_MASK) == KEYPAD_ROW_MASK)
+        return '\0';
+
+    char found = '\0';
+    for (int c = 0; c < 3 && !found; c++) {
         uint8_t col_pin = s_col_pins[c];
         uint8_t drive   = (uint8_t)((~(1u << col_pin)) | 0x80);
 
@@ -84,16 +101,15 @@ static char scan_matrix(void)
 
         for (int r = 0; r < 4; r++) {
             if (!(val & (1u << s_row_pins[r]))) {
-                uint8_t idle = 0xFF;
-                i2c_master_transmit(s_dev, &idle, 1, 200);
-                return s_keymap[r][c];
+                found = s_keymap[r][c];
+                break;
             }
         }
     }
 
-    uint8_t idle = 0xFF;
+    uint8_t idle = KEYPAD_ALL_COLS_LOW;
     i2c_master_transmit(s_dev, &idle, 1, 200);
-    return '\0';
+    return found;
 }
 
 // -------------------------------------------------------------------------

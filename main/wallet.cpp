@@ -153,6 +153,8 @@ bool Wallet::select_proofs(int amount_needed, const std::string& unit,
     // Only same-unit proofs are candidates; everything else goes straight
     // to `remaining` (see the fund-safety contract in wallet.hpp).
     std::vector<size_t> candidates;
+    candidates.reserve(proofs_.size());
+    remaining.reserve(proofs_.size());
     for (size_t i = 0; i < proofs_.size(); i++) {
         const std::string* u = unit_for_proof(proofs_[i]);
         if (u && *u == unit)
@@ -165,13 +167,22 @@ bool Wallet::select_proofs(int amount_needed, const std::string& unit,
         return proofs_[a].amount > proofs_[b].amount;
     });
 
+    selected.reserve(candidates.size());
     int sum = 0;
+    int sum_ppk = 0;
     bool enough = false;
     for (size_t idx : candidates) {
         if (!enough) {
-            selected.push_back(proofs_[idx]);
-            sum += proofs_[idx].amount;
-            int fee = calculate_fee(selected);
+            const Proof& p = proofs_[idx];
+            selected.push_back(p);
+            sum += p.amount;
+            for (const auto& k : keysets_) {
+                if (k.id == p.id) {
+                    sum_ppk += k.input_fee_ppk;
+                    break;
+                }
+            }
+            int fee = (sum_ppk + 999) / 1000;
             if (sum >= amount_needed + fee)
                 enough = true;
         } else {

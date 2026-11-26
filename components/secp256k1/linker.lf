@@ -1,0 +1,5 @@
+[mapping:secp256k1]
+archive: libsecp256k1.a
+entries:
+    secp256k1_cashu: secp256k1_fe_mul_inner (noflash)
+    secp256k1_cashu: secp256k1_fe_sqr_inner (noflash)

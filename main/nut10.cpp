@@ -5,7 +5,14 @@ namespace cashu {
 
 bool parse_nut10_secret(const std::string& s, NUT10Secret& out)
 {
-    cJSON* root = cJSON_Parse(s.c_str());
+    // Fast-path reject raw-hex secrets without invoking cJSON_Parse.
+    const char* p = s.c_str();
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')
+        p++;
+    if (*p != '[')
+        return false;
+
+    cJSON* root = cJSON_ParseWithLength(p, s.size() - (size_t)(p - s.c_str()));
     if (!root) return false;
 
     bool ok = false;

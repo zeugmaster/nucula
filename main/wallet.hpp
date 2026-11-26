@@ -175,6 +175,7 @@ private:
     MintError last_error_;
     secp256k1_context* ctx_;
     int nvs_slot_;
+    mutable int pending_count_ = -1;  // lazy NVS cache; <0 means uninitialized
 
     bool save_proofs();
     bool load_proofs();
@@ -192,12 +193,6 @@ private:
     // Returns true when the merge changed anything (new keyset, changed
     // metadata, or newly filled keys) — i.e. when a save is warranted.
     bool merge_keysets(const std::vector<Keyset>& fresh);
-
-    // Mint public key (compressed hex) for a given amount in a keyset. Returned
-    // as hex so callers can hand it to the byte-oriented crypto suite, keeping
-    // the wallet free of curve-specific point types.
-    bool keyset_key_hex_for_amount(const Keyset& ks, uint64_t amount,
-                                   std::string& out_hex) const;
 
     static unsigned char s_seed[64];
     static bool s_seed_loaded;

@@ -4,6 +4,7 @@
 #include "hex.h"
 
 #include <cstring>
+#include <utility>
 #include <esp_log.h>
 #include <cbor.h>
 
@@ -15,14 +16,7 @@ namespace cashu {
 // CBOR decoder helpers
 // -------------------------------------------------------------------------
 
-static bool cbor_find_in_map(CborValue *map, const char *key, CborValue *out)
-{
-    if (!cbor_value_is_map(map)) return false;
-    return cbor_value_map_find_value(map, key, out) == CborNoError
-           && out->type != CborInvalidType;
-}
-
-static bool cbor_get_string(CborValue *val, std::string &out)
+static bool cbor_get_string(const CborValue *val, std::string &out)
 {
     if (!cbor_value_is_text_string(val)) return false;
     size_t len = 0;
@@ -34,28 +28,39 @@ static bool cbor_get_string(CborValue *val, std::string &out)
     return true;
 }
 
-static bool cbor_get_bytes_as_hex(CborValue *val, std::string &out)
+static bool cbor_get_bytes_as_hex(const CborValue *val, std::string &out)
 {
     if (!cbor_value_is_byte_string(val)) return false;
     size_t len = 0;
     if (cbor_value_get_string_length(val, &len) != CborNoError) return false;
-    std::vector<uint8_t> buf(len);
-    if (cbor_value_copy_byte_string(val, buf.data(), &len, nullptr) != CborNoError)
+
+    uint8_t stack_buf[64];
+    std::vector<uint8_t> heap_buf;
+    uint8_t *buf = stack_buf;
+    if (len > sizeof(stack_buf)) {
+        heap_buf.resize(len);
+        buf = heap_buf.data();
+    }
+    if (cbor_value_copy_byte_string(val, buf, &len, nullptr) != CborNoError)
         return false;
-    char *hex = new char[len * 2 + 1];
-    bytes_to_hex(buf.data(), len, hex);
-    out = std::string(hex);
-    delete[] hex;
+
+    static const char digits[] = "0123456789abcdef";
+    out.resize(len * 2);
+    char *dst = out.data();
+    for (size_t i = 0; i < len; i++) {
+        dst[i * 2]     = digits[buf[i] >> 4];
+        dst[i * 2 + 1] = digits[buf[i] & 0x0F];
+    }
     return true;
 }
 
-static bool cbor_get_uint(CborValue *val, uint64_t &out)
+static bool cbor_get_uint(const CborValue *val, uint64_t &out)
 {
     if (!cbor_value_is_unsigned_integer(val)) return false;
     return cbor_value_get_uint64(val, &out) == CborNoError;
 }
 
-static bool cbor_get_int(CborValue *val, int &out)
+static bool cbor_get_int(const CborValue *val, int &out)
 {
     // Amounts/fees are non-negative and must fit in int32; the previous
     // unchecked casts silently truncated 64-bit values.
@@ -78,64 +83,121 @@ static bool cbor_get_int(CborValue *val, int &out)
     return false;
 }
 
-static bool cbor_get_bool(CborValue *val, bool &out)
+static bool cbor_get_bool(const CborValue *val, bool &out)
 {
     if (!cbor_value_is_boolean(val)) return false;
     return cbor_value_get_boolean(val, &out) == CborNoError;
 }
 
-// -------------------------------------------------------------------------
-// Token V4 Decode
-// -------------------------------------------------------------------------
-
-static bool decode_v4_dleq(CborValue *map, DLEQ &dleq)
+// Advance past a map key into its value, copying short text keys (<= 7 chars)
+// onto the stack. Returns false only on malformed CBOR; non-text or long keys
+// set key_len = 0 so the caller simply skips the value.
+static bool cbor_next_map_key(CborValue &it, char key_out[8], size_t &key_len)
 {
-    CborValue val;
-    if (!cbor_find_in_map(map, "e", &val) || !cbor_get_bytes_as_hex(&val, dleq.e))
-        return false;
-    if (!cbor_find_in_map(map, "s", &val) || !cbor_get_bytes_as_hex(&val, dleq.s))
-        return false;
-    CborValue rval;
-    if (cbor_find_in_map(map, "r", &rval) && cbor_value_is_byte_string(&rval)) {
-        std::string r_hex;
-        if (cbor_get_bytes_as_hex(&rval, r_hex))
-            dleq.r = r_hex;
+    key_len = 0;
+    if (cbor_value_is_text_string(&it)) {
+        size_t slen = 0;
+        if (cbor_value_get_string_length(&it, &slen) == CborNoError && slen < 8) {
+            size_t n = 8;
+            CborValue next;
+            if (cbor_value_copy_text_string(&it, key_out, &n, &next) != CborNoError)
+                return false;
+            key_out[n] = '\0';
+            key_len = n;
+            it = next;
+            return !cbor_value_at_end(&it);
+        }
     }
-    return true;
+    if (cbor_value_advance(&it) != CborNoError)
+        return false;
+    return !cbor_value_at_end(&it);
 }
 
-static bool decode_v4_proof(CborValue *it, Proof &proof, const std::string &keyset_id)
+// -------------------------------------------------------------------------
+// Token V4 Decode (single-pass map iteration)
+// -------------------------------------------------------------------------
+
+static bool decode_v4_dleq(const CborValue *map, DLEQ &dleq)
 {
-    if (!cbor_value_is_map(it)) return false;
-
-    CborValue val;
-    int amount;
-    if (!cbor_find_in_map(it, "a", &val) || !cbor_get_int(&val, amount))
+    if (!cbor_value_is_map(map)) return false;
+    CborValue it;
+    if (cbor_value_enter_container(map, &it) != CborNoError)
         return false;
-    proof.amount = amount;
+
+    bool has_e = false, has_s = false;
+    while (!cbor_value_at_end(&it)) {
+        char k[8];
+        size_t klen = 0;
+        if (!cbor_next_map_key(it, k, klen)) return false;
+
+        if (klen == 1) {
+            if (k[0] == 'e') {
+                if (!cbor_get_bytes_as_hex(&it, dleq.e)) return false;
+                has_e = true;
+            } else if (k[0] == 's') {
+                if (!cbor_get_bytes_as_hex(&it, dleq.s)) return false;
+                has_s = true;
+            } else if (k[0] == 'r' && cbor_value_is_byte_string(&it)) {
+                std::string r_hex;
+                if (cbor_get_bytes_as_hex(&it, r_hex))
+                    dleq.r = std::move(r_hex);
+            }
+        }
+        if (cbor_value_advance(&it) != CborNoError) return false;
+    }
+    return has_e && has_s;
+}
+
+static bool decode_v4_proof(const CborValue *map, Proof &proof, const std::string &keyset_id)
+{
+    if (!cbor_value_is_map(map)) return false;
+    CborValue it;
+    if (cbor_value_enter_container(map, &it) != CborNoError)
+        return false;
+
     proof.id = keyset_id;
+    bool has_a = false, has_s = false, has_c = false;
 
-    if (!cbor_find_in_map(it, "s", &val) || !cbor_get_string(&val, proof.secret))
-        return false;
+    while (!cbor_value_at_end(&it)) {
+        char k[8];
+        size_t klen = 0;
+        if (!cbor_next_map_key(it, k, klen)) return false;
 
-    if (!cbor_find_in_map(it, "c", &val) || !cbor_get_bytes_as_hex(&val, proof.C))
-        return false;
-
-    CborValue dval;
-    if (cbor_find_in_map(it, "d", &dval) && cbor_value_is_map(&dval)) {
-        DLEQ dleq;
-        if (decode_v4_dleq(&dval, dleq))
-            proof.dleq = dleq;
+        if (klen == 1) {
+            switch (k[0]) {
+            case 'a':
+                if (!cbor_get_int(&it, proof.amount)) return false;
+                has_a = true;
+                break;
+            case 's':
+                if (!cbor_get_string(&it, proof.secret)) return false;
+                has_s = true;
+                break;
+            case 'c':
+                if (!cbor_get_bytes_as_hex(&it, proof.C)) return false;
+                has_c = true;
+                break;
+            case 'd':
+                if (cbor_value_is_map(&it)) {
+                    DLEQ dleq;
+                    if (decode_v4_dleq(&it, dleq))
+                        proof.dleq = std::move(dleq);
+                }
+                break;
+            case 'w':
+                if (cbor_value_is_text_string(&it)) {
+                    std::string w;
+                    if (cbor_get_string(&it, w))
+                        proof.witness = std::move(w);
+                }
+                break;
+            default:
+                break;
+            }
+        }
+        if (cbor_value_advance(&it) != CborNoError) return false;
     }
-
-    CborValue wval;
-    if (cbor_find_in_map(it, "w", &wval) && cbor_value_is_text_string(&wval)) {
-        std::string w;
-        if (cbor_get_string(&wval, w))
-            proof.witness = w;
-    }
-
-    return true;
+    return has_a && has_s && has_c;
 }
 
 bool deserialize_token_v4(const char *token_str, Token &out)
@@ -168,43 +230,84 @@ bool deserialize_token_v4(const char *token_str, Token &out)
         return false;
     }
 
-    CborValue val;
-    if (!cbor_find_in_map(&root, "m", &val) || !cbor_get_string(&val, out.mint))
-        return false;
-    if (!cbor_find_in_map(&root, "u", &val) || !cbor_get_string(&val, out.unit))
+    CborValue it;
+    if (cbor_value_enter_container(&root, &it) != CborNoError)
         return false;
 
-    CborValue dval;
-    if (cbor_find_in_map(&root, "d", &dval) && cbor_value_is_text_string(&dval)) {
-        std::string memo;
-        if (cbor_get_string(&dval, memo))
-            out.memo = memo;
+    out.memo = std::nullopt;
+    out.proofs.clear();
+    bool has_m = false, has_u = false, has_t = false;
+    CborValue t_arr_val{};
+
+    while (!cbor_value_at_end(&it)) {
+        char k[8];
+        size_t klen = 0;
+        if (!cbor_next_map_key(it, k, klen)) return false;
+
+        if (klen == 1) {
+            if (k[0] == 'm') {
+                if (!cbor_get_string(&it, out.mint)) return false;
+                has_m = true;
+            } else if (k[0] == 'u') {
+                if (!cbor_get_string(&it, out.unit)) return false;
+                has_u = true;
+            } else if (k[0] == 'd' && cbor_value_is_text_string(&it)) {
+                std::string memo;
+                if (cbor_get_string(&it, memo))
+                    out.memo = std::move(memo);
+            } else if (k[0] == 't') {
+                if (!cbor_value_is_array(&it)) return false;
+                t_arr_val = it;
+                has_t = true;
+            }
+        }
+        if (cbor_value_advance(&it) != CborNoError) return false;
     }
 
-    CborValue t_arr_val;
-    if (!cbor_find_in_map(&root, "t", &t_arr_val) || !cbor_value_is_array(&t_arr_val))
+    if (!has_m || !has_u || !has_t)
         return false;
 
     CborValue t_it;
     if (cbor_value_enter_container(&t_arr_val, &t_it) != CborNoError)
         return false;
 
-    out.proofs.clear();
     while (!cbor_value_at_end(&t_it)) {
         if (!cbor_value_is_map(&t_it)) {
-            cbor_value_advance(&t_it);
+            if (cbor_value_advance(&t_it) != CborNoError) break;
             continue;
         }
 
-        CborValue i_val;
-        std::string keyset_id_hex;
-        if (!cbor_find_in_map(&t_it, "i", &i_val) ||
-            !cbor_get_bytes_as_hex(&i_val, keyset_id_hex))
+        CborValue e_it;
+        if (cbor_value_enter_container(&t_it, &e_it) != CborNoError)
             return false;
 
-        CborValue p_arr_val;
-        if (!cbor_find_in_map(&t_it, "p", &p_arr_val) || !cbor_value_is_array(&p_arr_val))
+        std::string keyset_id_hex;
+        CborValue p_arr_val{};
+        bool has_i = false, has_p = false;
+
+        while (!cbor_value_at_end(&e_it)) {
+            char k[8];
+            size_t klen = 0;
+            if (!cbor_next_map_key(e_it, k, klen)) return false;
+
+            if (klen == 1 && k[0] == 'i') {
+                if (!cbor_get_bytes_as_hex(&e_it, keyset_id_hex)) return false;
+                has_i = true;
+            } else if (klen == 1 && k[0] == 'p') {
+                if (!cbor_value_is_array(&e_it)) return false;
+                p_arr_val = e_it;
+                has_p = true;
+            }
+            if (cbor_value_advance(&e_it) != CborNoError) return false;
+        }
+
+        if (!has_i || !has_p)
             return false;
+
+        size_t arr_len = 0;
+        if (cbor_value_is_length_known(&p_arr_val) &&
+            cbor_value_get_array_length(&p_arr_val, &arr_len) == CborNoError)
+            out.proofs.reserve(out.proofs.size() + arr_len);
 
         CborValue p_it;
         if (cbor_value_enter_container(&p_arr_val, &p_it) != CborNoError)
@@ -249,12 +352,14 @@ static bool encode_hex_bytes(CborEncoder *enc, const std::string &hex,
     return true;
 }
 
+using KeysetGroup = std::pair<const std::string *, std::vector<const Proof *>>;
+
 // One encoding pass. Returns false on malformed fields; buffer overflow is
 // not an error here — the caller checks cbor_encoder_get_extra_bytes_needed
 // and retries with a larger buffer.
 static bool encode_token_v4(const Token &token,
-        const std::map<std::string, std::vector<const Proof *>> &by_keyset,
-        uint8_t *buf, size_t buf_size, CborEncoder &enc)
+                            const std::vector<KeysetGroup> &by_keyset,
+                            uint8_t *buf, size_t buf_size, CborEncoder &enc)
 {
     cbor_encoder_init(&enc, buf, buf_size, 0);
 
@@ -263,20 +368,20 @@ static bool encode_token_v4(const Token &token,
     cbor_encoder_create_map(&enc, &map_enc, map_items);
 
     // "m": mint URL
-    cbor_encode_text_stringz(&map_enc, "m");
-    cbor_encode_text_stringz(&map_enc, token.mint.c_str());
+    cbor_encode_text_string(&map_enc, "m", 1);
+    cbor_encode_text_string(&map_enc, token.mint.data(), token.mint.size());
 
     // "u": unit
-    cbor_encode_text_stringz(&map_enc, "u");
-    cbor_encode_text_stringz(&map_enc, token.unit.c_str());
+    cbor_encode_text_string(&map_enc, "u", 1);
+    cbor_encode_text_string(&map_enc, token.unit.data(), token.unit.size());
 
     if (token.memo) {
-        cbor_encode_text_stringz(&map_enc, "d");
-        cbor_encode_text_stringz(&map_enc, token.memo->c_str());
+        cbor_encode_text_string(&map_enc, "d", 1);
+        cbor_encode_text_string(&map_enc, token.memo->data(), token.memo->size());
     }
 
     // "t": token entries array
-    cbor_encode_text_stringz(&map_enc, "t");
+    cbor_encode_text_string(&map_enc, "t", 1);
     CborEncoder t_arr;
     cbor_encoder_create_array(&map_enc, &t_arr, by_keyset.size());
 
@@ -285,14 +390,12 @@ static bool encode_token_v4(const Token &token,
         cbor_encoder_create_map(&t_arr, &entry_map, 2);
 
         // "i": keyset ID as bytes. Encode the FULL id: v1 -> 8 bytes, v2 -> 33.
-        // (NUT-00 also permits an 8-byte short form, but emitting the full id
-        //  keeps our tokens losslessly round-trippable and keyset-verifiable.)
-        cbor_encode_text_stringz(&entry_map, "i");
-        if (!encode_hex_bytes(&entry_map, keyset_id, CASHU_MAX_POINT_LEN))
+        cbor_encode_text_string(&entry_map, "i", 1);
+        if (!encode_hex_bytes(&entry_map, *keyset_id, CASHU_MAX_POINT_LEN))
             return false;
 
         // "p": proofs array
-        cbor_encode_text_stringz(&entry_map, "p");
+        cbor_encode_text_string(&entry_map, "p", 1);
         CborEncoder p_arr;
         cbor_encoder_create_array(&entry_map, &p_arr, proofs.size());
 
@@ -305,34 +408,34 @@ static bool encode_token_v4(const Token &token,
             cbor_encoder_create_map(&p_arr, &p_map, proof_items);
 
             // "a": amount
-            cbor_encode_text_stringz(&p_map, "a");
+            cbor_encode_text_string(&p_map, "a", 1);
             cbor_encode_uint(&p_map, (uint64_t)p->amount);
 
             // "s": secret (text string)
-            cbor_encode_text_stringz(&p_map, "s");
-            cbor_encode_text_stringz(&p_map, p->secret.c_str());
+            cbor_encode_text_string(&p_map, "s", 1);
+            cbor_encode_text_string(&p_map, p->secret.data(), p->secret.size());
 
             // "c": signature (byte string), sized for any suite's points
-            cbor_encode_text_stringz(&p_map, "c");
+            cbor_encode_text_string(&p_map, "c", 1);
             if (!encode_hex_bytes(&p_map, p->C, CASHU_MAX_POINT_LEN))
                 return false;
 
             if (p->dleq) {
-                cbor_encode_text_stringz(&p_map, "d");
+                cbor_encode_text_string(&p_map, "d", 1);
                 CborEncoder dleq_map;
                 int dleq_items = 2 + (p->dleq->r ? 1 : 0);
                 cbor_encoder_create_map(&p_map, &dleq_map, dleq_items);
 
-                cbor_encode_text_stringz(&dleq_map, "e");
+                cbor_encode_text_string(&dleq_map, "e", 1);
                 if (!encode_hex_bytes(&dleq_map, p->dleq->e, 32))
                     return false;
 
-                cbor_encode_text_stringz(&dleq_map, "s");
+                cbor_encode_text_string(&dleq_map, "s", 1);
                 if (!encode_hex_bytes(&dleq_map, p->dleq->s, 32))
                     return false;
 
                 if (p->dleq->r) {
-                    cbor_encode_text_stringz(&dleq_map, "r");
+                    cbor_encode_text_string(&dleq_map, "r", 1);
                     if (!encode_hex_bytes(&dleq_map, *p->dleq->r, 32))
                         return false;
                 }
@@ -340,8 +443,8 @@ static bool encode_token_v4(const Token &token,
             }
 
             if (p->witness) {
-                cbor_encode_text_stringz(&p_map, "w");
-                cbor_encode_text_stringz(&p_map, p->witness->c_str());
+                cbor_encode_text_string(&p_map, "w", 1);
+                cbor_encode_text_string(&p_map, p->witness->data(), p->witness->size());
             }
 
             cbor_encoder_close_container(&p_arr, &p_map);
@@ -356,16 +459,25 @@ static bool encode_token_v4(const Token &token,
 
 std::string serialize_token_v4(const Token &token)
 {
-    // Group proofs by keyset ID
-    std::map<std::string, std::vector<const Proof *>> by_keyset;
-    for (const auto &p : token.proofs)
-        by_keyset[p.id].push_back(&p);
+    // Group proofs by keyset ID without allocating RB-tree nodes or copying IDs.
+    std::vector<KeysetGroup> by_keyset;
+    by_keyset.reserve(2);
+    for (const auto &p : token.proofs) {
+        KeysetGroup *grp = nullptr;
+        for (auto &g : by_keyset) {
+            if (*g.first == p.id) { grp = &g; break; }
+        }
+        if (!grp) {
+            by_keyset.emplace_back(&p.id, std::vector<const Proof *>{});
+            grp = &by_keyset.back();
+            grp->second.reserve(token.proofs.size());
+        }
+        grp->second.push_back(&p);
+    }
 
     // Capacity estimate only — if it's short, TinyCBOR reports how many
     // bytes were missing and we re-encode once into an exact-sized buffer.
-    // The previous code skipped that check and could emit a silently
-    // truncated token (callers like stickup destroy the proofs after).
-    std::vector<uint8_t> buf(512 + token.proofs.size() * 200);
+    std::vector<uint8_t> buf(256 + token.proofs.size() * 240);
     CborEncoder enc;
     if (!encode_token_v4(token, by_keyset, buf.data(), buf.size(), enc)) {
         ESP_LOGE(TAG, "token encode: malformed field");
@@ -383,15 +495,18 @@ std::string serialize_token_v4(const Token &token)
     }
 
     size_t cbor_len = cbor_encoder_get_buffer_size(&enc, buf.data());
-    std::string encoded = base64url_encode(buf.data(), cbor_len);
-    return std::string("cashuB") + encoded;
+    std::string result;
+    result.reserve(6 + ((cbor_len * 4 + 2) / 3));
+    result.append("cashuB", 6);
+    base64url_encode_append(buf.data(), cbor_len, result);
+    return result;
 }
 
 // -------------------------------------------------------------------------
 // Payment Request Decode (NUT-18)
 // -------------------------------------------------------------------------
 
-static bool decode_tags(CborValue *arr_val,
+static bool decode_tags(const CborValue *arr_val,
                         std::vector<std::vector<std::string>> &out)
 {
     if (!cbor_value_is_array(arr_val)) return false;
@@ -423,40 +538,66 @@ static bool decode_tags(CborValue *arr_val,
     return true;
 }
 
-static bool decode_transport(CborValue *it, Transport &t)
+static bool decode_transport(const CborValue *map, Transport &t)
 {
-    if (!cbor_value_is_map(it)) return false;
-    CborValue val;
-    if (!cbor_find_in_map(it, "t", &val) || !cbor_get_string(&val, t.type))
-        return false;
-    if (!cbor_find_in_map(it, "a", &val) || !cbor_get_string(&val, t.target))
+    if (!cbor_value_is_map(map)) return false;
+    CborValue it;
+    if (cbor_value_enter_container(map, &it) != CborNoError)
         return false;
 
-    CborValue g_val;
-    if (cbor_find_in_map(it, "g", &g_val) && cbor_value_is_array(&g_val)) {
-        std::vector<std::vector<std::string>> tags;
-        if (decode_tags(&g_val, tags))
-            t.tags = std::move(tags);
+    bool has_t = false, has_a = false;
+    while (!cbor_value_at_end(&it)) {
+        char k[8];
+        size_t klen = 0;
+        if (!cbor_next_map_key(it, k, klen)) return false;
+
+        if (klen == 1) {
+            if (k[0] == 't') {
+                if (!cbor_get_string(&it, t.type)) return false;
+                has_t = true;
+            } else if (k[0] == 'a') {
+                if (!cbor_get_string(&it, t.target)) return false;
+                has_a = true;
+            } else if (k[0] == 'g' && cbor_value_is_array(&it)) {
+                std::vector<std::vector<std::string>> tags;
+                if (decode_tags(&it, tags))
+                    t.tags = std::move(tags);
+            }
+        }
+        if (cbor_value_advance(&it) != CborNoError) return false;
     }
-    return true;
+    return has_t && has_a;
 }
 
-static bool decode_nut10(CborValue *it, NUT10Option &opt)
+static bool decode_nut10(const CborValue *map, NUT10Option &opt)
 {
-    if (!cbor_value_is_map(it)) return false;
-    CborValue val;
-    if (!cbor_find_in_map(it, "k", &val) || !cbor_get_string(&val, opt.kind))
-        return false;
-    if (!cbor_find_in_map(it, "d", &val) || !cbor_get_string(&val, opt.data))
+    if (!cbor_value_is_map(map)) return false;
+    CborValue it;
+    if (cbor_value_enter_container(map, &it) != CborNoError)
         return false;
 
-    CborValue t_val;
-    if (cbor_find_in_map(it, "t", &t_val) && cbor_value_is_array(&t_val)) {
-        std::vector<std::vector<std::string>> tags;
-        if (decode_tags(&t_val, tags))
-            opt.tags = std::move(tags);
+    bool has_k = false, has_d = false;
+    while (!cbor_value_at_end(&it)) {
+        char k[8];
+        size_t klen = 0;
+        if (!cbor_next_map_key(it, k, klen)) return false;
+
+        if (klen == 1) {
+            if (k[0] == 'k') {
+                if (!cbor_get_string(&it, opt.kind)) return false;
+                has_k = true;
+            } else if (k[0] == 'd') {
+                if (!cbor_get_string(&it, opt.data)) return false;
+                has_d = true;
+            } else if (k[0] == 't' && cbor_value_is_array(&it)) {
+                std::vector<std::vector<std::string>> tags;
+                if (decode_tags(&it, tags))
+                    opt.tags = std::move(tags);
+            }
+        }
+        if (cbor_value_advance(&it) != CborNoError) return false;
     }
-    return true;
+    return has_k && has_d;
 }
 
 bool deserialize_payment_request(const char *req_str, PaymentRequest &out)
@@ -484,78 +625,100 @@ bool deserialize_payment_request(const char *req_str, PaymentRequest &out)
 
     if (!cbor_value_is_map(&root)) return false;
 
-    CborValue val;
-    if (cbor_find_in_map(&root, "i", &val) && cbor_value_is_text_string(&val)) {
-        std::string id;
-        if (cbor_get_string(&val, id))
-            out.payment_id = id;
-    }
+    CborValue it;
+    if (cbor_value_enter_container(&root, &it) != CborNoError)
+        return false;
 
-    if (cbor_find_in_map(&root, "a", &val)) {
-        int amount;
-        if (cbor_get_int(&val, amount))
-            out.amount = amount;
-    }
+    out = PaymentRequest{};
 
-    if (cbor_find_in_map(&root, "u", &val) && cbor_value_is_text_string(&val)) {
-        std::string unit;
-        if (cbor_get_string(&val, unit))
-            out.unit = unit;
-    }
+    while (!cbor_value_at_end(&it)) {
+        char k[8];
+        size_t klen = 0;
+        if (!cbor_next_map_key(it, k, klen)) return false;
 
-    if (cbor_find_in_map(&root, "s", &val)) {
-        bool single;
-        if (cbor_get_bool(&val, single))
-            out.single_use = single;
-    }
-
-    if (cbor_find_in_map(&root, "d", &val) && cbor_value_is_text_string(&val)) {
-        std::string desc;
-        if (cbor_get_string(&val, desc))
-            out.description = desc;
-    }
-
-    if (cbor_find_in_map(&root, "m", &val) && cbor_value_is_array(&val)) {
-        CborValue m_it;
-        if (cbor_value_enter_container(&val, &m_it) == CborNoError) {
-            std::vector<std::string> mints;
-            while (!cbor_value_at_end(&m_it)) {
-                std::string m;
-                if (cbor_value_is_text_string(&m_it) && cbor_get_string(&m_it, m))
-                    mints.push_back(std::move(m));
-                cbor_value_advance(&m_it);
+        if (klen == 1) {
+            switch (k[0]) {
+            case 'i':
+                if (cbor_value_is_text_string(&it)) {
+                    std::string id;
+                    if (cbor_get_string(&it, id))
+                        out.payment_id = std::move(id);
+                }
+                break;
+            case 'a': {
+                int amount;
+                if (cbor_get_int(&it, amount))
+                    out.amount = amount;
+                break;
             }
-            if (!mints.empty())
-                out.mints = std::move(mints);
-        }
-    }
-
-    if (cbor_find_in_map(&root, "t", &val) && cbor_value_is_array(&val)) {
-        CborValue t_it;
-        if (cbor_value_enter_container(&val, &t_it) == CborNoError) {
-            std::vector<Transport> transports;
-            while (!cbor_value_at_end(&t_it)) {
-                Transport t;
-                if (decode_transport(&t_it, t))
-                    transports.push_back(std::move(t));
-                cbor_value_advance(&t_it);
+            case 'u':
+                if (cbor_value_is_text_string(&it)) {
+                    std::string unit;
+                    if (cbor_get_string(&it, unit))
+                        out.unit = std::move(unit);
+                }
+                break;
+            case 's': {
+                bool single;
+                if (cbor_get_bool(&it, single))
+                    out.single_use = single;
+                break;
             }
-            if (!transports.empty())
-                out.transports = std::move(transports);
+            case 'd':
+                if (cbor_value_is_text_string(&it)) {
+                    std::string desc;
+                    if (cbor_get_string(&it, desc))
+                        out.description = std::move(desc);
+                }
+                break;
+            case 'm':
+                if (cbor_value_is_array(&it)) {
+                    CborValue m_it;
+                    if (cbor_value_enter_container(&it, &m_it) == CborNoError) {
+                        std::vector<std::string> mints;
+                        while (!cbor_value_at_end(&m_it)) {
+                            std::string m;
+                            if (cbor_value_is_text_string(&m_it) && cbor_get_string(&m_it, m))
+                                mints.push_back(std::move(m));
+                            cbor_value_advance(&m_it);
+                        }
+                        if (!mints.empty())
+                            out.mints = std::move(mints);
+                    }
+                }
+                break;
+            case 't':
+                if (cbor_value_is_array(&it)) {
+                    CborValue t_it;
+                    if (cbor_value_enter_container(&it, &t_it) == CborNoError) {
+                        std::vector<Transport> transports;
+                        while (!cbor_value_at_end(&t_it)) {
+                            Transport t;
+                            if (decode_transport(&t_it, t))
+                                transports.push_back(std::move(t));
+                            cbor_value_advance(&t_it);
+                        }
+                        if (!transports.empty())
+                            out.transports = std::move(transports);
+                    }
+                }
+                break;
+            default:
+                break;
+            }
+        } else if (klen == 5 && memcmp(k, "nut10", 5) == 0 && cbor_value_is_map(&it)) {
+            NUT10Option opt;
+            if (decode_nut10(&it, opt))
+                out.nut10 = std::move(opt);
         }
+
+        if (cbor_value_advance(&it) != CborNoError) return false;
     }
 
-    CborValue nut10_val;
-    if (cbor_find_in_map(&root, "nut10", &nut10_val) && cbor_value_is_map(&nut10_val)) {
-        NUT10Option opt;
-        if (decode_nut10(&nut10_val, opt))
-            out.nut10 = std::move(opt);
-    }
-
-    ESP_LOGI(TAG, "decoded payment request id=%s amount=%s unit=%s",
-             out.payment_id.value_or("-").c_str(),
-             out.amount ? std::to_string(*out.amount).c_str() : "-",
-             out.unit.value_or("-").c_str());
+    ESP_LOGI(TAG, "decoded payment request id=%s amount=%d unit=%s",
+             out.payment_id ? out.payment_id->c_str() : "-",
+             out.amount ? *out.amount : -1,
+             out.unit ? out.unit->c_str() : "-");
     return true;
 }
 
@@ -572,7 +735,7 @@ static void encode_tags(CborEncoder *parent,
         CborEncoder inner;
         cbor_encoder_create_array(&arr, &inner, tag.size());
         for (const auto &s : tag)
-            cbor_encode_text_stringz(&inner, s.c_str());
+            cbor_encode_text_string(&inner, s.data(), s.size());
         cbor_encoder_close_container(&arr, &inner);
     }
     cbor_encoder_close_container(parent, &arr);
@@ -589,28 +752,28 @@ std::string serialize_payment_request(const PaymentRequest &req)
     if (req.amount) items++;
     if (req.unit) items++;
     if (req.single_use) items++;
-    if (req.mints) items++;
+    if (req.mints && !req.mints->empty()) items++;
     if (req.description) items++;
-    if (req.transports) items++;
+    if (req.transports && !req.transports->empty()) items++;
     if (req.nut10) items++;
 
     CborEncoder map_enc;
     cbor_encoder_create_map(&enc, &map_enc, items);
 
     if (req.transports && !req.transports->empty()) {
-        cbor_encode_text_stringz(&map_enc, "t");
+        cbor_encode_text_string(&map_enc, "t", 1);
         CborEncoder t_arr;
         cbor_encoder_create_array(&map_enc, &t_arr, req.transports->size());
         for (const auto &t : *req.transports) {
             int t_items = 2 + (t.tags && !t.tags->empty() ? 1 : 0);
             CborEncoder t_map;
             cbor_encoder_create_map(&t_arr, &t_map, t_items);
-            cbor_encode_text_stringz(&t_map, "t");
-            cbor_encode_text_stringz(&t_map, t.type.c_str());
-            cbor_encode_text_stringz(&t_map, "a");
-            cbor_encode_text_stringz(&t_map, t.target.c_str());
+            cbor_encode_text_string(&t_map, "t", 1);
+            cbor_encode_text_string(&t_map, t.type.data(), t.type.size());
+            cbor_encode_text_string(&t_map, "a", 1);
+            cbor_encode_text_string(&t_map, t.target.data(), t.target.size());
             if (t.tags && !t.tags->empty()) {
-                cbor_encode_text_stringz(&t_map, "g");
+                cbor_encode_text_string(&t_map, "g", 1);
                 encode_tags(&t_map, *t.tags);
             }
             cbor_encoder_close_container(&t_arr, &t_map);
@@ -619,44 +782,44 @@ std::string serialize_payment_request(const PaymentRequest &req)
     }
 
     if (req.payment_id) {
-        cbor_encode_text_stringz(&map_enc, "i");
-        cbor_encode_text_stringz(&map_enc, req.payment_id->c_str());
+        cbor_encode_text_string(&map_enc, "i", 1);
+        cbor_encode_text_string(&map_enc, req.payment_id->data(), req.payment_id->size());
     }
     if (req.amount) {
-        cbor_encode_text_stringz(&map_enc, "a");
+        cbor_encode_text_string(&map_enc, "a", 1);
         cbor_encode_uint(&map_enc, (uint64_t)*req.amount);
     }
     if (req.unit) {
-        cbor_encode_text_stringz(&map_enc, "u");
-        cbor_encode_text_stringz(&map_enc, req.unit->c_str());
+        cbor_encode_text_string(&map_enc, "u", 1);
+        cbor_encode_text_string(&map_enc, req.unit->data(), req.unit->size());
     }
     if (req.mints && !req.mints->empty()) {
-        cbor_encode_text_stringz(&map_enc, "m");
+        cbor_encode_text_string(&map_enc, "m", 1);
         CborEncoder m_arr;
         cbor_encoder_create_array(&map_enc, &m_arr, req.mints->size());
         for (const auto &m : *req.mints)
-            cbor_encode_text_stringz(&m_arr, m.c_str());
+            cbor_encode_text_string(&m_arr, m.data(), m.size());
         cbor_encoder_close_container(&map_enc, &m_arr);
     }
     if (req.description) {
-        cbor_encode_text_stringz(&map_enc, "d");
-        cbor_encode_text_stringz(&map_enc, req.description->c_str());
+        cbor_encode_text_string(&map_enc, "d", 1);
+        cbor_encode_text_string(&map_enc, req.description->data(), req.description->size());
     }
     if (req.single_use) {
-        cbor_encode_text_stringz(&map_enc, "s");
+        cbor_encode_text_string(&map_enc, "s", 1);
         cbor_encode_boolean(&map_enc, *req.single_use);
     }
     if (req.nut10) {
-        cbor_encode_text_stringz(&map_enc, "nut10");
+        cbor_encode_text_string(&map_enc, "nut10", 5);
         int n_items = 2 + (req.nut10->tags && !req.nut10->tags->empty() ? 1 : 0);
         CborEncoder n_map;
         cbor_encoder_create_map(&map_enc, &n_map, n_items);
-        cbor_encode_text_stringz(&n_map, "k");
-        cbor_encode_text_stringz(&n_map, req.nut10->kind.c_str());
-        cbor_encode_text_stringz(&n_map, "d");
-        cbor_encode_text_stringz(&n_map, req.nut10->data.c_str());
+        cbor_encode_text_string(&n_map, "k", 1);
+        cbor_encode_text_string(&n_map, req.nut10->kind.data(), req.nut10->kind.size());
+        cbor_encode_text_string(&n_map, "d", 1);
+        cbor_encode_text_string(&n_map, req.nut10->data.data(), req.nut10->data.size());
         if (req.nut10->tags && !req.nut10->tags->empty()) {
-            cbor_encode_text_stringz(&n_map, "t");
+            cbor_encode_text_string(&n_map, "t", 1);
             encode_tags(&n_map, *req.nut10->tags);
         }
         cbor_encoder_close_container(&map_enc, &n_map);
@@ -670,8 +833,11 @@ std::string serialize_payment_request(const PaymentRequest &req)
     }
 
     size_t cbor_len = cbor_encoder_get_buffer_size(&enc, buf);
-    std::string encoded = base64url_encode(buf, cbor_len);
-    return std::string("creqA") + encoded;
+    std::string result;
+    result.reserve(5 + ((cbor_len * 4 + 2) / 3));
+    result.append("creqA", 5);
+    base64url_encode_append(buf, cbor_len, result);
+    return result;
 }
 
 } // namespace cashu

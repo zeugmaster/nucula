@@ -57,6 +57,7 @@ static size_t s_ndef_file_len = 0;
 
 // Incoming receive buffer for UPDATE BINARY
 static uint8_t s_recv_buf[NDEF_MAX_DATA_SIZE];
+static size_t s_recv_dirty_len = 0;
 static int s_expected_nlen = -1;
 
 static ndef_message_cb_t s_recv_callback;
@@ -81,7 +82,7 @@ static bool mem_starts_with(const uint8_t *data, size_t data_len,
 static bool has_nonzero_data(const uint8_t *buf, int nlen)
 {
     int end = nlen + 2;
-    if (end > (int)NDEF_MAX_DATA_SIZE) end = (int)NDEF_MAX_DATA_SIZE;
+    if (end > (int)s_recv_dirty_len) end = (int)s_recv_dirty_len;
     for (int i = 2; i < end; i++)
         if (buf[i] != 0) return true;
     return false;
@@ -116,7 +117,10 @@ void ndef_init()
 
 void ndef_reset_receive()
 {
-    memset(s_recv_buf, 0, sizeof(s_recv_buf));
+    if (s_recv_dirty_len > 0) {
+        memset(s_recv_buf, 0, s_recv_dirty_len);
+        s_recv_dirty_len = 0;
+    }
     s_expected_nlen = -1;
 }
 
@@ -297,6 +301,9 @@ bool ndef_handle_apdu(const uint8_t *apdu, size_t apdu_len,
         }
 
         memcpy(s_recv_buf + offset, apdu + 5, lc);
+        size_t end = (size_t)(offset + lc);
+        if (end > s_recv_dirty_len)
+            s_recv_dirty_len = end;
 
         ESP_LOGD(TAG, "UPDATE BINARY off=%d lc=%d", offset, lc);
 

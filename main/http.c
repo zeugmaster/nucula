@@ -1,5 +1,6 @@
 #include "http.h"
 #include "task_config.h"
+#include "wifi.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -80,8 +81,17 @@ static esp_err_t on_event(esp_http_client_event_t *evt)
             return ESP_OK;
         }
         if (needed >= rb->cap) {
-            size_t new_cap = rb->cap ? rb->cap * 2 : 1024;
+            size_t new_cap = rb->cap ? rb->cap * 2 : 0;
+            if (new_cap == 0) {
+                int64_t cl = esp_http_client_get_content_length(evt->client);
+                if (cl > 0 && cl <= MAX_RESPONSE_SIZE)
+                    new_cap = (size_t)cl + 1;
+                else
+                    new_cap = 1024;
+            }
             while (new_cap < needed + 1) new_cap *= 2;
+            if (new_cap > MAX_RESPONSE_SIZE + 1)
+                new_cap = MAX_RESPONSE_SIZE + 1;
             char *tmp = realloc(rb->buf, new_cap);
             if (!tmp) return ESP_ERR_NO_MEM;
             rb->buf = tmp;
@@ -127,6 +137,8 @@ static esp_http_client_handle_t slot_client_for(const char *url)
         .url = url,
         .event_handler = on_event,
         .timeout_ms = 10000,
+        .buffer_size = 1024,
+        .buffer_size_tx = 1024,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .keep_alive_enable = true,
         .save_client_session = true,   // TLS session ticket -> fast reconnect
@@ -166,6 +178,12 @@ static esp_err_t perform_with_timeout(const char *url, esp_http_client_method_t 
         resp->status = 0;
         return ESP_FAIL;
     }
+
+    // Lift Wi-Fi modem sleep for the duration of the HTTP/TLS round-trip so
+    // interactive requests do not stall behind DTIM beacon intervals.
+    bool boosted = wifi_is_connected();
+    if (boosted)
+        wifi_set_low_latency(true);
 
     response_buf_t rb = {0};
     esp_err_t err = ESP_FAIL;
@@ -223,6 +241,9 @@ static esp_err_t perform_with_timeout(const char *url, esp_http_client_method_t 
         resp->body_len = 0;
         resp->status = 0;
     }
+
+    if (boosted)
+        wifi_set_low_latency(false);
 
     // Detach our stack-local buffer before releasing the lock.
     esp_http_client_set_user_data(client, NULL);
