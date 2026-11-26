@@ -39,3 +39,11 @@ idf.py -B /tmp/nucula-build -D IDF_TARGET=esp32c3 build
 Use a fresh output directory for each host run. The runners require Clang, OpenSSL and cJSON (default prefix `/opt/homebrew`; override with `--prefix`). The wallet runner additionally uses TinyCBOR from `managed_components`, provisioned by an ESP-IDF build, and mbedTLS from `IDF_PATH`.
 
 Coverage includes valid and malformed witnesses, quote/transaction binding, receiver keys, mint/send/receive/melt, private-data isolation, token round trips, JSON allocation failures, counter migration/overflow, lost responses, proof-save failures, invalid mint signatures and recovery across reload. Device flashing, NFC timing, hardware power-cut testing and interoperability with a deployed PR #443 mint still require validation.
+
+## Rev B and Wi-Fi compatibility
+
+The original v3 branch still had XIAO prototype pins and compiled Wi-Fi credentials. It now uses Nucula v2 Rev B wiring (I²C 4/5, NFC IRQ/VEN 6/7, OLED boost/reset 3/10), external I²C pull-ups, the existing Rev B display power sequence, and native USB without occupying keypad GPIO20.
+
+Wi-Fi settings and the private USB setup protocol come from `perf/esp32c3-optimizations` (`ae10a2f`). Saved `web_wifi/station` settings take precedence over legacy driver settings, and firmware no longer overwrites saved settings with a header file. SSIDs retain leading/trailing spaces. The related HTTP radio wake holds and buffer sizing are included; the separate secp256k1/codec optimizations have not been merged into the v3 cryptography.
+
+The OLED driver and its failure tests were carried from the Rev B work in the original workspace. The console retains the v3 branch's 24 KB stack for BLS verification. Startup preserves unreadable NVS instead of erasing it.

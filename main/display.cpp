@@ -2,8 +2,10 @@
 
 #include <cstring>
 #include <esp_log.h>
+#include <esp_system.h>
 #include <driver/gpio.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <freertos/task.h>
 
 #include "board.h"
@@ -17,13 +19,15 @@
 #define PIN_RST  BOARD_OLED_RST_PIN
 
 static i2c_master_dev_handle_t s_dev = nullptr;
+// Reboot can race a UI transfer; serialize device removal with updates.
+static SemaphoreHandle_t s_io_mutex = nullptr;
 
-// Page-format framebuffer: 8 pages × 128 columns = 1024 bytes.
-// Each byte holds 8 vertical pixels; bit 0 = topmost in the page.
-static uint8_t s_fb[LCD_H / 8 * LCD_W];
-
-// Transmit buffer: one control byte + framebuffer (static to avoid stack use)
-static uint8_t s_tx[1 + sizeof(s_fb)];
+// Transmit buffer: one SSD1309 data control byte followed directly by the
+// 8 pages × 128 columns = 1024-byte page-format framebuffer (bit 0 = top).
+// Sharing one buffer saves 1 KB static DRAM and removes a per-frame memcpy.
+static constexpr size_t FB_SIZE = (LCD_H / 8) * LCD_W;
+static uint8_t s_tx[1 + FB_SIZE];
+static uint8_t *const s_fb = s_tx + 1;
 
 // -------------------------------------------------------------------------
 // 5×7 bitmap font (ASCII 32-126, 5 bytes per char, column-major, LSB=top)
@@ -134,7 +138,7 @@ static const uint8_t font5x7[][5] = {
 // SSD1309 I2C helpers
 // -------------------------------------------------------------------------
 
-static void ssd1309_send_cmds(const uint8_t *cmds, size_t len)
+static esp_err_t ssd1309_send_cmds(const uint8_t *cmds, size_t len)
 {
     // Prepend command control byte
     uint8_t buf[32];
@@ -143,10 +147,50 @@ static void ssd1309_send_cmds(const uint8_t *cmds, size_t len)
     while (len > 0) {
         chunk = (len > sizeof(buf) - 1) ? sizeof(buf) - 1 : len;
         memcpy(buf + 1, cmds, chunk);
-        i2c_master_transmit(s_dev, buf, chunk + 1, 100);
+        esp_err_t err = i2c_master_transmit(s_dev, buf, chunk + 1, 100);
+        if (err != ESP_OK) return err;
         cmds += chunk;
         len  -= chunk;
     }
+    return ESP_OK;
+}
+
+static esp_err_t ssd1309_update(void)
+{
+    static const uint8_t window[] = {
+        0x21, 0x00, 0x7F,   // column range 0–127
+        0x22, 0x00, 0x07,   // page range 0–7
+    };
+    esp_err_t err = ssd1309_send_cmds(window, sizeof(window));
+    if (err != ESP_OK) return err;
+
+    s_tx[0] = SSD1309_DATA;
+    return i2c_master_transmit(s_dev, s_tx, sizeof(s_tx), 200);
+}
+
+// Caller holds s_io_mutex, or is initializing before UI tasks start.
+static void display_disable(void)
+{
+    if (s_dev) {
+        const uint8_t off[] = {0xAE};
+        esp_err_t err = ssd1309_send_cmds(off, sizeof(off));
+        if (err != ESP_OK)
+            ESP_LOGW(TAG, "display-off failed: %s; cutting OLED power", esp_err_to_name(err));
+    }
+    gpio_set_level(BOARD_OLED_POWER_PIN, 0);
+    if (s_dev) vTaskDelay(pdMS_TO_TICKS(100));
+    gpio_set_level(PIN_RST, 1);
+    if (s_dev) {
+        i2c_master_bus_rm_device(s_dev);
+        s_dev = nullptr;
+    }
+}
+
+static void display_shutdown(void)
+{
+    xSemaphoreTake(s_io_mutex, portMAX_DELAY);
+    display_disable();
+    xSemaphoreGive(s_io_mutex);
 }
 
 // -------------------------------------------------------------------------
@@ -155,25 +199,31 @@ static void ssd1309_send_cmds(const uint8_t *cmds, size_t len)
 
 void display_init(i2c_master_bus_handle_t bus)
 {
+    // Rev B: logic stays on; GPIO3 gates the boost and Q5 inverts GPIO10.
+    ESP_ERROR_CHECK(gpio_set_level(BOARD_OLED_POWER_PIN, 0));
+    ESP_ERROR_CHECK(gpio_set_direction(BOARD_OLED_POWER_PIN, GPIO_MODE_OUTPUT));
+    ESP_ERROR_CHECK(gpio_set_level(PIN_RST, 1));
+    ESP_ERROR_CHECK(gpio_set_direction(PIN_RST, GPIO_MODE_OUTPUT));
     if (!bus) {
         ESP_LOGW(TAG, "no I2C bus, display disabled");
         return;
     }
 
-    // Optional hardware reset
-    if ((int)PIN_RST >= 0) {
-        gpio_reset_pin(PIN_RST);
-        gpio_set_direction(PIN_RST, GPIO_MODE_OUTPUT);
-        gpio_set_level(PIN_RST, 0);
-        vTaskDelay(pdMS_TO_TICKS(10));
-        gpio_set_level(PIN_RST, 1);
-        vTaskDelay(pdMS_TO_TICKS(10));
+    s_io_mutex = xSemaphoreCreateMutex();
+    if (!s_io_mutex) {
+        ESP_LOGE(TAG, "no display mutex, OLED power off");
+        return;
     }
+
+    vTaskDelay(pdMS_TO_TICKS(10));
+    gpio_set_level(PIN_RST, 0);  // release panel RES#
+    vTaskDelay(pdMS_TO_TICKS(10));  // R35/C48 = 10k/100nF; allow >5 RC
 
     // Probe first: on a board without the display every later transmit
     // would just NACK-spam the shared bus.
     if (i2c_master_probe(bus, SSD1309_ADDR, 50) != ESP_OK) {
         ESP_LOGW(TAG, "no display at 0x%02X, display disabled", SSD1309_ADDR);
+        display_disable();
         return;
     }
 
@@ -181,38 +231,51 @@ void display_init(i2c_master_bus_handle_t bus)
     i2c_device_config_t dev_cfg = {};
     dev_cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
     dev_cfg.device_address  = SSD1309_ADDR;
-    dev_cfg.scl_speed_hz    = 400000;
+    dev_cfg.scl_speed_hz    = 100000;
 
     esp_err_t err = i2c_master_bus_add_device(bus, &dev_cfg, &s_dev);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "SSD1309 add failed: %s", esp_err_to_name(err));
         s_dev = nullptr;
+        display_disable();
         return;
     }
 
-    // SSD1309 initialisation (compatible with SSD1306 modules too)
+    // SSD1309 with external VCC; 8Dh is an SSD1306 charge-pump command.
     static const uint8_t init[] = {
+        0xFD, 0x12,        // unlock commands
         0xAE,              // display off
-        0xD5, 0x80,        // clock divide ratio
+        0xD5, 0x70,        // default oscillator, divide by 1
         0xA8, 0x3F,        // multiplex 64
         0xD3, 0x00,        // display offset 0
         0x40,              // start line 0
-        0x8D, 0x14,        // charge pump enable
         0x20, 0x00,        // horizontal addressing mode
         0xA1,              // segment remap (mirror X)
         0xC8,              // COM scan reversed (mirror Y)
         0xDA, 0x12,        // COM pins: alternative, no LR remap
-        0x81, 0xCF,        // contrast
-        0xD9, 0xF1,        // pre-charge period
-        0xDB, 0x40,        // VCOMH deselect level
+        0x81, 0x7F,        // default contrast; qualify panel current on hardware
+        0xD9, 0x22,        // default pre-charge for external VCC
+        0xDB, 0x34,        // SSD1309 default VCOMH: 0.78 x VCC
         0xA4,              // output follows RAM
         0xA6,              // normal display (not inverted)
-        0xAF,              // display on
     };
-    ssd1309_send_cmds(init, sizeof(init));
-
-    memset(s_fb, 0, sizeof(s_fb));
-    display_update();
+    err = esp_register_shutdown_handler(display_shutdown);
+    if (err == ESP_OK) err = ssd1309_send_cmds(init, sizeof(init));
+    memset(s_fb, 0, FB_SIZE);
+    if (err == ESP_OK) err = ssd1309_update();  // clear RAM before lighting glass
+    if (err == ESP_OK) {
+        err = gpio_set_level(BOARD_OLED_POWER_PIN, 1);
+        // shortcut: 100ms boost settling is a bring-up margin; qualify on Rev B hardware.
+        vTaskDelay(pdMS_TO_TICKS(100));
+        const uint8_t on[] = {0xAF};
+        if (err == ESP_OK) err = ssd1309_send_cmds(on, sizeof(on));
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "SSD1309 init failed: %s; OLED power off", esp_err_to_name(err));
+        display_disable();
+        return;
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));  // SSD1309 tAF before SEG/COM are on
 
     ESP_LOGI(TAG, "SSD1309 initialized (%dx%d I2C 0x%02X)", LCD_W, LCD_H, SSD1309_ADDR);
 }
@@ -223,24 +286,21 @@ void display_init(i2c_master_bus_handle_t bus)
 
 void display_update(void)
 {
-    if (!s_dev) return;
-
-    // Set draw window to full screen
-    static const uint8_t window[] = {
-        0x21, 0x00, 0x7F,   // column range 0–127
-        0x22, 0x00, 0x07,   // page range 0–7
-    };
-    ssd1309_send_cmds(window, sizeof(window));
-
-    // Push framebuffer
-    s_tx[0] = SSD1309_DATA;
-    memcpy(s_tx + 1, s_fb, sizeof(s_fb));
-    i2c_master_transmit(s_dev, s_tx, sizeof(s_tx), 200);
+    if (!s_io_mutex) return;
+    xSemaphoreTake(s_io_mutex, portMAX_DELAY);
+    if (s_dev) {
+        esp_err_t err = ssd1309_update();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "display update failed: %s; OLED power off", esp_err_to_name(err));
+            display_disable();
+        }
+    }
+    xSemaphoreGive(s_io_mutex);
 }
 
 void display_clear(void)
 {
-    memset(s_fb, 0, sizeof(s_fb));
+    memset(s_fb, 0, FB_SIZE);
 }
 
 // -------------------------------------------------------------------------
@@ -266,16 +326,25 @@ void display_fill_rect(int x, int y, int w, int h, uint16_t color)
     if (x2 <= x || y2 <= y) return;
 
     bool on = (color != 0);
-    for (int row = y; row < y2; row++) {
-        uint8_t mask = 1 << (row & 7);
-        int page_off = (row >> 3) * LCD_W;
-        if (on) {
-            for (int col = x; col < x2; col++)
-                s_fb[page_off + col] |= mask;
+    int p_start = y >> 3;
+    int p_end   = (y2 - 1) >> 3;
+    size_t span = (size_t)(x2 - x);
+
+    for (int p = p_start; p <= p_end; p++) {
+        int top = (p == p_start) ? (y & 7) : 0;
+        int bot = (p == p_end)   ? ((y2 - 1) & 7) : 7;
+        uint8_t mask = (uint8_t)(((1u << (bot - top + 1)) - 1u) << top);
+        uint8_t *dst = s_fb + p * LCD_W + x;
+
+        if (mask == 0xFF) {
+            memset(dst, on ? 0xFF : 0x00, span);
+        } else if (on) {
+            for (size_t i = 0; i < span; i++)
+                dst[i] |= mask;
         } else {
-            uint8_t nmask = ~mask;
-            for (int col = x; col < x2; col++)
-                s_fb[page_off + col] &= nmask;
+            uint8_t nmask = (uint8_t)~mask;
+            for (size_t i = 0; i < span; i++)
+                dst[i] &= nmask;
         }
     }
 }
@@ -292,9 +361,43 @@ void display_hline(int x, int y, int w)
 void display_text_color(int x, int y, const char *text,
                         uint16_t fg, uint16_t bg, int scale)
 {
-    if (!text || !*text) return;
+    if (!text || !*text || scale <= 0) return;
     bool fg_on = (fg != 0);
     bool bg_on = (bg != 0);
+
+    // Fast page-byte path for scale == 1 with non-negative y (nearly all UI text)
+    if (scale == 1 && y >= 0) {
+        if (y >= LCD_H) return;
+        int p0    = y >> 3;
+        int shift = y & 7;
+        uint8_t *page0 = s_fb + p0 * LCD_W;
+        uint8_t *page1 = (shift && p0 + 1 < LCD_H / 8) ? (page0 + LCD_W) : nullptr;
+        uint8_t nm0 = (uint8_t)~(0xFFu << shift);
+        uint8_t nm1 = (uint8_t)~((1u << shift) - 1u);
+
+        for (; *text; text++, x += FONT_ADVANCE) {
+            if (x + FONT_ADVANCE > LCD_W) break;
+            char ch = *text;
+            if (ch < 32 || ch > 126) ch = '?';
+            const uint8_t *glyph = font5x7[ch - 32];
+
+            for (int col = 0; col < FONT_ADVANCE; col++) {
+                int px = x + col;
+                if (px < 0) continue;
+                uint8_t g = (col < FONT_W) ? glyph[col] : 0;
+                uint8_t bits = (fg_on == bg_on) ? (fg_on ? 0xFF : 0x00)
+                                                : (fg_on ? g : (uint8_t)~g);
+                if (shift == 0) {
+                    page0[px] = bits;
+                } else {
+                    page0[px] = (uint8_t)((page0[px] & nm0) | (uint8_t)(bits << shift));
+                    if (page1)
+                        page1[px] = (uint8_t)((page1[px] & nm1) | (uint8_t)(bits >> (8 - shift)));
+                }
+            }
+        }
+        return;
+    }
 
     for (; *text; text++, x += FONT_ADVANCE * scale) {
         if (x + FONT_ADVANCE * scale > LCD_W) break;
@@ -304,15 +407,32 @@ void display_text_color(int x, int y, const char *text,
         const uint8_t *glyph = font5x7[ch - 32];
 
         for (int row = 0; row < FONT_H; row++) {
-            int py = y + row * scale;
-            if (py >= LCD_H) break;
+            int py0 = y + row * scale;
+            if (py0 >= LCD_H) break;
+            int py1 = py0 + scale;
+            if (py1 <= 0) continue;
+            if (py0 < 0) py0 = 0;
+            if (py1 > LCD_H) py1 = LCD_H;
+
             for (int col = 0; col < FONT_ADVANCE; col++) {
                 bool on = (col < FONT_W) && (glyph[col] & (1 << row));
                 bool pixel = on ? fg_on : bg_on;
-                int px = x + col * scale;
-                for (int sy = 0; sy < scale && py + sy < LCD_H; sy++)
-                    for (int sx = 0; sx < scale && px + sx < LCD_W; sx++)
-                        display_pixel(px + sx, py + sy, pixel);
+                int px0 = x + col * scale;
+                int px1 = px0 + scale;
+                if (px0 < 0) px0 = 0;
+                if (px1 > LCD_W) px1 = LCD_W;
+                if (px0 >= px1) continue;
+
+                for (int py = py0; py < py1; py++) {
+                    uint8_t mask = (uint8_t)(1u << (py & 7));
+                    uint8_t *dst = s_fb + (py >> 3) * LCD_W;
+                    if (pixel) {
+                        for (int px = px0; px < px1; px++) dst[px] |= mask;
+                    } else {
+                        uint8_t nmask = (uint8_t)~mask;
+                        for (int px = px0; px < px1; px++) dst[px] &= nmask;
+                    }
+                }
             }
         }
     }
@@ -323,12 +443,12 @@ void display_text(int x, int y, const char *text, int scale)
     display_text_color(x, y, text, COLOR_WHITE, COLOR_BLACK, scale);
 }
 
-void display_text_inv(int x, int y, const char *text, int scale)
-{
-    display_text_color(x, y, text, COLOR_BLACK, COLOR_WHITE, scale);
-}
-
 int display_text_width(const char *text, int scale)
 {
     return (int)strlen(text) * FONT_ADVANCE * scale;
+}
+
+void display_text_inv(int x, int y, const char *text, int scale)
+{
+    display_text_color(x, y, text, COLOR_BLACK, COLOR_WHITE, scale);
 }

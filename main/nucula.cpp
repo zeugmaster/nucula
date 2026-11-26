@@ -16,6 +16,7 @@
 #include "nutroot.h"
 #include "nutroot_current_test.h"
 #include "wifi.h"
+#include "web_setup.h"
 #include "http.h"
 #include "cashu.hpp"
 #include "cashu_json.hpp"
@@ -115,6 +116,11 @@ static void cmd_status(const char *arg)
     wallet_store_guard guard;
     (void)arg;
     console_printf("wifi:    %s\r\n", wifi_is_connected() ? "connected" : "disconnected");
+    char ssid[33], ip[16];
+    wifi_setup_ssid(ssid, sizeof(ssid));
+    wifi_setup_ip(ip, sizeof(ip));
+    console_printf("ssid:    \"%s\" (%u bytes)\r\n", ssid, (unsigned)strlen(ssid));
+    console_printf("ip:      %s\r\n", ip[0] ? ip : "none");
     console_printf("nfc:     %s\r\n", nfc_status_str());
     console_printf("heap:    %lu bytes free\r\n",
                    (unsigned long)esp_get_free_heap_size());
@@ -1068,18 +1074,24 @@ extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "nucula cashu wallet");
 
+    // Establish the Rev B power/reset levels before waiting for the network.
+    if (i2c_bus_init() != ESP_OK)
+        ESP_LOGW(TAG, "I2C bus init failed; display/keypad/NFC disabled");
+    display_init(i2c_bus_get());
+    display_text(28, 20, "nucula", 2);
+    display_text(34, 42, "Starting...", 1);
+    display_update();
+
     // NVS backs the wallet itself (proofs, seed, keysets) — bring it up
     // first and independently of WiFi.
     esp_err_t nvs_err = nvs_flash_init();
-    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES ||
-        nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "NVS needs erase (%s)", esp_err_to_name(nvs_err));
-        if (nvs_flash_erase() == ESP_OK)
-            nvs_err = nvs_flash_init();
+    if (nvs_err != ESP_OK) {
+        console_init(NULL);
+        web_setup_register(false);
+        console_start();
+        console_notify("NVS init failed: %s; storage preserved, wallet stopped\r\n", esp_err_to_name(nvs_err));
+        return;
     }
-    if (nvs_err != ESP_OK)
-        ESP_LOGE(TAG, "NVS init failed: %s — wallet persistence disabled",
-                 esp_err_to_name(nvs_err));
 
     http_init();
 
@@ -1110,8 +1122,6 @@ extern "C" void app_main(void)
     console_register_cmd("log",     cmd_log,      "log <e|w|i|d> [tag] — set log level");
     console_register_cmd("bench",   cmd_bench,    "bench [legacy flags|bls [fast]|mpi mask|verify flags cap|scale flags cap n keys reps|contend flags|nutroot [current|quick|large|full] [opt=N]]");
     console_register_cmd("selftest", cmd_selftest, "run crypto/keyset self-tests");
-    console_start();
-
     secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
     if (!ctx) {
         ESP_LOGE(TAG, "failed to create secp256k1 context");
@@ -1128,6 +1138,8 @@ extern "C" void app_main(void)
         ESP_LOGE(TAG, "wallet store init failed");
         return;
     }
+    web_setup_register(true);
+    console_start();
 
 #if CONFIG_NUCULA_SELFTEST_ON_BOOT
     crypto_run_tests(ctx);
@@ -1222,14 +1234,6 @@ extern "C" void app_main(void)
                 vTaskDelay(pdMS_TO_TICKS(5000));
         }
     }, "wifi_drain", 20480, NULL, 4, NULL);
-
-    // Shared I2C bus for display, keypad, and NFC. Each driver probes for
-    // its device and disables itself when absent, so a bare module still
-    // boots into a fully working console + wallet.
-    if (i2c_bus_init() != ESP_OK)
-        ESP_LOGW(TAG, "I2C bus init failed; display/keypad/NFC disabled");
-
-    display_init(i2c_bus_get());
 
     if (keypad_init(i2c_bus_get()) == ESP_OK) {
         keypad_start_task();

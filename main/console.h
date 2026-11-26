@@ -34,6 +34,7 @@ typedef struct {
 int console_init(const console_config_t *config);
 int console_register_cmd(const char *name, console_cmd_handler_t handler, const char *help_text);
 int console_start(void);
+void console_notify(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void nucula_console_write(const char *str);
 void console_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 

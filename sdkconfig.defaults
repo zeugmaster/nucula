@@ -1,3 +1,4 @@
+CONFIG_IDF_TARGET="esp32c3"
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
@@ -49,3 +50,6 @@ CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
 # paying the full handshake + cert-chain verification again. Tickets live
 # inside the cached esp_http_client handles (http.c connection cache).
 CONFIG_ESP_TLS_CLIENT_SESSION_TICKETS=y
+
+# Native USB leaves GPIO20 free for the Rev B keypad interrupt.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

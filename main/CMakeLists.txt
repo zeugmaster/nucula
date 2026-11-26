@@ -1,12 +1,12 @@
 idf_component_register(SRCS "nucula.cpp" "crypto.c" "crypto_bls.c" "crypto_test.c"
                             "crypto_bls_test.c" "crypto_concurrency_test.c" "nutroot.c" "nutroot_prepare.c" "nutroot_wallet.cpp" "nutroot_test.c" "nutroot_current_test.c" "cashu_json.cpp"
                             "cashu_cbor.cpp" "wifi.c" "http.c" "hex.c" "wallet.cpp" "wallet_recovery.cpp" "keyset.cpp"
-                            "console.cpp" "display.cpp" "nfc.cpp" "ndef.cpp" "keypad.c" "i2c_bus.c"
+                            "console.cpp" "web_setup.cpp" "display.cpp" "nfc.cpp" "ndef.cpp" "keypad.c" "i2c_bus.c"
                             "bip39.c" "nut10.cpp" "base64url.cpp" "wallet_store.cpp" "ui.cpp"
                             "unit.cpp"
                     INCLUDE_DIRS "."
                     REQUIRES secp256k1 pn7160 blst
-                    PRIV_REQUIRES log mbedtls esp_timer json cbor esp_wifi esp_event
+                    PRIV_REQUIRES esp_app_format log mbedtls esp_timer json cbor esp_wifi esp_event
                                  esp_netif nvs_flash esp_http_client
                                  esp_driver_usb_serial_jtag vfs
                                  esp_driver_gpio driver)

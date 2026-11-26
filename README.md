@@ -8,7 +8,7 @@ This branch implements the v3 proposal pinned in [the compatibility notes](docs/
 
 ## Hardware
 
-Reference board: Seeed XIAO ESP32-C3. All three peripherals share one I2C bus; each is probed at boot and the firmware runs fine (console + wallet) with any or all of them absent.
+Reference board: Nucula v2 Rev B (ESP32-C3-MINI-1-H4X). All three peripherals share one I2C bus; each is probed at boot and the firmware runs fine (console + wallet) with any or all of them absent.
 
 | Component | Role | Interface |
 |-----------|------|-----------|
@@ -19,14 +19,15 @@ Reference board: Seeed XIAO ESP32-C3. All three peripherals share one I2C bus; e
 
 ### Pin Map
 
-| Signal | GPIO | XIAO pin |
+| Signal | GPIO | Note |
 |--------|------|----------|
-| I2C SDA (shared) | 6 | D4 |
-| I2C SCL (shared) | 7 | D5 |
-| PN7160 IRQ | 3 | D1 |
-| PN7160 VEN | 2 | D0 |
-| PN7160 DWL | 4 | D2 |
-| SSD1309 RST | 5 | D3 |
+| I2C SDA (shared) | 4 | — |
+| I2C SCL (shared) | 5 | — |
+| PN7160 IRQ | 6 | — |
+| PN7160 VEN | 7 | — |
+| PN7160 DWL | Strapped low | — |
+| SSD1309 boost enable | 3 | Active high |
+| SSD1309 reset | 10 | Active high through Q5 |
 
 Pins and addresses live in `main/board.h` (PN7160 control pins in `components/pn7160/include/nci.h`).
 
@@ -36,21 +37,21 @@ Requires [ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/stable/esp32c3
 
 ```bash
 # 1. Configure WiFi credentials
-cp main/wifi_config.example.h main/wifi_config.h
-# Edit main/wifi_config.h with your SSID and password
+# Wi-Fi credentials are stored in NVS; builds contain no credentials.
+# Existing USB setup settings take precedence over legacy driver settings.
 
 # 2. Build, flash, and open serial monitor
 idf.py build flash monitor
 ```
 
-On the very first flash (or after changing the partition table), erase flash first — **this wipes the wallet**, so never do it on a device holding funds:
+Only use the following commands for an intentionally blank device — **they wipe the wallet and Wi-Fi settings**:
 
 ```bash
 idf.py erase-flash
 idf.py build flash monitor
 ```
 
-A plain `idf.py flash` preserves the NVS partition, so reflashing firmware keeps your proofs and seed.
+A plain `idf.py flash` with the same partition table preserves NVS, including proofs, seed and Wi-Fi settings. Configure Wi-Fi through [USB setup](https://nucula.dev/setup); SSID spaces are preserved. This branch targets Rev B, including its inverted OLED reset and switched boost supply.
 
 ## Getting Started
 
