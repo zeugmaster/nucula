@@ -164,7 +164,7 @@ static bool mint_post(const char* op, const std::string& url,
         http_response_free(&resp);
         return false;
     }
-    bool ok = deserialize(resp.body, out);
+    bool ok = deserialize(resp.body, resp.body_len, out);
     http_response_free(&resp);
     if (!ok) {
         ESP_LOGE(TAG, "%s: failed to parse response", op);
@@ -202,7 +202,7 @@ static bool mint_get(const char* op, const std::string& url, T& out,
         http_response_free(&resp);
         return false;
     }
-    bool ok = deserialize(resp.body, out);
+    bool ok = deserialize(resp.body, resp.body_len, out);
     http_response_free(&resp);
     if (!ok) {
         if (quiet)
@@ -259,14 +259,11 @@ static bool attach_p2pk_witnesses(secp256k1_context* ctx,
         char sig_hex[129];
         bytes_to_hex(sig, 64, sig_hex);
 
-        cJSON* witness = cJSON_CreateObject();
-        cJSON* arr = cJSON_CreateArray();
-        cJSON_AddItemToArray(arr, cJSON_CreateString(sig_hex));
-        cJSON_AddItemToObject(witness, "signatures", arr);
-        char* w = cJSON_PrintUnformatted(witness);
-        p.witness = std::string(w ? w : "");
-        if (w) cJSON_free(w);
-        cJSON_Delete(witness);
+        char witness_buf[160];
+        int wlen = snprintf(witness_buf, sizeof(witness_buf),
+                            "{\"signatures\":[\"%s\"]}", sig_hex);
+        p.witness = (wlen > 0 && (size_t)wlen < sizeof(witness_buf))
+            ? std::string(witness_buf, (size_t)wlen) : std::string();
     }
     return true;
 }
@@ -277,6 +274,7 @@ static bool attach_p2pk_witnesses(secp256k1_context* ctx,
 // save_proofs() call and log line.
 int64_t Wallet::adopt_proofs(std::vector<Proof>& fresh)
 {
+    proofs_.reserve(proofs_.size() + fresh.size());
     int64_t sum = 0;
     for (auto& p : fresh) {
         p.witness = std::nullopt;
@@ -360,8 +358,7 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
     if (!attach_p2pk_witnesses(ctx_, stripped))
         return false;
 
-    SwapRequest req{stripped, blinding.outputs};
-    std::string body = serialize(req);
+    std::string body = serialize_swap_request(stripped, blinding.outputs);
     if (body.empty()) {
         ESP_LOGE(TAG, "swap: request serialization failed");
         return false;
@@ -378,8 +375,9 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
 
     // Separate send proofs from change proofs
     new_proofs.clear();
+    new_proofs.reserve(send_dist.size());
     change.clear();
-    auto remaining = all_proofs;
+    std::vector<Proof> remaining = std::move(all_proofs);
 
     for (int n : send_dist) {
         for (auto it = remaining.begin(); it != remaining.end(); ++it) {
@@ -505,9 +503,12 @@ bool Wallet::verify_forwarded_dleq(const std::vector<Proof>& inputs) const
         if (plen > CASHU_MAX_POINT_LEN)
             return false;
 
-        std::string A_hex;
-        if (!keyset_key_hex_for_amount(*ks, (uint64_t)p.amount, A_hex))
+        auto key_it = ks->keys.find((uint64_t)p.amount);
+        if (key_it == ks->keys.end()) {
+            ESP_LOGE(TAG, "no key for amount %d in keyset %s", p.amount, ks->id.c_str());
             return false;
+        }
+        const std::string& A_hex = key_it->second;
         unsigned char A_bytes[CASHU_MAX_POINT_LEN];
         if (A_hex.size() != plen * 2 || !hex_to_bytes(A_hex.c_str(), A_bytes, plen)) {
             ESP_LOGE(TAG, "receive: invalid mint key hex on proof[%d]", (int)i);
@@ -563,19 +564,17 @@ bool Wallet::request_mint_quote(int amount, const std::string& unit,
         return false;
     }
 
-    cJSON* body = cJSON_CreateObject();
-    cJSON_AddNumberToObject(body, "amount", amount);
-    cJSON_AddStringToObject(body, "unit", unit.c_str());
-    char* body_str = cJSON_PrintUnformatted(body);
-    cJSON_Delete(body);
-    if (!body_str) {
+    // `unit` passed unit_token_valid ([a-z0-9_-]), so no escaping needed.
+    char body_str[96];
+    int blen = snprintf(body_str, sizeof(body_str),
+                        "{\"amount\":%d,\"unit\":\"%s\"}", amount, unit.c_str());
+    if (blen <= 0 || (size_t)blen >= sizeof(body_str)) {
         ESP_LOGE(TAG, "mint quote: request serialization failed");
         return false;
     }
 
     bool ok = mint_post("mint quote", mint_url_ + "/v1/mint/quote/" + method,
                         body_str, quote_out, &last_error_);
-    cJSON_free(body_str);
     if (!ok)
         return false;
 
@@ -637,8 +636,7 @@ bool Wallet::mint_tokens(const MintQuote& quote, int amount)
     if (!generate_outputs(amounts, ks->id, blinding))
         return false;
 
-    MintRequest req{quote.quote, blinding.outputs};
-    std::string body = serialize(req);
+    std::string body = serialize_mint_request(quote.quote, blinding.outputs);
     if (body.empty()) {
         ESP_LOGE(TAG, "mint: request serialization failed");
         return false;
@@ -688,21 +686,22 @@ bool Wallet::request_melt_quote(const std::string& request, const std::string& u
         return false;
     }
 
-    cJSON* body = cJSON_CreateObject();
-    cJSON_AddStringToObject(body, "request", request.c_str());
-    cJSON_AddStringToObject(body, "unit", unit.c_str());
-    if (amount)   // PR#382: amountless payment targets (custom methods)
-        cJSON_AddNumberToObject(body, "amount", *amount);
-    char* body_str = cJSON_PrintUnformatted(body);
-    cJSON_Delete(body);
-    if (!body_str) {
-        ESP_LOGE(TAG, "melt quote: request serialization failed");
-        return false;
+    std::string body_str;
+    body_str.reserve(64 + request.size() + unit.size());
+    body_str.append("{\"request\":", 11);
+    json_append_string(body_str, request);
+    body_str.append(",\"unit\":", 8);
+    json_append_string(body_str, unit);
+    if (amount) {   // PR#382: amountless payment targets (custom methods)
+        char amt_buf[24];
+        int n = snprintf(amt_buf, sizeof(amt_buf), ",\"amount\":%d", *amount);
+        if (n > 0 && (size_t)n < sizeof(amt_buf))
+            body_str.append(amt_buf, (size_t)n);
     }
+    body_str.push_back('}');
 
     bool ok = mint_post("melt quote", mint_url_ + "/v1/melt/quote/" + method,
-                        body_str, quote_out, &last_error_);
-    cJSON_free(body_str);
+                        body_str.c_str(), quote_out, &last_error_);
     if (!ok)
         return false;
 
@@ -781,13 +780,9 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
             return false;
     }
 
-    MeltRequest req;
-    req.quote = quote.quote;
-    req.inputs = strip_dleq_for_send(selected);
-    if (n_blank > 0)
-        req.outputs = change_blinding.outputs;
-
-    std::string body = serialize(req);
+    std::vector<Proof> stripped = strip_dleq_for_send(selected);
+    std::string body = serialize_melt_request(
+        quote.quote, stripped, n_blank > 0 ? &change_blinding.outputs : nullptr);
     if (body.empty()) {
         ESP_LOGE(TAG, "melt: request serialization failed");
         return false;

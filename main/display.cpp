@@ -18,12 +18,12 @@
 
 static i2c_master_dev_handle_t s_dev = nullptr;
 
-// Page-format framebuffer: 8 pages × 128 columns = 1024 bytes.
-// Each byte holds 8 vertical pixels; bit 0 = topmost in the page.
-static uint8_t s_fb[LCD_H / 8 * LCD_W];
-
-// Transmit buffer: one control byte + framebuffer (static to avoid stack use)
-static uint8_t s_tx[1 + sizeof(s_fb)];
+// Transmit buffer: one SSD1309 data control byte followed directly by the
+// 8 pages × 128 columns = 1024-byte page-format framebuffer (bit 0 = top).
+// Sharing one buffer saves 1 KB static DRAM and removes a per-frame memcpy.
+static constexpr size_t FB_SIZE = (LCD_H / 8) * LCD_W;
+static uint8_t s_tx[1 + FB_SIZE];
+static uint8_t *const s_fb = s_tx + 1;
 
 // -------------------------------------------------------------------------
 // 5×7 bitmap font (ASCII 32-126, 5 bytes per char, column-major, LSB=top)
@@ -221,7 +221,7 @@ void display_init(i2c_master_bus_handle_t bus)
     };
     ssd1309_send_cmds(init, sizeof(init));
 
-    memset(s_fb, 0, sizeof(s_fb));
+    memset(s_fb, 0, FB_SIZE);
     display_update();
 
     ESP_LOGI(TAG, "SSD1309 initialized (%dx%d I2C 0x%02X)", LCD_W, LCD_H, SSD1309_ADDR);
@@ -244,13 +244,12 @@ void display_update(void)
 
     // Push framebuffer
     s_tx[0] = SSD1309_DATA;
-    memcpy(s_tx + 1, s_fb, sizeof(s_fb));
     i2c_master_transmit(s_dev, s_tx, sizeof(s_tx), 200);
 }
 
 void display_clear(void)
 {
-    memset(s_fb, 0, sizeof(s_fb));
+    memset(s_fb, 0, FB_SIZE);
 }
 
 // -------------------------------------------------------------------------
@@ -276,16 +275,25 @@ void display_fill_rect(int x, int y, int w, int h, uint16_t color)
     if (x2 <= x || y2 <= y) return;
 
     bool on = (color != 0);
-    for (int row = y; row < y2; row++) {
-        uint8_t mask = 1 << (row & 7);
-        int page_off = (row >> 3) * LCD_W;
-        if (on) {
-            for (int col = x; col < x2; col++)
-                s_fb[page_off + col] |= mask;
+    int p_start = y >> 3;
+    int p_end   = (y2 - 1) >> 3;
+    size_t span = (size_t)(x2 - x);
+
+    for (int p = p_start; p <= p_end; p++) {
+        int top = (p == p_start) ? (y & 7) : 0;
+        int bot = (p == p_end)   ? ((y2 - 1) & 7) : 7;
+        uint8_t mask = (uint8_t)(((1u << (bot - top + 1)) - 1u) << top);
+        uint8_t *dst = s_fb + p * LCD_W + x;
+
+        if (mask == 0xFF) {
+            memset(dst, on ? 0xFF : 0x00, span);
+        } else if (on) {
+            for (size_t i = 0; i < span; i++)
+                dst[i] |= mask;
         } else {
-            uint8_t nmask = ~mask;
-            for (int col = x; col < x2; col++)
-                s_fb[page_off + col] &= nmask;
+            uint8_t nmask = (uint8_t)~mask;
+            for (size_t i = 0; i < span; i++)
+                dst[i] &= nmask;
         }
     }
 }
@@ -302,9 +310,43 @@ void display_hline(int x, int y, int w)
 void display_text_color(int x, int y, const char *text,
                         uint16_t fg, uint16_t bg, int scale)
 {
-    if (!text || !*text) return;
+    if (!text || !*text || scale <= 0) return;
     bool fg_on = (fg != 0);
     bool bg_on = (bg != 0);
+
+    // Fast page-byte path for scale == 1 with non-negative y (nearly all UI text)
+    if (scale == 1 && y >= 0) {
+        if (y >= LCD_H) return;
+        int p0    = y >> 3;
+        int shift = y & 7;
+        uint8_t *page0 = s_fb + p0 * LCD_W;
+        uint8_t *page1 = (shift && p0 + 1 < LCD_H / 8) ? (page0 + LCD_W) : nullptr;
+        uint8_t nm0 = (uint8_t)~(0xFFu << shift);
+        uint8_t nm1 = (uint8_t)~((1u << shift) - 1u);
+
+        for (; *text; text++, x += FONT_ADVANCE) {
+            if (x + FONT_ADVANCE > LCD_W) break;
+            char ch = *text;
+            if (ch < 32 || ch > 126) ch = '?';
+            const uint8_t *glyph = font5x7[ch - 32];
+
+            for (int col = 0; col < FONT_ADVANCE; col++) {
+                int px = x + col;
+                if (px < 0) continue;
+                uint8_t g = (col < FONT_W) ? glyph[col] : 0;
+                uint8_t bits = (fg_on == bg_on) ? (fg_on ? 0xFF : 0x00)
+                                                : (fg_on ? g : (uint8_t)~g);
+                if (shift == 0) {
+                    page0[px] = bits;
+                } else {
+                    page0[px] = (uint8_t)((page0[px] & nm0) | (uint8_t)(bits << shift));
+                    if (page1)
+                        page1[px] = (uint8_t)((page1[px] & nm1) | (uint8_t)(bits >> (8 - shift)));
+                }
+            }
+        }
+        return;
+    }
 
     for (; *text; text++, x += FONT_ADVANCE * scale) {
         if (x + FONT_ADVANCE * scale > LCD_W) break;
@@ -314,15 +356,32 @@ void display_text_color(int x, int y, const char *text,
         const uint8_t *glyph = font5x7[ch - 32];
 
         for (int row = 0; row < FONT_H; row++) {
-            int py = y + row * scale;
-            if (py >= LCD_H) break;
+            int py0 = y + row * scale;
+            if (py0 >= LCD_H) break;
+            int py1 = py0 + scale;
+            if (py1 <= 0) continue;
+            if (py0 < 0) py0 = 0;
+            if (py1 > LCD_H) py1 = LCD_H;
+
             for (int col = 0; col < FONT_ADVANCE; col++) {
                 bool on = (col < FONT_W) && (glyph[col] & (1 << row));
                 bool pixel = on ? fg_on : bg_on;
-                int px = x + col * scale;
-                for (int sy = 0; sy < scale && py + sy < LCD_H; sy++)
-                    for (int sx = 0; sx < scale && px + sx < LCD_W; sx++)
-                        display_pixel(px + sx, py + sy, pixel);
+                int px0 = x + col * scale;
+                int px1 = px0 + scale;
+                if (px0 < 0) px0 = 0;
+                if (px1 > LCD_W) px1 = LCD_W;
+                if (px0 >= px1) continue;
+
+                for (int py = py0; py < py1; py++) {
+                    uint8_t mask = (uint8_t)(1u << (py & 7));
+                    uint8_t *dst = s_fb + (py >> 3) * LCD_W;
+                    if (pixel) {
+                        for (int px = px0; px < px1; px++) dst[px] |= mask;
+                    } else {
+                        uint8_t nmask = (uint8_t)~mask;
+                        for (int px = px0; px < px1; px++) dst[px] &= nmask;
+                    }
+                }
             }
         }
     }

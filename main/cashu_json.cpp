@@ -1,6 +1,7 @@
 #include "cashu_json.hpp"
 #include "cashu_cbor.hpp"
 #include "base64url.hpp"
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <esp_log.h>
@@ -9,15 +10,226 @@
 
 namespace cashu {
 
-static const char* get_string(const cJSON* obj, const char* key) {
-    const cJSON* item = cJSON_GetObjectItemCaseSensitive(obj, key);
-    if (!item || !cJSON_IsString(item)) return nullptr;
-    return item->valuestring;
+// ---------------------------------------------------------------------------
+// Direct JSON writer helpers (zero cJSON DOM allocations)
+// ---------------------------------------------------------------------------
+
+void json_append_string(std::string& out, const char* s, size_t len) {
+    out.push_back('"');
+    size_t run_start = 0;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c >= 0x20 && c != '"' && c != '\\')
+            continue;
+        if (i > run_start)
+            out.append(s + run_start, i - run_start);
+        switch (c) {
+        case '"':  out.append("\\\"", 2); break;
+        case '\\': out.append("\\\\", 2); break;
+        case '\b': out.append("\\b", 2);  break;
+        case '\f': out.append("\\f", 2);  break;
+        case '\n': out.append("\\n", 2);  break;
+        case '\r': out.append("\\r", 2);  break;
+        case '\t': out.append("\\t", 2);  break;
+        default: {
+            static const char hex[] = "0123456789abcdef";
+            char esc[6] = {'\\', 'u', '0', '0', hex[c >> 4], hex[c & 0x0F]};
+            out.append(esc, 6);
+            break;
+        }
+        }
+        run_start = i + 1;
+    }
+    if (len > run_start)
+        out.append(s + run_start, len - run_start);
+    out.push_back('"');
 }
 
-static bool get_int(const cJSON* obj, const char* key, int& out) {
-    const cJSON* item = cJSON_GetObjectItemCaseSensitive(obj, key);
-    if (!item || !cJSON_IsNumber(item)) return false;
+static void append_u64(std::string& out, uint64_t v) {
+    char buf[24];
+    char* p = buf + sizeof(buf);
+    do {
+        *--p = (char)('0' + (v % 10));
+        v /= 10;
+    } while (v != 0);
+    out.append(p, (size_t)((buf + sizeof(buf)) - p));
+}
+
+static void append_i64(std::string& out, int64_t v) {
+    if (v < 0) {
+        out.push_back('-');
+        append_u64(out, 0ULL - (uint64_t)v);
+    } else {
+        append_u64(out, (uint64_t)v);
+    }
+}
+
+static void append_dleq(std::string& out, const DLEQ& v) {
+    out.append("{\"e\":", 5);
+    json_append_string(out, v.e);
+    out.append(",\"s\":", 5);
+    json_append_string(out, v.s);
+    if (v.r) {
+        out.append(",\"r\":", 5);
+        json_append_string(out, *v.r);
+    }
+    out.push_back('}');
+}
+
+static void append_blinded_message(std::string& out, const BlindedMessage& v) {
+    out.append("{\"amount\":", 10);
+    append_i64(out, v.amount);
+    out.append(",\"B_\":", 6);
+    json_append_string(out, v.B_);
+    out.append(",\"id\":", 6);
+    json_append_string(out, v.id);
+    out.push_back('}');
+}
+
+static void append_proof(std::string& out, const Proof& v) {
+    out.append("{\"id\":", 6);
+    json_append_string(out, v.id);
+    out.append(",\"amount\":", 10);
+    append_i64(out, v.amount);
+    out.append(",\"secret\":", 10);
+    json_append_string(out, v.secret);
+    out.append(",\"C\":", 5);
+    json_append_string(out, v.C);
+    if (v.dleq) {
+        out.append(",\"dleq\":", 8);
+        append_dleq(out, *v.dleq);
+    }
+    if (v.witness) {
+        out.append(",\"witness\":", 11);
+        json_append_string(out, *v.witness);
+    }
+    out.push_back('}');
+}
+
+static size_t estimate_proofs_json(const std::vector<Proof>& proofs) {
+    size_t est = 2;
+    for (const auto& p : proofs) {
+        est += 64 + p.id.size() + p.secret.size() + p.C.size();
+        if (p.dleq) est += 24 + p.dleq->e.size() + p.dleq->s.size() + (p.dleq->r ? p.dleq->r->size() + 8 : 0);
+        if (p.witness) est += 16 + p.witness->size();
+    }
+    return est;
+}
+
+static size_t estimate_outputs_json(const std::vector<BlindedMessage>& outputs) {
+    size_t est = 2;
+    for (const auto& o : outputs)
+        est += 36 + o.B_.size() + o.id.size();
+    return est;
+}
+
+static void append_proofs_array(std::string& out, const std::vector<Proof>& proofs) {
+    out.push_back('[');
+    for (size_t i = 0; i < proofs.size(); i++) {
+        if (i > 0) out.push_back(',');
+        append_proof(out, proofs[i]);
+    }
+    out.push_back(']');
+}
+
+static void append_outputs_array(std::string& out, const std::vector<BlindedMessage>& outputs) {
+    out.push_back('[');
+    for (size_t i = 0; i < outputs.size(); i++) {
+        if (i > 0) out.push_back(',');
+        append_blinded_message(out, outputs[i]);
+    }
+    out.push_back(']');
+}
+
+std::string serialize(const Keyset& v) {
+    std::string out;
+    out.reserve(128 + v.id.size() + v.unit.size() + v.keys.size() * 82);
+    out.append("{\"id\":", 6);
+    json_append_string(out, v.id);
+    out.append(",\"unit\":", 8);
+    json_append_string(out, v.unit);
+    out.append(",\"active\":", 10);
+    out.append(v.active ? "true" : "false");
+    out.append(",\"input_fee_ppk\":", 17);
+    append_i64(out, v.input_fee_ppk);
+    if (v.final_expiry) {
+        out.append(",\"final_expiry\":", 16);
+        append_i64(out, *v.final_expiry);
+    }
+    out.append(",\"keys\":{", 9);
+    bool first = true;
+    for (const auto& [amount, pubkey] : v.keys) {
+        if (!first) out.push_back(',');
+        first = false;
+        out.push_back('"');
+        append_u64(out, amount);
+        out.append("\":", 2);
+        json_append_string(out, pubkey);
+    }
+    out.append("}}", 2);
+    return out;
+}
+
+std::string serialize_swap_request(const std::vector<Proof>& inputs,
+                                   const std::vector<BlindedMessage>& outputs) {
+    std::string out;
+    out.reserve(32 + estimate_proofs_json(inputs) + estimate_outputs_json(outputs));
+    out.append("{\"inputs\":", 10);
+    append_proofs_array(out, inputs);
+    out.append(",\"outputs\":", 11);
+    append_outputs_array(out, outputs);
+    out.push_back('}');
+    return out;
+}
+
+std::string serialize(const SwapRequest& v) {
+    return serialize_swap_request(v.inputs, v.outputs);
+}
+
+std::string serialize_mint_request(const std::string& quote,
+                                   const std::vector<BlindedMessage>& outputs) {
+    std::string out;
+    out.reserve(32 + quote.size() + estimate_outputs_json(outputs));
+    out.append("{\"quote\":", 9);
+    json_append_string(out, quote);
+    out.append(",\"outputs\":", 11);
+    append_outputs_array(out, outputs);
+    out.push_back('}');
+    return out;
+}
+
+std::string serialize(const MintRequest& v) {
+    return serialize_mint_request(v.quote, v.outputs);
+}
+
+std::string serialize_melt_request(const std::string& quote,
+                                   const std::vector<Proof>& inputs,
+                                   const std::vector<BlindedMessage>* outputs) {
+    std::string out;
+    out.reserve(48 + quote.size() + estimate_proofs_json(inputs)
+                + (outputs ? estimate_outputs_json(*outputs) : 0));
+    out.append("{\"quote\":", 9);
+    json_append_string(out, quote);
+    out.append(",\"inputs\":", 10);
+    append_proofs_array(out, inputs);
+    if (outputs) {
+        out.append(",\"outputs\":", 11);
+        append_outputs_array(out, *outputs);
+    }
+    out.push_back('}');
+    return out;
+}
+
+std::string serialize(const MeltRequest& v) {
+    return serialize_melt_request(v.quote, v.inputs, v.outputs ? &*v.outputs : nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// cJSON single-pass deserialization helpers
+// ---------------------------------------------------------------------------
+
+static bool item_to_int(const cJSON* item, int& out) {
+    if (!cJSON_IsNumber(item)) return false;
     // All protocol ints (amounts, fees) are non-negative and must fit in
     // int32 — valueint saturates silently, so bound via the double value.
     if (item->valuedouble < 0 || item->valuedouble > 2147483647.0)
@@ -26,42 +238,44 @@ static bool get_int(const cJSON* obj, const char* key, int& out) {
     return true;
 }
 
-static bool get_int64(const cJSON* obj, const char* key, int64_t& out) {
-    const cJSON* item = cJSON_GetObjectItemCaseSensitive(obj, key);
-    if (!item || !cJSON_IsNumber(item)) return false;
+static bool item_to_int64(const cJSON* item, int64_t& out) {
+    if (!cJSON_IsNumber(item)) return false;
     out = (int64_t)item->valuedouble;
     return true;
 }
 
-static bool get_bool(const cJSON* obj, const char* key, bool& out) {
-    const cJSON* item = cJSON_GetObjectItemCaseSensitive(obj, key);
-    if (!item) return false;
+static bool item_to_bool(const cJSON* item, bool& out) {
     if (cJSON_IsTrue(item)) { out = true; return true; }
     if (cJSON_IsFalse(item)) { out = false; return true; }
     if (cJSON_IsNumber(item)) { out = item->valueint != 0; return true; }
     return false;
 }
 
+static const char* get_string(const cJSON* obj, const char* key) {
+    const cJSON* item = cJSON_GetObjectItemCaseSensitive(obj, key);
+    if (!item || !cJSON_IsString(item)) return nullptr;
+    return item->valuestring;
+}
+
 // ---------------------------------------------------------------------------
 // DLEQ
 // ---------------------------------------------------------------------------
 
-cJSON* to_json(const DLEQ& v) {
-    cJSON* j = cJSON_CreateObject();
-    cJSON_AddStringToObject(j, "e", v.e.c_str());
-    cJSON_AddStringToObject(j, "s", v.s.c_str());
-    if (v.r)
-        cJSON_AddStringToObject(j, "r", v.r->c_str());
-    return j;
-}
-
 bool from_json(const cJSON* j, DLEQ& out) {
-    const char* e = get_string(j, "e");
-    const char* s = get_string(j, "s");
+    if (!cJSON_IsObject(j)) return false;
+    const char* e = nullptr;
+    const char* s = nullptr;
+    const char* r = nullptr;
+    for (const cJSON* f = j->child; f; f = f->next) {
+        if (!f->string || !cJSON_IsString(f)) continue;
+        if (f->string[1] != '\0') continue;
+        if (f->string[0] == 'e') e = f->valuestring;
+        else if (f->string[0] == 's') s = f->valuestring;
+        else if (f->string[0] == 'r') r = f->valuestring;
+    }
     if (!e || !s) return false;
     out.e = e;
     out.s = s;
-    const char* r = get_string(j, "r");
     out.r = r ? std::optional<std::string>(r) : std::nullopt;
     return true;
 }
@@ -70,19 +284,21 @@ bool from_json(const cJSON* j, DLEQ& out) {
 // BlindedMessage
 // ---------------------------------------------------------------------------
 
-cJSON* to_json(const BlindedMessage& v) {
-    cJSON* j = cJSON_CreateObject();
-    cJSON_AddNumberToObject(j, "amount", v.amount);
-    cJSON_AddStringToObject(j, "B_", v.B_.c_str());
-    cJSON_AddStringToObject(j, "id", v.id.c_str());
-    return j;
-}
-
 bool from_json(const cJSON* j, BlindedMessage& out) {
-    const char* B_ = get_string(j, "B_");
-    const char* id = get_string(j, "id");
-    if (!B_ || !id) return false;
-    if (!get_int(j, "amount", out.amount)) return false;
+    if (!cJSON_IsObject(j)) return false;
+    const char* B_ = nullptr;
+    const char* id = nullptr;
+    bool has_amt = false;
+    for (const cJSON* f = j->child; f; f = f->next) {
+        if (!f->string) continue;
+        if (strcmp(f->string, "B_") == 0 && cJSON_IsString(f))
+            B_ = f->valuestring;
+        else if (strcmp(f->string, "id") == 0 && cJSON_IsString(f))
+            id = f->valuestring;
+        else if (strcmp(f->string, "amount") == 0)
+            has_amt = item_to_int(f, out.amount);
+    }
+    if (!B_ || !id || !has_amt) return false;
     out.B_ = B_;
     out.id = id;
     return true;
@@ -93,17 +309,31 @@ bool from_json(const cJSON* j, BlindedMessage& out) {
 // ---------------------------------------------------------------------------
 
 bool from_json(const cJSON* j, BlindSignature& out) {
-    const char* id = get_string(j, "id");
-    const char* C_ = get_string(j, "C_");
-    if (!id || !C_) return false;
-    if (!get_int(j, "amount", out.amount)) return false;
+    if (!cJSON_IsObject(j)) return false;
+    const char* id = nullptr;
+    const char* C_ = nullptr;
+    const cJSON* dleq = nullptr;
+    bool has_amt = false;
+    for (const cJSON* f = j->child; f; f = f->next) {
+        if (!f->string) continue;
+        if (strcmp(f->string, "id") == 0 && cJSON_IsString(f))
+            id = f->valuestring;
+        else if (strcmp(f->string, "C_") == 0 && cJSON_IsString(f))
+            C_ = f->valuestring;
+        else if (strcmp(f->string, "amount") == 0)
+            has_amt = item_to_int(f, out.amount);
+        else if (strcmp(f->string, "dleq") == 0 && cJSON_IsObject(f))
+            dleq = f;
+    }
+    if (!id || !C_ || !has_amt) return false;
     out.id = id;
     out.C_ = C_;
-    const cJSON* dleq = cJSON_GetObjectItemCaseSensitive(j, "dleq");
-    if (dleq && cJSON_IsObject(dleq)) {
+    if (dleq) {
         DLEQ d{};
         if (from_json(dleq, d))
             out.dleq = std::move(d);
+        else
+            out.dleq = std::nullopt;
     } else {
         out.dleq = std::nullopt;
     }
@@ -114,37 +344,42 @@ bool from_json(const cJSON* j, BlindSignature& out) {
 // Proof
 // ---------------------------------------------------------------------------
 
-cJSON* to_json(const Proof& v) {
-    cJSON* j = cJSON_CreateObject();
-    cJSON_AddStringToObject(j, "id", v.id.c_str());
-    cJSON_AddNumberToObject(j, "amount", v.amount);
-    cJSON_AddStringToObject(j, "secret", v.secret.c_str());
-    cJSON_AddStringToObject(j, "C", v.C.c_str());
-    if (v.dleq)
-        cJSON_AddItemToObject(j, "dleq", to_json(*v.dleq));
-    if (v.witness)
-        cJSON_AddStringToObject(j, "witness", v.witness->c_str());
-    return j;
-}
-
 bool from_json(const cJSON* j, Proof& out) {
-    const char* id = get_string(j, "id");
-    const char* secret = get_string(j, "secret");
-    const char* C = get_string(j, "C");
-    if (!id || !secret || !C) return false;
-    if (!get_int(j, "amount", out.amount)) return false;
+    if (!cJSON_IsObject(j)) return false;
+    const char* id = nullptr;
+    const char* secret = nullptr;
+    const char* C = nullptr;
+    const char* witness = nullptr;
+    const cJSON* dleq = nullptr;
+    bool has_amt = false;
+    for (const cJSON* f = j->child; f; f = f->next) {
+        if (!f->string) continue;
+        if (strcmp(f->string, "id") == 0 && cJSON_IsString(f))
+            id = f->valuestring;
+        else if (strcmp(f->string, "secret") == 0 && cJSON_IsString(f))
+            secret = f->valuestring;
+        else if (strcmp(f->string, "C") == 0 && cJSON_IsString(f))
+            C = f->valuestring;
+        else if (strcmp(f->string, "amount") == 0)
+            has_amt = item_to_int(f, out.amount);
+        else if (strcmp(f->string, "dleq") == 0 && cJSON_IsObject(f))
+            dleq = f;
+        else if (strcmp(f->string, "witness") == 0 && cJSON_IsString(f))
+            witness = f->valuestring;
+    }
+    if (!id || !secret || !C || !has_amt) return false;
     out.id = id;
     out.secret = secret;
     out.C = C;
-    const cJSON* dleq = cJSON_GetObjectItemCaseSensitive(j, "dleq");
-    if (dleq && cJSON_IsObject(dleq)) {
+    if (dleq) {
         DLEQ d{};
         if (from_json(dleq, d))
             out.dleq = std::move(d);
+        else
+            out.dleq = std::nullopt;
     } else {
         out.dleq = std::nullopt;
     }
-    const char* witness = get_string(j, "witness");
     out.witness = witness ? std::optional<std::string>(witness) : std::nullopt;
     return true;
 }
@@ -153,44 +388,41 @@ bool from_json(const cJSON* j, Proof& out) {
 // Keyset
 // ---------------------------------------------------------------------------
 
-cJSON* to_json(const Keyset& v) {
-    cJSON* j = cJSON_CreateObject();
-    cJSON_AddStringToObject(j, "id", v.id.c_str());
-    cJSON_AddStringToObject(j, "unit", v.unit.c_str());
-    cJSON_AddBoolToObject(j, "active", v.active);
-    cJSON_AddNumberToObject(j, "input_fee_ppk", v.input_fee_ppk);
-    if (v.final_expiry)
-        cJSON_AddNumberToObject(j, "final_expiry", (double)*v.final_expiry);
-    cJSON* keys = cJSON_CreateObject();
-    for (const auto& [amount, pubkey] : v.keys) {
-        std::string key = std::to_string(amount);
-        cJSON_AddStringToObject(keys, key.c_str(), pubkey.c_str());
-    }
-    cJSON_AddItemToObject(j, "keys", keys);
-    return j;
-}
-
 bool from_json(const cJSON* j, Keyset& out) {
-    const char* id = get_string(j, "id");
-    const char* unit = get_string(j, "unit");
+    if (!cJSON_IsObject(j)) return false;
+    const char* id = nullptr;
+    const char* unit = nullptr;
+    const cJSON* keys = nullptr;
+    out.active = true;
+    out.input_fee_ppk = 0;
+    out.final_expiry = std::nullopt;
+
+    for (const cJSON* f = j->child; f; f = f->next) {
+        if (!f->string) continue;
+        if (strcmp(f->string, "id") == 0 && cJSON_IsString(f))
+            id = f->valuestring;
+        else if (strcmp(f->string, "unit") == 0 && cJSON_IsString(f))
+            unit = f->valuestring;
+        else if (strcmp(f->string, "active") == 0)
+            item_to_bool(f, out.active);
+        else if (strcmp(f->string, "input_fee_ppk") == 0)
+            item_to_int(f, out.input_fee_ppk);
+        else if (strcmp(f->string, "final_expiry") == 0) {
+            int64_t fe;
+            if (item_to_int64(f, fe))
+                out.final_expiry = fe;
+        } else if (strcmp(f->string, "keys") == 0 && cJSON_IsObject(f))
+            keys = f;
+    }
     if (!id || !unit) return false;
     out.id = id;
     out.unit = unit;
-    if (!get_bool(j, "active", out.active))
-        out.active = true;
-    if (!get_int(j, "input_fee_ppk", out.input_fee_ppk))
-        out.input_fee_ppk = 0;
-    int64_t fe;
-    out.final_expiry = get_int64(j, "final_expiry", fe)
-        ? std::optional<int64_t>(fe) : std::nullopt;
     out.keys.clear();
-    const cJSON* keys = cJSON_GetObjectItemCaseSensitive(j, "keys");
-    if (keys && cJSON_IsObject(keys)) {
-        const cJSON* entry = nullptr;
-        cJSON_ArrayForEach(entry, keys) {
-            if (!cJSON_IsString(entry)) continue;
+    if (keys) {
+        for (const cJSON* entry = keys->child; entry; entry = entry->next) {
+            if (!entry->string || !cJSON_IsString(entry)) continue;
             uint64_t amount = strtoull(entry->string, nullptr, 10);
-            out.keys[amount] = entry->valuestring;
+            out.keys.emplace(amount, entry->valuestring);
         }
     }
     return true;
@@ -201,33 +433,46 @@ bool from_json(const cJSON* j, Keyset& out) {
 // ---------------------------------------------------------------------------
 
 bool from_json(const cJSON* j, KeysetInfo& out) {
-    const char* id = get_string(j, "id");
-    const char* unit = get_string(j, "unit");
+    if (!cJSON_IsObject(j)) return false;
+    const char* id = nullptr;
+    const char* unit = nullptr;
+    out.active = true;
+    out.input_fee_ppk = 0;
+    out.final_expiry = std::nullopt;
+
+    for (const cJSON* f = j->child; f; f = f->next) {
+        if (!f->string) continue;
+        if (strcmp(f->string, "id") == 0 && cJSON_IsString(f))
+            id = f->valuestring;
+        else if (strcmp(f->string, "unit") == 0 && cJSON_IsString(f))
+            unit = f->valuestring;
+        else if (strcmp(f->string, "active") == 0)
+            item_to_bool(f, out.active);
+        else if (strcmp(f->string, "input_fee_ppk") == 0)
+            item_to_int(f, out.input_fee_ppk);
+        else if (strcmp(f->string, "final_expiry") == 0) {
+            int64_t fe;
+            if (item_to_int64(f, fe))
+                out.final_expiry = fe;
+        }
+    }
     if (!id || !unit) return false;
     out.id = id;
     out.unit = unit;
-    if (!get_bool(j, "active", out.active))
-        out.active = true;
-    if (!get_int(j, "input_fee_ppk", out.input_fee_ppk))
-        out.input_fee_ppk = 0;
-    int64_t fe;
-    out.final_expiry = get_int64(j, "final_expiry", fe)
-        ? std::optional<int64_t>(fe) : std::nullopt;
     return true;
 }
 
 // ---------------------------------------------------------------------------
-// SwapRequest / SwapResponse
+// SwapResponse / MintResponse
 // ---------------------------------------------------------------------------
 
-cJSON* to_json(const SwapRequest& v) {
-    cJSON* j = cJSON_CreateObject();
-    cJSON_AddItemToObject(j, "inputs", to_json_array(v.inputs));
-    cJSON_AddItemToObject(j, "outputs", to_json_array(v.outputs));
-    return j;
+bool from_json(const cJSON* j, SwapResponse& out) {
+    const cJSON* sigs = cJSON_GetObjectItemCaseSensitive(j, "signatures");
+    if (!sigs) return false;
+    return from_json_array(sigs, out.signatures);
 }
 
-bool from_json(const cJSON* j, SwapResponse& out) {
+bool from_json(const cJSON* j, MintResponse& out) {
     const cJSON* sigs = cJSON_GetObjectItemCaseSensitive(j, "signatures");
     if (!sigs) return false;
     return from_json_array(sigs, out.signatures);
@@ -238,46 +483,45 @@ bool from_json(const cJSON* j, SwapResponse& out) {
 // ---------------------------------------------------------------------------
 
 bool from_json(const cJSON* j, MintQuote& out) {
-    const char* quote = get_string(j, "quote");
-    const char* request = get_string(j, "request");
+    if (!cJSON_IsObject(j)) return false;
+    const char* quote = nullptr;
+    const char* request = nullptr;
+    out.state.clear();
+    out.unit.clear();
+    out.method.clear();
+    out.amount = 0;
+    out.expiry = 0;
+    out.amount_paid = std::nullopt;
+    out.amount_issued = std::nullopt;
+
+    for (const cJSON* f = j->child; f; f = f->next) {
+        if (!f->string) continue;
+        if (strcmp(f->string, "quote") == 0 && cJSON_IsString(f))
+            quote = f->valuestring;
+        else if (strcmp(f->string, "request") == 0 && cJSON_IsString(f))
+            request = f->valuestring;
+        else if (strcmp(f->string, "state") == 0 && cJSON_IsString(f))
+            out.state = f->valuestring;
+        else if (strcmp(f->string, "unit") == 0 && cJSON_IsString(f))
+            out.unit = f->valuestring;
+        else if (strcmp(f->string, "method") == 0 && cJSON_IsString(f))
+            out.method = f->valuestring;
+        else if (strcmp(f->string, "amount") == 0)
+            item_to_int(f, out.amount);
+        else if (strcmp(f->string, "expiry") == 0)
+            item_to_int64(f, out.expiry);
+        else if (strcmp(f->string, "amount_paid") == 0) {
+            int paid;
+            if (item_to_int(f, paid)) out.amount_paid = paid;
+        } else if (strcmp(f->string, "amount_issued") == 0) {
+            int issued;
+            if (item_to_int(f, issued)) out.amount_issued = issued;
+        }
+    }
     if (!quote || !request) return false;
     out.quote = quote;
     out.request = request;
-    // Legacy bolt11 field, deprecated in NUT-23 and absent from
-    // custom-method responses (nuts PR#382) — optional by design.
-    const char* state = get_string(j, "state");
-    out.state = state ? state : "";
-    const char* unit = get_string(j, "unit");
-    out.unit = unit ? unit : "";
-    const char* method = get_string(j, "method");
-    out.method = method ? method : "";
-    if (!get_int(j, "amount", out.amount))
-        out.amount = 0;
-    if (!get_int64(j, "expiry", out.expiry))
-        out.expiry = 0;
-    int paid = 0, issued = 0;
-    out.amount_paid = get_int(j, "amount_paid", paid)
-        ? std::optional<int>(paid) : std::nullopt;
-    out.amount_issued = get_int(j, "amount_issued", issued)
-        ? std::optional<int>(issued) : std::nullopt;
     return true;
-}
-
-// ---------------------------------------------------------------------------
-// MintRequest / MintResponse
-// ---------------------------------------------------------------------------
-
-cJSON* to_json(const MintRequest& v) {
-    cJSON* j = cJSON_CreateObject();
-    cJSON_AddStringToObject(j, "quote", v.quote.c_str());
-    cJSON_AddItemToObject(j, "outputs", to_json_array(v.outputs));
-    return j;
-}
-
-bool from_json(const cJSON* j, MintResponse& out) {
-    const cJSON* sigs = cJSON_GetObjectItemCaseSensitive(j, "signatures");
-    if (!sigs) return false;
-    return from_json_array(sigs, out.signatures);
 }
 
 // ---------------------------------------------------------------------------
@@ -285,51 +529,51 @@ bool from_json(const cJSON* j, MintResponse& out) {
 // ---------------------------------------------------------------------------
 
 bool from_json(const cJSON* j, MeltQuote& out) {
-    const char* quote = get_string(j, "quote");
-    const char* state = get_string(j, "state");
-    if (!quote || !state) return false;
+    if (!cJSON_IsObject(j)) return false;
+    const char* quote = nullptr;
+    const char* state = nullptr;
+    const cJSON* change = nullptr;
+    bool has_amt = false;
+    out.fee_reserve = 0;
+    out.unit.clear();
+    out.method.clear();
+    out.expiry = 0;
+    out.request = std::nullopt;
+    out.payment_preimage = std::nullopt;
+    out.change = std::nullopt;
+
+    for (const cJSON* f = j->child; f; f = f->next) {
+        if (!f->string) continue;
+        if (strcmp(f->string, "quote") == 0 && cJSON_IsString(f))
+            quote = f->valuestring;
+        else if (strcmp(f->string, "state") == 0 && cJSON_IsString(f))
+            state = f->valuestring;
+        else if (strcmp(f->string, "amount") == 0)
+            has_amt = item_to_int(f, out.amount);
+        else if (strcmp(f->string, "fee_reserve") == 0)
+            item_to_int(f, out.fee_reserve);
+        else if (strcmp(f->string, "unit") == 0 && cJSON_IsString(f))
+            out.unit = f->valuestring;
+        else if (strcmp(f->string, "method") == 0 && cJSON_IsString(f))
+            out.method = f->valuestring;
+        else if (strcmp(f->string, "expiry") == 0)
+            item_to_int64(f, out.expiry);
+        else if (strcmp(f->string, "request") == 0 && cJSON_IsString(f))
+            out.request = f->valuestring;
+        else if (strcmp(f->string, "payment_preimage") == 0 && cJSON_IsString(f))
+            out.payment_preimage = f->valuestring;
+        else if (strcmp(f->string, "change") == 0 && cJSON_IsArray(f))
+            change = f;
+    }
+    if (!quote || !state || !has_amt) return false;
     out.quote = quote;
     out.state = state;
-    if (!get_int(j, "amount", out.amount)) return false;
-    // Custom payment methods may omit fee_reserve (nuts PR#382).
-    if (!get_int(j, "fee_reserve", out.fee_reserve))
-        out.fee_reserve = 0;
-    const char* unit = get_string(j, "unit");
-    out.unit = unit ? unit : "";
-    const char* method = get_string(j, "method");
-    out.method = method ? method : "";
-    if (!get_int64(j, "expiry", out.expiry))
-        out.expiry = 0;
-    const char* request = get_string(j, "request");
-    out.request = request
-        ? std::optional<std::string>(request)
-        : std::nullopt;
-    const char* preimage = get_string(j, "payment_preimage");
-    out.payment_preimage = preimage
-        ? std::optional<std::string>(preimage)
-        : std::nullopt;
-    const cJSON* change = cJSON_GetObjectItemCaseSensitive(j, "change");
-    if (change && cJSON_IsArray(change)) {
+    if (change) {
         std::vector<BlindSignature> sigs;
         if (from_json_array(change, sigs))
             out.change = std::move(sigs);
-    } else {
-        out.change = std::nullopt;
     }
     return true;
-}
-
-// ---------------------------------------------------------------------------
-// MeltRequest
-// ---------------------------------------------------------------------------
-
-cJSON* to_json(const MeltRequest& v) {
-    cJSON* j = cJSON_CreateObject();
-    cJSON_AddStringToObject(j, "quote", v.quote.c_str());
-    cJSON_AddItemToObject(j, "inputs", to_json_array(v.inputs));
-    if (v.outputs)
-        cJSON_AddItemToObject(j, "outputs", to_json_array(*v.outputs));
-    return j;
 }
 
 // ---------------------------------------------------------------------------
@@ -360,7 +604,7 @@ bool from_json(const cJSON* j, Token& out) {
 }
 
 // ---------------------------------------------------------------------------
-// Keyset list response (GET /v1/keys, GET /v1/keys/{id})
+// Keyset list response (GET /v1/keys, GET /v1/keysets)
 // ---------------------------------------------------------------------------
 
 bool from_json_keyset_response(const cJSON *j, std::vector<Keyset> &out) {
@@ -385,21 +629,33 @@ static void parse_method_settings(const cJSON* nut_obj,
     if (!nut_obj) return;   // NUT not advertised
     const cJSON* methods = cJSON_GetObjectItemCaseSensitive(nut_obj, "methods");
     if (!cJSON_IsArray(methods)) return;
+    int n = cJSON_GetArraySize(methods);
+    if (n > 0) out.reserve((size_t)n);
     const cJSON* row = nullptr;
     cJSON_ArrayForEach(row, methods) {
+        if (!cJSON_IsObject(row)) continue;
         MintMethodSetting s;
-        const char* method = get_string(row, "method");
-        const char* unit = get_string(row, "unit");
+        const char* method = nullptr;
+        const char* unit = nullptr;
+        for (const cJSON* f = row->child; f; f = f->next) {
+            if (!f->string) continue;
+            if (strcmp(f->string, "method") == 0 && cJSON_IsString(f))
+                method = f->valuestring;
+            else if (strcmp(f->string, "unit") == 0 && cJSON_IsString(f))
+                unit = f->valuestring;
+            else if (strcmp(f->string, "method_name") == 0 && cJSON_IsString(f))
+                s.method_name = f->valuestring;
+            else if (strcmp(f->string, "min_amount") == 0) {
+                int64_t v;
+                if (item_to_int64(f, v)) s.min_amount = v;
+            } else if (strcmp(f->string, "max_amount") == 0) {
+                int64_t v;
+                if (item_to_int64(f, v)) s.max_amount = v;
+            }
+        }
         if (!method || !unit) continue;   // skip malformed rows
         s.method = method;
         s.unit = unit;
-        const char* name = get_string(row, "method_name");
-        s.method_name = name ? std::optional<std::string>(name) : std::nullopt;
-        int64_t v;
-        s.min_amount = get_int64(row, "min_amount", v)
-            ? std::optional<int64_t>(v) : std::nullopt;
-        s.max_amount = get_int64(row, "max_amount", v)
-            ? std::optional<int64_t>(v) : std::nullopt;
         out.push_back(std::move(s));
     }
 }
@@ -424,13 +680,10 @@ bool from_json_mint_info(const cJSON* j, MintInfo& out) {
 // ---------------------------------------------------------------------------
 
 std::string proofs_to_json(const std::vector<Proof>& proofs) {
-    cJSON* arr = to_json_array(proofs);
-    if (!arr) return "";
-    char* str = cJSON_PrintUnformatted(arr);
-    std::string result(str ? str : "");
-    if (str) cJSON_free(str);
-    cJSON_Delete(arr);
-    return result;
+    std::string out;
+    out.reserve(estimate_proofs_json(proofs));
+    append_proofs_array(out, proofs);
+    return out;
 }
 
 bool proofs_from_json(const char* json_str, std::vector<Proof>& out) {
@@ -466,7 +719,7 @@ bool deserialize_token_v3(const char *token_str, Token &out) {
                           len - V3_PREFIX_LEN, json_str))
         return false;
 
-    return deserialize(json_str.c_str(), out);
+    return deserialize(json_str.data(), json_str.size(), out);
 }
 
 bool deserialize_token(const char *token_str, Token &out) {
@@ -479,7 +732,7 @@ bool deserialize_token(const char *token_str, Token &out) {
 }
 
 // ---------------------------------------------------------------------------
-// Self-test: quote/mint-info parse contract across mint generations
+// Self-test: quote/mint-info parse contract + direct JSON writer round-trips
 // ---------------------------------------------------------------------------
 
 bool cashu_json_run_tests()
@@ -543,6 +796,35 @@ bool cashu_json_run_tests()
                && info.mint_methods[0].min_amount
                && *info.mint_methods[0].min_amount == 1
                && info.melt_methods.size() == 1);
+    }
+    { // Direct JSON writer round-trip with escaped NUT-10 secret, DLEQ, witness, and Keyset
+        Proof p;
+        p.id = "01aabb";
+        p.amount = 8;
+        p.secret = R"(["P2PK",{"nonce":"n1","data":"02aa\n"}])";
+        p.C = "02cc";
+        p.dleq = DLEQ{"11", "22", std::string("33")};
+        p.witness = R"({"signatures":["deadbeef"]})";
+        std::string js = proofs_to_json({p});
+        std::vector<Proof> back;
+        expect("proofs direct json",
+               proofs_from_json(js.c_str(), back) && back.size() == 1 &&
+               back[0].secret == p.secret && back[0].witness == p.witness &&
+               back[0].dleq && back[0].dleq->r && *back[0].dleq->r == "33");
+
+        Keyset ks;
+        ks.id = "01aabb";
+        ks.unit = "sat";
+        ks.active = true;
+        ks.input_fee_ppk = 100;
+        ks.final_expiry = 1893456000;
+        ks.keys = {{1, "02aa"}, {2, "03bb"}};
+        std::string kjs = serialize(ks);
+        Keyset kback;
+        expect("keyset direct json",
+               deserialize(kjs.data(), kjs.size(), kback) &&
+               kback.id == ks.id && kback.input_fee_ppk == 100 &&
+               kback.final_expiry == ks.final_expiry && kback.keys == ks.keys);
     }
     return ok;
 }

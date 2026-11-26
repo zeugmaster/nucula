@@ -24,11 +24,19 @@ static void IRAM_ATTR nci_irq_isr(void *arg)
 
 static void log_hex(const char *prefix, const uint8_t *data, uint32_t len)
 {
+#if defined(CONFIG_LOG_MAXIMUM_LEVEL) && CONFIG_LOG_MAXIMUM_LEVEL >= 4
+    if (esp_log_level_get(TAG) < ESP_LOG_DEBUG)
+        return;
     char buf[NCI_MAX_FRAME_SIZE * 3 + 1];
     uint32_t pos = 0;
     for (uint32_t i = 0; i < len && pos < sizeof(buf) - 4; i++)
         pos += snprintf(&buf[pos], sizeof(buf) - pos, "%02X ", data[i]);
     ESP_LOGD(TAG, "%s [%lu]: %s", prefix, (unsigned long)len, buf);
+#else
+    (void)prefix;
+    (void)data;
+    (void)len;
+#endif
 }
 
 esp_err_t nci_init(nci_context_t *ctx, i2c_master_bus_handle_t bus)
@@ -144,21 +152,17 @@ esp_err_t nci_write(nci_context_t *ctx, const uint8_t *data, uint32_t len)
 
 esp_err_t nci_read(nci_context_t *ctx, uint8_t *data, uint32_t *len)
 {
-    // Read 3-byte NCI header
-    uint8_t hdr[3];
-    esp_err_t ret = i2c_master_receive(ctx->i2c_dev, hdr, 3, 500);
+    // Read 3-byte NCI header directly into data[0..2]
+    esp_err_t ret = i2c_master_receive(ctx->i2c_dev, data, 3, 500);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "I2C read header failed: %s", esp_err_to_name(ret));
         *len = 0;
         return ret;
     }
 
-    data[0] = hdr[0];
-    data[1] = hdr[1];
-    data[2] = hdr[2];
     *len = 3;
 
-    uint8_t payload_len = hdr[2];
+    uint8_t payload_len = data[2];
     if (payload_len > 0) {
         ret = i2c_master_receive(ctx->i2c_dev, &data[3], payload_len, 500);
         if (ret != ESP_OK) {

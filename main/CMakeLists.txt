@@ -13,6 +13,8 @@ idf_component_register(SRCS "nucula.cpp" "commands_common.cpp" "commands_wallet.
                                  esp_driver_usb_serial_jtag vfs
                                  esp_driver_gpio driver esp_app_format)
 
-# Hot-path files get -O2 on top of the project-wide -Os.
-set_source_files_properties("crypto.c" "hex.c" "cashu_cbor.cpp"
+# Tight inner-loop codecs and display primitives get -O2 on top of -Os;
+# template-heavy C++ translation units stay at -Os to fit the 16 KB flash cache.
+set_source_files_properties("crypto.c" "hex.c" "base64url.cpp"
+                            "display.cpp" "bip39.c"
                             PROPERTIES COMPILE_OPTIONS "-O2")

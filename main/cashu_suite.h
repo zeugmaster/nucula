@@ -61,6 +61,16 @@ struct cashu_suite {
                        const unsigned char *C_, size_t C__len,
                        const unsigned char *e, const unsigned char *s);
 
+    /* Optional fused DLEQ verify + unblind (NULL if unsupported). Avoids
+     * decompressing K and C_ twice on the mint-signature hot path. */
+    int (*verify_dleq_and_unblind)(void *ctx,
+                                   const unsigned char *K, size_t K_len,
+                                   const unsigned char *B_, size_t B__len,
+                                   const unsigned char *C_, size_t C__len,
+                                   const unsigned char *e, const unsigned char *s,
+                                   const unsigned char *r, size_t r_len,
+                                   unsigned char *C_out, size_t *C_out_len);
+
     /* NUT-12: Carol verifies the DLEQ on an unblinded Proof, reconstructing
      * B_/C_ from the secret and the blinding factor r. */
     int (*verify_dleq_unblinded)(void *ctx,

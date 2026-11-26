@@ -1,34 +1,53 @@
 #include "keyset.hpp"
 
-#include <cctype>
+#include <cstdio>
+#include <cstring>
 #include <map>
 #include <string>
 
 #include "cashu_suite.h"
 #include "hex.h"
 #include <esp_log.h>
+#include <mbedtls/sha256.h>
 
 namespace cashu {
 
 #define TAG "keyset"
 
-static std::string to_lower(std::string s)
+static inline char ascii_lower(char c)
 {
-    for (char &c : s)
-        c = (char)std::tolower((unsigned char)c);
-    return s;
+    return (c >= 'A' && c <= 'Z') ? (char)(c + ('a' - 'A')) : c;
+}
+
+static bool iequals(const std::string &a, const std::string &b)
+{
+    if (a.size() != b.size())
+        return false;
+    for (size_t i = 0; i < a.size(); i++)
+        if (ascii_lower(a[i]) != ascii_lower(b[i]))
+            return false;
+    return true;
+}
+
+static bool istarts_with(const std::string &haystack, const std::string &prefix)
+{
+    if (haystack.size() < prefix.size())
+        return false;
+    for (size_t i = 0; i < prefix.size(); i++)
+        if (ascii_lower(haystack[i]) != ascii_lower(prefix[i]))
+            return false;
+    return true;
 }
 
 KeysetVersion keyset_version(const std::string &id)
 {
-    if (id.size() < 2)
+    if (id.size() < 2 || id[0] != '0')
         return KeysetVersion::unknown;
-    const std::string prefix = to_lower(id.substr(0, 2));
-    if (prefix == "00")
+    if (id[1] == '0')
         return id.size() == 16 ? KeysetVersion::v1 : KeysetVersion::unknown;
-    if (prefix == "01")
+    if (id[1] == '1')
         return id.size() == 66 ? KeysetVersion::v2 : KeysetVersion::unknown;
-    if (prefix == "02")
+    if (id[1] == '2')
         // BLS scaffold. Assume a sha256-based 33-byte id (66 hex) like v2 so a
         // short legacy/base64 id that happens to start with "02" is not
         // misread as v3; the real length is fixed by the v3 spec.
@@ -72,23 +91,30 @@ static std::string derive_keyset_id_v1(const Keyset &ks)
 {
     if (ks.keys.empty())
         return "";
-    std::string concat; // raw bytes
-    concat.reserve(ks.keys.size() * 33);
+    mbedtls_sha256_context sha;
+    mbedtls_sha256_init(&sha);
+    bool ok = (mbedtls_sha256_starts(&sha, 0) == 0);
     for (const auto &kv : ks.keys) { // std::map => ascending by amount
-        if (kv.second.size() != 66)
-            return "";
+        if (!ok || kv.second.size() != 66) { ok = false; break; }
         unsigned char pk[33];
-        if (!hex_to_bytes(kv.second.c_str(), pk, 33))
-            return "";
-        concat.append(reinterpret_cast<const char *>(pk), 33);
+        if (!hex_to_bytes(kv.second.c_str(), pk, 33) ||
+            mbedtls_sha256_update(&sha, pk, 33) != 0) {
+            ok = false;
+            break;
+        }
     }
     unsigned char digest[32];
-    if (!cashu_sha256(reinterpret_cast<const unsigned char *>(concat.data()),
-                      concat.size(), digest))
+    if (ok && mbedtls_sha256_finish(&sha, digest) != 0)
+        ok = false;
+    mbedtls_sha256_free(&sha);
+    if (!ok)
         return "";
-    char hex[65];
-    bytes_to_hex(digest, 32, hex);
-    return std::string("00") + std::string(hex).substr(0, 14);
+
+    char hex[17];
+    hex[0] = '0';
+    hex[1] = '0';
+    bytes_to_hex(digest, 7, hex + 2);
+    return std::string(hex, 16);
 }
 
 // v2 (current): "01" + sha256 of the UTF-8 preimage
@@ -99,33 +125,64 @@ static std::string derive_keyset_id_v2(const Keyset &ks)
 {
     if (ks.keys.empty())
         return "";
-    std::string pre;
+    mbedtls_sha256_context sha;
+    mbedtls_sha256_init(&sha);
+    bool ok = (mbedtls_sha256_starts(&sha, 0) == 0);
+
+    auto feed = [&](const char *data, size_t len) {
+        if (ok && len > 0 &&
+            mbedtls_sha256_update(&sha, reinterpret_cast<const unsigned char *>(data), len) != 0)
+            ok = false;
+    };
+
     bool first = true;
+    char seg[128];
     for (const auto &kv : ks.keys) { // ascending by amount
-        if (!first)
-            pre += ',';
+        if (!ok) break;
+        int n = snprintf(seg, sizeof(seg), "%s%llu:",
+                         first ? "" : ",", (unsigned long long)kv.first);
         first = false;
-        pre += std::to_string(kv.first);
-        pre += ':';
-        pre += to_lower(kv.second);
+        if (n <= 0 || (size_t)n >= sizeof(seg)) { ok = false; break; }
+        feed(seg, (size_t)n);
+
+        // Lowercase pubkey hex on stack in chunks (typical length 66).
+        const std::string &pk = kv.second;
+        size_t pos = 0;
+        while (pos < pk.size() && ok) {
+            size_t chunk = pk.size() - pos;
+            if (chunk > sizeof(seg)) chunk = sizeof(seg);
+            for (size_t i = 0; i < chunk; i++)
+                seg[i] = ascii_lower(pk[pos + i]);
+            feed(seg, chunk);
+            pos += chunk;
+        }
     }
-    pre += "|unit:";
-    pre += ks.unit;
+
+    feed("|unit:", 6);
+    feed(ks.unit.data(), ks.unit.size());
     if (ks.input_fee_ppk > 0) {
-        pre += "|input_fee_ppk:";
-        pre += std::to_string(ks.input_fee_ppk);
+        int n = snprintf(seg, sizeof(seg), "|input_fee_ppk:%d", ks.input_fee_ppk);
+        if (n > 0 && (size_t)n < sizeof(seg)) feed(seg, (size_t)n);
+        else ok = false;
     }
     if (ks.final_expiry) {
-        pre += "|final_expiry:";
-        pre += std::to_string(*ks.final_expiry);
+        int n = snprintf(seg, sizeof(seg), "|final_expiry:%lld", (long long)*ks.final_expiry);
+        if (n > 0 && (size_t)n < sizeof(seg)) feed(seg, (size_t)n);
+        else ok = false;
     }
+
     unsigned char digest[32];
-    if (!cashu_sha256(reinterpret_cast<const unsigned char *>(pre.data()),
-                      pre.size(), digest))
+    if (ok && mbedtls_sha256_finish(&sha, digest) != 0)
+        ok = false;
+    mbedtls_sha256_free(&sha);
+    if (!ok)
         return "";
-    char hex[65];
-    bytes_to_hex(digest, 32, hex);
-    return std::string("01") + hex;
+
+    char hex[67];
+    hex[0] = '0';
+    hex[1] = '1';
+    bytes_to_hex(digest, 32, hex + 2);
+    return std::string(hex, 66);
 }
 
 // v3 (BLS12-381): SCAFFOLD. The keyset-id preimage for BLS keysets is defined
@@ -158,7 +215,7 @@ bool verify_keyset_id(const Keyset &ks)
     const std::string derived = derive_keyset_id(ks);
     if (derived.empty())
         return false;
-    return to_lower(derived) == to_lower(ks.id);
+    return iequals(derived, ks.id);
 }
 
 std::string keyset_id_short(const std::string &id)
@@ -174,19 +231,16 @@ const Keyset *resolve_keyset(const std::vector<Keyset> &keysets,
         *ambiguous = false;
     if (token_id.empty())
         return nullptr;
-    const std::string want = to_lower(token_id);
 
     // Exact match wins.
     for (const auto &ks : keysets) {
-        if (to_lower(ks.id) == want)
+        if (iequals(ks.id, token_id))
             return &ks;
     }
     // Otherwise treat token_id as a (short-form) prefix of a stored full id.
     const Keyset *match = nullptr;
     for (const auto &ks : keysets) {
-        const std::string have = to_lower(ks.id);
-        if (have.size() >= want.size() &&
-            have.compare(0, want.size(), want) == 0) {
+        if (istarts_with(ks.id, token_id)) {
             if (match) { // more than one candidate => ambiguous, never guess
                 if (ambiguous)
                     *ambiguous = true;

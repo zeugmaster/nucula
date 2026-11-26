@@ -1,31 +1,42 @@
 #include "hex.h"
+#include <stdint.h>
 #include <string.h>
 
-/* Table-driven: these run for every point/secret/DLEQ field of every
- * payment; the previous sscanf/sprintf-per-byte versions dominated keyset
- * validation time. */
+/* Table-driven hex codec: runs on every point/secret/DLEQ field. */
 
-static signed char nibble(char c)
-{
-    if (c >= '0' && c <= '9') return (signed char)(c - '0');
-    if (c >= 'a' && c <= 'f') return (signed char)(c - 'a' + 10);
-    if (c >= 'A' && c <= 'F') return (signed char)(c - 'A' + 10);
-    return -1;
-}
+static const int8_t HEX_LUT[256] = {
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+     0, 1, 2, 3, 4, 5, 6, 7, 8, 9,-1,-1,-1,-1,-1,-1,
+    -1,10,11,12,13,14,15,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,10,11,12,13,14,15,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+};
 
 int hex_to_bytes(const char *hex, unsigned char *out, size_t out_len)
 {
-    size_t hex_len = strlen(hex);
-    if (hex_len != out_len * 2)
-        return 0;
+    const unsigned char *p = (const unsigned char *)hex;
     for (size_t i = 0; i < out_len; i++) {
-        signed char hi = nibble(hex[i * 2]);
-        signed char lo = nibble(hex[i * 2 + 1]);
-        if (hi < 0 || lo < 0)
+        int8_t hi = HEX_LUT[p[0]];
+        if (hi < 0)
+            return 0;
+        int8_t lo = HEX_LUT[p[1]];
+        if (lo < 0)
             return 0;
         out[i] = (unsigned char)((hi << 4) | lo);
+        p += 2;
     }
-    return 1;
+    return *p == '\0' ? 1 : 0;
 }
 
 void bytes_to_hex(const unsigned char *bytes, size_t len, char *hex)

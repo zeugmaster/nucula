@@ -6,18 +6,27 @@
 
 namespace cashu {
 
-// Serialize model to cJSON object. Caller owns the returned pointer
-// and must free it with cJSON_Delete(). Response-only types (quotes,
-// signatures, tokens) have no encode side: the wallet only ever parses
-// them, and V3/JSON token encoding is legacy-out (V4/CBOR is the live
-// encode path in cashu_cbor).
-cJSON* to_json(const DLEQ& v);
-cJSON* to_json(const BlindedMessage& v);
-cJSON* to_json(const Proof& v);
-cJSON* to_json(const Keyset& v);
-cJSON* to_json(const SwapRequest& v);
-cJSON* to_json(const MintRequest& v);
-cJSON* to_json(const MeltRequest& v);
+// Append a JSON-quoted, RFC 8259 escaped string to `out`.
+void json_append_string(std::string& out, const char* s, size_t len);
+inline void json_append_string(std::string& out, const std::string& s) {
+    json_append_string(out, s.data(), s.size());
+}
+
+// Direct zero-DOM JSON serializers (single pre-reserved std::string, avoiding
+// hundreds of transient cJSON tree allocations before TLS/NVS calls).
+std::string serialize(const Keyset& v);
+std::string serialize(const SwapRequest& v);
+std::string serialize(const MintRequest& v);
+std::string serialize(const MeltRequest& v);
+
+// Non-copying request serializers for wallet flows.
+std::string serialize_swap_request(const std::vector<Proof>& inputs,
+                                   const std::vector<BlindedMessage>& outputs);
+std::string serialize_mint_request(const std::string& quote,
+                                   const std::vector<BlindedMessage>& outputs);
+std::string serialize_melt_request(const std::string& quote,
+                                   const std::vector<Proof>& inputs,
+                                   const std::vector<BlindedMessage>* outputs);
 
 // Deserialize model from cJSON object. Returns false if required
 // fields are missing or have wrong types.
@@ -33,19 +42,12 @@ bool from_json(const cJSON* j, MintResponse& out);
 bool from_json(const cJSON* j, MeltQuote& out);
 bool from_json(const cJSON* j, Token& out);
 
-// Array serialization helpers
-template<typename T>
-cJSON* to_json_array(const std::vector<T>& items) {
-    cJSON* arr = cJSON_CreateArray();
-    for (const auto& item : items)
-        cJSON_AddItemToArray(arr, to_json(item));
-    return arr;
-}
-
 template<typename T>
 bool from_json_array(const cJSON* arr, std::vector<T>& out) {
     if (!cJSON_IsArray(arr)) return false;
     out.clear();
+    int n = cJSON_GetArraySize(arr);
+    if (n > 0) out.reserve((size_t)n);
     const cJSON* elem = nullptr;
     cJSON_ArrayForEach(elem, arr) {
         T item{};
@@ -55,23 +57,19 @@ bool from_json_array(const cJSON* arr, std::vector<T>& out) {
     return true;
 }
 
-// Convenience: serialize to JSON string. Returns "" on allocation failure;
-// callers sending requests must treat that as an error, not as a body.
-template<typename T>
-std::string serialize(const T& v) {
-    cJSON* j = to_json(v);
-    if (!j) return "";
-    char* str = cJSON_PrintUnformatted(j);
-    std::string result(str ? str : "");
-    if (str) cJSON_free(str);
-    cJSON_Delete(j);
-    return result;
-}
-
-// Convenience: deserialize from JSON string
+// Convenience: deserialize from JSON string (or length-bounded buffer).
 template<typename T>
 bool deserialize(const char* json_str, T& out) {
     cJSON* j = cJSON_Parse(json_str);
+    if (!j) return false;
+    bool ok = from_json(j, out);
+    cJSON_Delete(j);
+    return ok;
+}
+
+template<typename T>
+bool deserialize(const char* json_str, size_t len, T& out) {
+    cJSON* j = cJSON_ParseWithLength(json_str, len);
     if (!j) return false;
     bool ok = from_json(j, out);
     cJSON_Delete(j);
@@ -85,8 +83,7 @@ bool from_json_keyset_info_response(const cJSON* j, std::vector<KeysetInfo>& out
 // Parse the NUT-06 GET /v1/info response (subset: name + method matrices).
 bool from_json_mint_info(const cJSON* j, MintInfo& out);
 
-// Self-test of the quote/mint-info parse contract (legacy NUT-23 state,
-// PR#382 accounting responses, melt without fee_reserve).
+// Self-test of the quote/mint-info parse contract and direct JSON writers.
 bool cashu_json_run_tests();
 
 // Blob serialization for NVS persistence
@@ -103,4 +100,3 @@ bool deserialize_token_v3(const char* token_str, Token& out);
 bool deserialize_token(const char* token_str, Token& out);
 
 } // namespace cashu
-
