@@ -3,11 +3,33 @@
 #include "base64url.hpp"
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <esp_log.h>
 
 #define TAG "cashu_json"
 
 namespace cashu {
+
+bool json_unique_members(const cJSON* value) {
+    if (!value) return false;
+    if (!cJSON_IsObject(value) && !cJSON_IsArray(value)) return true;
+    const cJSON* item;
+    cJSON_ArrayForEach(item, value) {
+        if (cJSON_IsObject(value)) {
+            if (!item->string) return false;
+            for (const cJSON* prev = value->child; prev != item; prev = prev->next)
+                if (!strcmp(prev->string, item->string)) return false;
+        }
+        if (!json_unique_members(item)) return false;
+    }
+    return true;
+}
+
+static bool add_item(cJSON* object, const char* name, cJSON* item) {
+    if (item && cJSON_AddItemToObject(object, name, item)) return true;
+    cJSON_Delete(item);
+    return false;
+}
 
 static const char* get_string(const cJSON* obj, const char* key) {
     const cJSON* item = cJSON_GetObjectItemCaseSensitive(obj, key);
@@ -20,7 +42,8 @@ static bool get_int(const cJSON* obj, const char* key, int& out) {
     if (!item || !cJSON_IsNumber(item)) return false;
     // All protocol ints (amounts, fees) are non-negative and must fit in
     // int32 — valueint saturates silently, so bound via the double value.
-    if (item->valuedouble < 0 || item->valuedouble > 2147483647.0)
+    if (!std::isfinite(item->valuedouble) || item->valuedouble < 0 ||
+        item->valuedouble > 2147483647.0 || std::floor(item->valuedouble) != item->valuedouble)
         return false;
     out = item->valueint;
     return true;
@@ -29,6 +52,8 @@ static bool get_int(const cJSON* obj, const char* key, int& out) {
 static bool get_int64(const cJSON* obj, const char* key, int64_t& out) {
     const cJSON* item = cJSON_GetObjectItemCaseSensitive(obj, key);
     if (!item || !cJSON_IsNumber(item)) return false;
+    if (!std::isfinite(item->valuedouble) || item->valuedouble < 0 ||
+        item->valuedouble > 9007199254740991.0 || std::floor(item->valuedouble) != item->valuedouble) return false;
     out = (int64_t)item->valuedouble;
     return true;
 }
@@ -48,10 +73,11 @@ static bool get_bool(const cJSON* obj, const char* key, bool& out) {
 
 cJSON* to_json(const DLEQ& v) {
     cJSON* j = cJSON_CreateObject();
-    cJSON_AddStringToObject(j, "e", v.e.c_str());
-    cJSON_AddStringToObject(j, "s", v.s.c_str());
-    if (v.r)
-        cJSON_AddStringToObject(j, "r", v.r->c_str());
+    if (!j || !cJSON_AddStringToObject(j,"e",v.e.c_str()) ||
+        !cJSON_AddStringToObject(j,"s",v.s.c_str()) ||
+        (v.r && !cJSON_AddStringToObject(j,"r",v.r->c_str()))) {
+        cJSON_Delete(j); return nullptr;
+    }
     return j;
 }
 
@@ -72,9 +98,11 @@ bool from_json(const cJSON* j, DLEQ& out) {
 
 cJSON* to_json(const BlindedMessage& v) {
     cJSON* j = cJSON_CreateObject();
-    cJSON_AddNumberToObject(j, "amount", v.amount);
-    cJSON_AddStringToObject(j, "B_", v.B_.c_str());
-    cJSON_AddStringToObject(j, "id", v.id.c_str());
+    if (!j || !cJSON_AddNumberToObject(j,"amount",v.amount) ||
+        !cJSON_AddStringToObject(j,"B_",v.B_.c_str()) ||
+        !cJSON_AddStringToObject(j,"id",v.id.c_str())) {
+        cJSON_Delete(j); return nullptr;
+    }
     return j;
 }
 
@@ -109,13 +137,15 @@ bool from_json(const cJSON* j, BlindSignature& out) {
     if (!get_int(j, "amount", out.amount)) return false;
     out.id = id;
     out.C_ = C_;
+    if(out.id.compare(0,2,"02")==0 && (out.C_.size()!=96 ||
+       out.C_.find_first_not_of("0123456789abcdef")!=std::string::npos ||
+       cJSON_GetObjectItemCaseSensitive(j,"dleq"))) return false;
     const cJSON* dleq = cJSON_GetObjectItemCaseSensitive(j, "dleq");
-    if (dleq && cJSON_IsObject(dleq)) {
+    out.dleq.reset();
+    if (dleq) {
         DLEQ d{};
-        if (from_json(dleq, d))
-            out.dleq = std::move(d);
-    } else {
-        out.dleq = std::nullopt;
+        if (!cJSON_IsObject(dleq) || !from_json(dleq,d)) return false;
+        out.dleq = std::move(d);
     }
     return true;
 }
@@ -126,18 +156,26 @@ bool from_json(const cJSON* j, BlindSignature& out) {
 
 cJSON* to_json(const Proof& v) {
     cJSON* j = cJSON_CreateObject();
-    cJSON_AddStringToObject(j, "id", v.id.c_str());
-    cJSON_AddNumberToObject(j, "amount", v.amount);
-    cJSON_AddStringToObject(j, "secret", v.secret.c_str());
-    cJSON_AddStringToObject(j, "C", v.C.c_str());
-    if (v.dleq)
-        cJSON_AddItemToObject(j, "dleq", to_json(*v.dleq));
-    if (v.witness)
-        cJSON_AddStringToObject(j, "witness", v.witness->c_str());
+    if (!j || !cJSON_AddStringToObject(j,"id",v.id.c_str()) ||
+        !cJSON_AddNumberToObject(j,"amount",v.amount) ||
+        !cJSON_AddStringToObject(j,"secret",v.secret.c_str()) ||
+        !cJSON_AddStringToObject(j,"C",v.C.c_str()) ||
+        (v.dleq && !add_item(j,"dleq",to_json(*v.dleq))) ||
+        (v.witness && !cJSON_AddStringToObject(j,"witness",v.witness->c_str()))) {
+        cJSON_Delete(j); return nullptr;
+    }
+    if (v.spend_info) {
+        cJSON* si = cJSON_ParseWithOpts(v.spend_info->c_str(), nullptr, true);
+        if (!cJSON_IsObject(si) || !json_unique_members(si) ||
+            !cJSON_AddItemToObject(j, "spend_info", si)) {
+            cJSON_Delete(si); cJSON_Delete(j); return nullptr;
+        }
+    }
     return j;
 }
 
 bool from_json(const cJSON* j, Proof& out) {
+    if (!json_unique_members(j)) return false;
     const char* id = get_string(j, "id");
     const char* secret = get_string(j, "secret");
     const char* C = get_string(j, "C");
@@ -147,15 +185,27 @@ bool from_json(const cJSON* j, Proof& out) {
     out.secret = secret;
     out.C = C;
     const cJSON* dleq = cJSON_GetObjectItemCaseSensitive(j, "dleq");
-    if (dleq && cJSON_IsObject(dleq)) {
+    out.dleq.reset();
+    if (dleq) {
         DLEQ d{};
-        if (from_json(dleq, d))
-            out.dleq = std::move(d);
-    } else {
-        out.dleq = std::nullopt;
+        if (!cJSON_IsObject(dleq) || !from_json(dleq,d)) return false;
+        out.dleq = std::move(d);
     }
     const char* witness = get_string(j, "witness");
     out.witness = witness ? std::optional<std::string>(witness) : std::nullopt;
+    out.spend_info.reset();
+    const cJSON* si = cJSON_GetObjectItemCaseSensitive(j, "spend_info");
+    if (si) {
+        if (!cJSON_IsObject(si)) return false;
+        char* text = cJSON_PrintUnformatted(si);
+        if (!text) return false;
+        out.spend_info = text; cJSON_free(text);
+    }
+    if(out.id.compare(0,2,"02")==0 &&
+       (dleq||out.secret.size()!=66||out.C.size()!=96||
+        (out.secret.compare(0,2,"02")&&out.secret.compare(0,2,"03"))||
+        out.secret.find_first_not_of("0123456789abcdef")!=std::string::npos||
+        out.C.find_first_not_of("0123456789abcdef")!=std::string::npos))return false;
     return true;
 }
 
@@ -241,10 +291,26 @@ bool from_json(const cJSON* j, KeysetInfo& out) {
 // SwapRequest / SwapResponse
 // ---------------------------------------------------------------------------
 
+static cJSON* mint_inputs(const std::vector<Proof>& proofs) {
+    cJSON* arr = cJSON_CreateArray();
+    if (!arr) return nullptr;
+    for (const auto& proof : proofs) {
+        Proof input = proof;
+        input.spend_info.reset(); input.dleq.reset();
+        cJSON* item = to_json(input);
+        if (!item || !cJSON_AddItemToArray(arr, item)) {
+            cJSON_Delete(item); cJSON_Delete(arr); return nullptr;
+        }
+    }
+    return arr;
+}
+
 cJSON* to_json(const SwapRequest& v) {
     cJSON* j = cJSON_CreateObject();
-    cJSON_AddItemToObject(j, "inputs", to_json_array(v.inputs));
-    cJSON_AddItemToObject(j, "outputs", to_json_array(v.outputs));
+    if (!j || !add_item(j,"inputs",mint_inputs(v.inputs)) ||
+        !add_item(j,"outputs",to_json_array(v.outputs))) {
+        cJSON_Delete(j); return nullptr;
+    }
     return j;
 }
 
@@ -280,6 +346,8 @@ cJSON* to_json(const MintQuote& v) {
         cJSON_AddNumberToObject(j, "amount_paid", *v.amount_paid);
     if (v.amount_issued)
         cJSON_AddNumberToObject(j, "amount_issued", *v.amount_issued);
+    if (!v.pubkey.empty()) cJSON_AddStringToObject(j, "pubkey", v.pubkey.c_str());
+    if (v.updated_at) cJSON_AddNumberToObject(j,"updated_at",static_cast<double>(*v.updated_at));
     return j;
 }
 
@@ -306,6 +374,14 @@ bool from_json(const cJSON* j, MintQuote& out) {
         ? std::optional<int>(paid) : std::nullopt;
     out.amount_issued = get_int(j, "amount_issued", issued)
         ? std::optional<int>(issued) : std::nullopt;
+    const char* pubkey = get_string(j, "pubkey");
+    out.pubkey = pubkey ? pubkey : "";
+    int64_t updated=0;
+    out.updated_at = get_int64(j,"updated_at",updated) ? std::optional<int64_t>(updated) : std::nullopt;
+    if ((cJSON_GetObjectItemCaseSensitive(j,"updated_at") && !out.updated_at) ||
+        (cJSON_GetObjectItemCaseSensitive(j,"amount_paid") && !out.amount_paid) ||
+        (cJSON_GetObjectItemCaseSensitive(j,"amount_issued") && !out.amount_issued) ||
+        (out.amount_paid && out.amount_issued && *out.amount_issued > *out.amount_paid)) return false;
     return true;
 }
 
@@ -315,8 +391,11 @@ bool from_json(const cJSON* j, MintQuote& out) {
 
 cJSON* to_json(const MintRequest& v) {
     cJSON* j = cJSON_CreateObject();
-    cJSON_AddStringToObject(j, "quote", v.quote.c_str());
-    cJSON_AddItemToObject(j, "outputs", to_json_array(v.outputs));
+    if (!j || !cJSON_AddStringToObject(j,"quote",v.quote.c_str()) ||
+        !add_item(j,"outputs",to_json_array(v.outputs)) ||
+        (v.signature && !cJSON_AddStringToObject(j,"signature",v.signature->c_str()))) {
+        cJSON_Delete(j); return nullptr;
+    }
     return j;
 }
 
@@ -382,12 +461,11 @@ bool from_json(const cJSON* j, MeltQuote& out) {
         ? std::optional<std::string>(preimage)
         : std::nullopt;
     const cJSON* change = cJSON_GetObjectItemCaseSensitive(j, "change");
-    if (change && cJSON_IsArray(change)) {
+    out.change.reset();
+    if (change) {
         std::vector<BlindSignature> sigs;
-        if (from_json_array(change, sigs))
-            out.change = std::move(sigs);
-    } else {
-        out.change = std::nullopt;
+        if (!from_json_array(change,sigs)) return false;
+        out.change = std::move(sigs);
     }
     return true;
 }
@@ -398,10 +476,11 @@ bool from_json(const cJSON* j, MeltQuote& out) {
 
 cJSON* to_json(const MeltRequest& v) {
     cJSON* j = cJSON_CreateObject();
-    cJSON_AddStringToObject(j, "quote", v.quote.c_str());
-    cJSON_AddItemToObject(j, "inputs", to_json_array(v.inputs));
-    if (v.outputs)
-        cJSON_AddItemToObject(j, "outputs", to_json_array(*v.outputs));
+    if (!j || !cJSON_AddStringToObject(j,"quote",v.quote.c_str()) ||
+        !add_item(j,"inputs",mint_inputs(v.inputs)) ||
+        (v.outputs && !add_item(j,"outputs",to_json_array(*v.outputs)))) {
+        cJSON_Delete(j); return nullptr;
+    }
     return j;
 }
 
@@ -411,17 +490,19 @@ cJSON* to_json(const MeltRequest& v) {
 
 cJSON* to_json(const Token& v) {
     cJSON* j = cJSON_CreateObject();
-
-    cJSON* token_arr = cJSON_CreateArray();
+    cJSON* arr = cJSON_AddArrayToObject(j,"token");
     cJSON* entry = cJSON_CreateObject();
-    cJSON_AddStringToObject(entry, "mint", v.mint.c_str());
-    cJSON_AddItemToObject(entry, "proofs", to_json_array(v.proofs));
-    cJSON_AddItemToArray(token_arr, entry);
-    cJSON_AddItemToObject(j, "token", token_arr);
-
-    if (v.memo)
-        cJSON_AddStringToObject(j, "memo", v.memo->c_str());
-    cJSON_AddStringToObject(j, "unit", v.unit.c_str());
+    if (!j || !arr || !entry || !cJSON_AddItemToArray(arr,entry)) {
+        cJSON_Delete(entry); cJSON_Delete(j); return nullptr;
+    }
+    auto proofs = v.proofs;
+    for (auto& p : proofs) if (p.id.compare(0,2,"02")==0) p.witness.reset();
+    if (!cJSON_AddStringToObject(entry,"mint",v.mint.c_str()) ||
+        !add_item(entry,"proofs",to_json_array(proofs)) ||
+        (v.memo && !cJSON_AddStringToObject(j,"memo",v.memo->c_str())) ||
+        !cJSON_AddStringToObject(j,"unit",v.unit.c_str())) {
+        cJSON_Delete(j); return nullptr;
+    }
     return j;
 }
 
@@ -439,6 +520,7 @@ bool from_json(const cJSON* j, Token& out) {
     const cJSON* proofs = cJSON_GetObjectItemCaseSensitive(first, "proofs");
     if (!proofs) return false;
     if (!from_json_array(proofs, out.proofs)) return false;
+    for (auto& p : out.proofs) if (p.id.compare(0, 2, "02") == 0) p.witness.reset();
 
     const char* memo = get_string(j, "memo");
     out.memo = memo ? std::optional<std::string>(memo) : std::nullopt;

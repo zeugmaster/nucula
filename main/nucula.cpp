@@ -187,6 +187,23 @@ static void cmd_balance(const char *arg)
     }
 }
 
+static void cmd_recover(const char *)
+{
+    if (!wifi_is_connected()) {
+        nucula_console_write("recovery requires WiFi\r\n");
+        return;
+    }
+    wallet_store_guard guard;
+    for (int i = 0; i < MAX_MINTS; i++) {
+        auto *w = wallet_store_get(i);
+        if (!w || !w->has_pending_operation()) continue;
+        if (w->keysets().empty()) w->load_keysets();
+        console_printf("[%d] %s\r\n", i, w->recover_pending_operation()
+            ? "recovered" : "still pending; recovery data retained");
+    }
+    display_refresh();
+}
+
 // unit [<name>] — show or set the persisted default unit.
 static void cmd_unit(const char *arg)
 {
@@ -732,6 +749,11 @@ static void cmd_stickup(const char *arg)
         auto *w = wallet_store_get(i);
         if (!w || w->proofs().empty()) continue;
 
+        if (w->has_pending_operation()) {
+            w->recover_pending_operation();
+            console_printf("[%d] pending operation: retry drain after recovery\r\n", i);
+            continue;
+        }
         any = true;
 
         // A token's proofs share one unit, so drain one V4 token per unit.
@@ -1076,6 +1098,7 @@ extern "C" void app_main(void)
     console_register_cmd("mint",    cmd_mint,     "mint [list|add <url>|remove <idx>|info]");
     console_register_cmd("nfc",     cmd_nfc,      "nfc [request <amount>|stop]");
     console_register_cmd("invoice", cmd_invoice,  "invoice <amount> [u=|m=|w=]");
+    console_register_cmd("recover", cmd_recover, "recover interrupted mint/swap/melt requests");
     console_register_cmd("claim",   cmd_claim,    "claim <quote_id> [m=|w=]");
     console_register_cmd("melt",    cmd_melt,     "melt <request> [u=|m=|a=|w=]");
     console_register_cmd("stickup", cmd_stickup,  "drain wallet into v4 tokens");
@@ -1134,6 +1157,7 @@ extern "C" void app_main(void)
             if (!w) continue;
             if (!w->load_keysets())
                 ESP_LOGW(TAG, "failed to refresh keysets for [%d]", i);
+            if (w->has_pending_operation()) w->recover_pending_operation();
         }
     }
 

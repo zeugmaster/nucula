@@ -33,23 +33,21 @@ def run(args):
 def obj(label,source,defs=[]):
     dest=work/(label+'.o');run(common+defs+['-c',str(source),'-o',str(dest)]);return dest
 secp=[];bls=[]
-if a.only!='bls':
-    defs=['-DENABLE_MODULE_SCHNORRSIG=1','-DENABLE_MODULE_EXTRAKEYS=1','-DENABLE_MODULE_ECDH=1','-DECMULT_WINDOW_SIZE=12','-DCOMB_BLOCKS=2','-DCOMB_TEETH=5']
-    secp=[obj('secp',root/'components/secp256k1/port/secp256k1_port.c',defs)]
-    for name in ['precomputed_ecmult','precomputed_ecmult_gen']:
-        secp.append(obj(name,root/f'components/secp256k1/libsecp256k1/src/{name}.c',defs))
+defs=['-DENABLE_MODULE_SCHNORRSIG=1','-DENABLE_MODULE_EXTRAKEYS=1','-DENABLE_MODULE_ECDH=1','-DECMULT_WINDOW_SIZE=12','-DCOMB_BLOCKS=2','-DCOMB_TEETH=5']
+secp=[obj('secp',root/'components/secp256k1/port/secp256k1_port.c',defs)]
+for name in ['precomputed_ecmult','precomputed_ecmult_gen']:
+    secp.append(obj(name,root/f'components/secp256k1/libsecp256k1/src/{name}.c',defs))
 if a.only not in ['nutroot','schnorr']:
     bls=[obj('blst',work/'blst-src/server.c'),obj('mpi',root/'components/blst/port/blst_mpi.c'),obj('sha',root/'components/blst/port/blst_sha.c')]
-    support=work/'legacy_kdf_stub.c';support.write_text('#include <stdlib.h>\nint cashu_nut13_hmac(void){abort();}\n')
-    bls_suite=obj('bls_suite',root/'main/crypto_bls.c');stub=obj('legacy_kdf_stub',support)
+    bls_suite=obj('bls_suite',root/'main/crypto_bls.c')
 targets={
- 'bls':([root/'tools/test_bls_optimization.c']+bls,['-DNUCULA_WORKSPACE_TEST'] if a.workspace_only else ['-DNUCULA_CACHE_TEST'] if a.cache_only else ['-DNUCULA_GLV_TEST'] if a.quick else []),
+ 'bls':([root/'tools/test_bls_optimization.c',root/'main/nutroot_prepare.c',root/'main/hex.c']+secp+bls,['-DNUCULA_WORKSPACE_TEST'] if a.workspace_only else ['-DNUCULA_CACHE_TEST'] if a.cache_only else ['-DNUCULA_GLV_TEST'] if a.quick else []),
  'nutroot':([root/'tools/test_nutroot_optimization.c',root/'main/hex.c']+secp,[]),
  'schnorr':([root/'tools/test_schnorr_batch.c']+secp,[]),
  'legacy':([root/'tools/test_legacy_optimization.c',root/'main/crypto.c',root/'main/hex.c']+secp,[]),
 }
 if a.only not in ['nutroot','schnorr']:
-    targets['current']=([root/'main/nutroot_current_test.c',root/'main/nutroot.c',root/'main/nutroot_prepare.c',root/'main/hex.c']+secp+bls+[bls_suite,stub],['-DNUCULA_HOST_TEST_MAIN'])
+    targets['current']=([root/'main/nutroot_current_test.c',root/'main/nutroot.c',root/'main/nutroot_prepare.c',root/'main/hex.c']+secp+bls+[bls_suite],['-DNUCULA_HOST_TEST_MAIN'])
 for name,(sources,defs) in targets.items():
     if a.only and a.only!=name:continue
     binary=work/name

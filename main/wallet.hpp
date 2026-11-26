@@ -53,13 +53,14 @@ public:
     static const unsigned char* p2pk_privkey();   // 32 bytes, NULL if absent
 
     // Per-keyset counter management
-    static uint32_t load_counter(const std::string& keyset_id);
-    static bool save_counter(const std::string& keyset_id, uint32_t counter);
+    static bool load_counter(const std::string& keyset_id, uint64_t& counter);
+    static bool save_counter(const std::string& keyset_id, uint64_t counter);
 
     struct BlindingData {
         std::vector<BlindedMessage> outputs;
         std::vector<std::string> secrets;
         std::vector<std::string> blinding_factors;
+        std::vector<std::optional<std::string>> spend_info;
     };
 
     bool generate_outputs(const std::vector<int>& amounts,
@@ -71,6 +72,7 @@ public:
                             const Keyset& keyset,
                             std::vector<Proof>& proofs_out);
 
+    // Persists every returned proof; callers exporting tokens remove their send proofs afterward.
     bool swap(std::vector<Proof>& inputs,
               int amount,
               std::vector<Proof>& new_proofs,
@@ -83,7 +85,11 @@ public:
     // for secp proofs, the intrinsic pairing check (one batch per call) for
     // v3. Rejects v3 proofs carrying a dleq (malformed per spec). Called by
     // receive() and by the NFC tap path before stashing offline tokens.
-    bool verify_incoming_proofs(const std::vector<Proof>& inputs);
+    // Offline v3 reception accepts only bare/empty-tree key paths.
+    bool verify_incoming_proofs(const std::vector<Proof>& inputs, bool offline = false);
+
+    bool has_pending_operation() const;
+    bool recover_pending_operation();
 
     // Offline-receive queue: tokens stashed when WiFi is down and drained on
     // reconnect. Each entry is a complete cashuA/cashuB token string from one
@@ -165,7 +171,12 @@ private:
     std::optional<MintInfo> info_;   // NUT-06 cache, RAM only
     secp256k1_context* ctx_;
     int nvs_slot_;
+    bool proof_storage_error_ = false;
 
+    bool begin_operation(const std::string& path, const std::string& body,
+                         const std::vector<Proof>& inputs, const BlindingData& blinding);
+    bool finish_operation(const std::vector<Proof>& inputs, const std::vector<Proof>& outputs);
+    bool clear_operation();
     bool save_proofs();
     bool load_proofs();
     bool save_keysets();

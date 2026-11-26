@@ -1,8 +1,9 @@
-/* Current proposal, pinned to nuts#421 a3f04b97154b (2026-09-10).
- * Public examples from tests/10-tests.md and tests/28-tests.md. */
+/* PR #443 b6c07bdc198ff95461bda3f5cb9483c34861efaa (2026-11-26).
+ * Expected values copied from upstream tests/00, 10 and 13-tests.md. */
 #include "nutroot_current_test.h"
 #include "nutroot.h"
 #include "nutroot_prepare.h"
+#include "cashu_suite.h"
 #include "hex.h"
 #include <stdio.h>
 #include <string.h>
@@ -26,53 +27,86 @@ static int public_key(const secp256k1_context *ctx, const unsigned char sk[32], 
     return secp256k1_ec_pubkey_create(ctx,&p,sk) && secp256k1_ec_pubkey_serialize(ctx,out,&n,&p,SECP256K1_EC_COMPRESSED);
 }
 int nutroot_current_run_tests(const secp256k1_context *ctx) {
-    unsigned char id[33], secrets[2][33], signature[48], blind[48], txhash[32], digest[32];
-    CHECK(hex_to_bytes("02b7e077d020fabed456a6be138a8e20e9ef40b44d873fa12c005b656eb0cf99f6",id,33));
-    CHECK(hex_to_bytes("02e6e7cfa7b82d4b3b449fa6466c893469a727d0214d48db4956a6054b8022a29b",secrets[0],33));
-    CHECK(hex_to_bytes("03a882e17eb79f4f87313b299e208f9109734d0211a8df307b1570dbad2cdf74bf",secrets[1],33));
-    CHECK(hex_to_bytes("84d1b7291ae5737f3c851aa33cafe0f7afeb5ccb4da086c482bb85b7525e61547f1b5a6d1a01b1fed1f960d1a9d03327",signature,48));
-    CHECK(hex_to_bytes("b42a0bcc39598db1dca617aeea6bc367f2566636826dc961a54faae15b3b8d10afc1cb0206e70ab3b0e12c2b9478cd55",blind,48));
+    unsigned char id[33], secrets[2][33], signatures[2][48], blinds[2][48], ys[2][48];
+    unsigned char txhash[32], digest[32], one[32]={0}; one[31]=1;
+    CHECK(hex_to_bytes("022546ab0a2dee9f79510f4e20a4e3d9e894a97361047c594902573a7e64f9d701",id,33));
+    CHECK(hex_to_bytes("0240c186f3e19f6f8cd00db81c5266d5c74ddca48ff848efd0e3e125b2846f30d9",secrets[0],33));
+    CHECK(hex_to_bytes("a33dd4de26ea950060ae5c45bdc408d72aaf51ba9f4ccdeee4a040df067ca87c799a406fec88c2a328b75b290e27f7b6",signatures[0],48));
+    CHECK(hex_to_bytes("b42a0bcc39598db1dca617aeea6bc367f2566636826dc961a54faae15b3b8d10afc1cb0206e70ab3b0e12c2b9478cd55",blinds[0],48));
+    CHECK(hex_to_bytes("0385fe6eb0608c6b5241e0fd86ebbd5dd30a6a97a0014a110c0c6297001147e5be",secrets[1],33));
+    CHECK(hex_to_bytes("84c2b06e690cf434f38bca886cfe2ca2d8739231f14b350d907bd4dd62ef901c0c99453d30651d43727cdbb2f07fd1b3",signatures[1],48));
+    CHECK(hex_to_bytes("a14669f181e074cc466e2a165c47ab7db5b3939e42b349f1201874033943ef279f36476e627ab1c937e8ea6a76448fc2",blinds[1],48));
+    for (unsigned i=0;i<2;i++) {
+        size_t len=48; CHECK(cashu_suite_bls.blind(NULL,secrets[i],33,one,32,ys[i],&len));
+    }
+    CHECK(equal_hex(ys[0],48,"90f53b3088936b80ecfcc065a0746c5c1843ffd4527dbe3b9aba5a6109aed338ddc0f109511e9dfd37342aa99dd816d8"));
     nutroot_input_t inputs[2]={
-        {.amount=8,.keyset_id=id,.keyset_id_len=33,.secret=secrets[0],.secret_len=33,.C=signature,.C_len=48},
-        {.amount=4,.keyset_id=id,.keyset_id_len=33,.secret=secrets[1],.secret_len=33,.C=signature,.C_len=48}};
+        {.amount=8,.keyset_id=id,.keyset_id_len=33,.secret=secrets[0],.secret_len=33,.C=signatures[0],.C_len=48,.Y=ys[0],.Y_len=48},
+        {.amount=4,.keyset_id=id,.keyset_id_len=33,.secret=secrets[1],.secret_len=33,.C=signatures[1],.C_len=48,.Y=ys[1],.Y_len=48}};
     nutroot_output_t outputs[2]={
-        {.amount=4,.keyset_id=id,.keyset_id_len=33,.B_=blind,.B_len=48},
-        {.amount=4,.keyset_id=id,.keyset_id_len=33,.B_=blind,.B_len=48}};
+        {.amount=4,.keyset_id=id,.keyset_id_len=33,.B_=blinds[0],.B_len=48},
+        {.amount=4,.keyset_id=id,.keyset_id_len=33,.B_=blinds[1],.B_len=48}};
     nutroot_tx_t tx={.proof_inputs=inputs,.n_proof_inputs=1,.blinded_outputs=outputs,.n_blinded_outputs=2};
-    CHECK(nutroot_tx_digest(&tx,txhash));
-    CHECK(equal_hex(txhash,32,"5985ee7a424a7d9ce66441eacac3165d0d933c4c31315c7cb2dacdb9579d01bb"));
-    CHECK(nutroot_input_digest(txhash,&inputs[0],digest));
-    CHECK(equal_hex(digest,32,"d988bdcfa1d7699324894fc5dba3a70e7bca534e644b257c9700debb424b4ec8"));
-    inputs[0].witness="{\"signatures\":[\"678c1e71b29552ad86069bcc6d1965028b31df1e4dedf69fe5274ffefcad8c77593e474f581e7b43d9e5f8815c0babb607b17f22536ef5f2354889f088da3979\"]}";
+    CHECK(nutroot_tx_digest(&tx,txhash)&&equal_hex(txhash,32,"e88d16feadb0abc0cf4a08a7f5929a3a7c5e595f8d4e659d9ba66086aead402e"));
+    CHECK(nutroot_input_digest(txhash,&inputs[0],digest)&&equal_hex(digest,32,"88a664e4f25fbd76baf5846221aa8f9d95beb0341f67d5458332e4f6809abcde"));
+    inputs[0].witness="{\"signatures\":[\"3c2ce5dc36aea01a9b9f44287ef12e67a7fb0e0113720c3a000b5942835426e6635b09c087dbd30bde77ddf03b43b87858b3d2bf29d4b3ca7895f73e4839d3c2\"]}";
     CHECK(nutroot_verify_transaction(ctx,&tx,2000000000));
-    outputs[0].amount++;CHECK(!nutroot_verify_transaction(ctx,&tx,2000000000));outputs[0].amount--;
-    tx.n_proof_inputs=2;outputs[0].amount=8;
-    CHECK(nutroot_tx_digest(&tx,txhash));
-    CHECK(equal_hex(txhash,32,"1544d76f577b7d567f429b482c1c081796f68f201edb3cafa75f68619d018a88"));
-    static const char *digests[]={"0054406a4cf6bbfc11fed28e7c896310f43d1f8eea4d0f2f015541d5c4e86756","bdef95d2bb49c0d4d6de2119bf009808eb9d87141c9f539113c0a8d546aa234b"};
-    inputs[0].witness="{\"signatures\":[\"f3d44abd44e262734e40f57bf3e3c4f60ab61242f7eb9751d149729e083621387ddca3141baffdda3b902068c2dd94aec5a16ade6b1153f3cf1ef0e1c6facc49\"]}";
-    inputs[1].witness="{\"signatures\":[\"d3f93b9ae50290a82374d1382985b8fcae4658ab6d4c5e9454e41ce22d344a2ca2a6e9f04cdd199b4bbfb2becf0f260b86a5cbd500734a88f138cf7226b51ad1\"]}";
-    for(size_t i=0;i<2;i++) { CHECK(nutroot_input_digest(txhash,&inputs[i],digest));CHECK(equal_hex(digest,32,digests[i])); }
+    outputs[0].amount++; CHECK(!nutroot_verify_transaction(ctx,&tx,2000000000)); outputs[0].amount--;
+    tx.n_proof_inputs=2; outputs[0].amount=8;
+    CHECK(nutroot_tx_digest(&tx,txhash)&&equal_hex(txhash,32,"9430a89c2db9df2a8c645369ea6f8ca1100f21b3c365ac0bb153422d2fd7e483"));
+    CHECK(nutroot_input_digest(txhash,&inputs[0],digest)&&equal_hex(digest,32,"56a8a7ea8c0e785f2c4b77b99648daca04f7e110dac4c86b2d6372a34ce9393e"));
+    inputs[0].witness="{\"signatures\":[\"d390c4ad38c949c3dceb1d6a75de4bbb68291e2a72a4abef26ea3a0d373a24840572aef6d4359f8baea1ae2ed62336c8d833e91aaf3e78f32c7cf9c0581c3552\"]}";
+    CHECK(nutroot_input_digest(txhash,&inputs[1],digest)&&equal_hex(digest,32,"681a5a9f1881a685e5e8fb0d33dabd7c8987bf78a1e9424bb4535d124dfe6877"));
+    inputs[1].witness="{\"signatures\":[\"f608bb156579e85c5788de9e7d89e10a0aeb39ba6983bc352583406cd8eab1743cdb1eb0b7fb31f2679a2f0c4138b72cfbc92888d409af26c4109016a378a74a\"]}";
     CHECK(nutroot_verify_transaction(ctx,&tx,2000000000));
-    const char *saved=inputs[1].witness;inputs[1].witness=inputs[0].witness;
-    CHECK(!nutroot_verify_transaction(ctx,&tx,2000000000));inputs[1].witness=saved;
-    /* Keyset version decides dispatch; a malformed v3 point never skips. */
+    const char *saved=inputs[1].witness; inputs[1].witness=inputs[0].witness;
+    CHECK(!nutroot_verify_transaction(ctx,&tx,2000000000)); inputs[1].witness=saved;
     unsigned char prefix=secrets[0][0];secrets[0][0]=4;
-    CHECK(!nutroot_verify_transaction(ctx,&tx,2000000000));
-    id[0]=1;CHECK(nutroot_verify_transaction(ctx,&tx,2000000000));id[0]=2;secrets[0][0]=prefix;
-    tx.n_blinded_outputs=0;CHECK(!nutroot_verify_transaction(ctx,&tx,2000000000));tx.n_blinded_outputs=2;
-    size_t oldlen=inputs[0].secret_len;inputs[0].secret_len=SIZE_MAX;CHECK(!nutroot_tx_digest(&tx,txhash));inputs[0].secret_len=oldlen;
-    nutroot_quote_t mint={8,"quote-mint-0001"};
+    CHECK(!nutroot_verify_transaction(ctx,&tx,2000000000));secrets[0][0]=prefix;
+    id[0]=3;CHECK(!nutroot_verify_transaction(ctx,&tx,2000000000));id[0]=2;
+    size_t oldlen=inputs[0].Y_len;inputs[0].Y_len=SIZE_MAX;CHECK(!nutroot_tx_digest(&tx,txhash));inputs[0].Y_len=oldlen;
+    unsigned char lock_key[33];
+    CHECK(hex_to_bytes("0292905560a6a511a13e383ee27e220aeffc85b7a7bc293e6935b1d3678d209812",lock_key,33));
+    nutroot_quote_t mint={.amount=8,.quote_id="quote-mint-0001",.lock_key=lock_key};
     tx.n_proof_inputs=0;tx.mint_quote_inputs=&mint;tx.n_mint_quote_inputs=1;tx.n_blinded_outputs=1;outputs[0].amount=8;
-    CHECK(nutroot_tx_digest(&tx,txhash));CHECK(equal_hex(txhash,32,"271cb7d13b3de01fe693c8f1be0adcd7855ee2bed3532840778cdc9ff8a5b783"));
-    CHECK(nutroot_quote_input_digest(txhash,&mint,digest));CHECK(equal_hex(digest,32,"ca6970e6795f610be199bc1d4705dec7ef31f3939dcd08b8a1e2ea4960565f39"));
-    /* Disclosure is canonical and does not alter satisfaction. */
-    unsigned char leaf[514];nutroot_leaf_t parsed;
-    const char *lh="00010200010104002102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f90a000101";
-    size_t len=strlen(lh)/2;CHECK(hex_to_bytes(lh,leaf,len));CHECK(nutroot_leaf_parse(ctx,leaf,len,&parsed)&&parsed.disclosure==1);
-    leaf[len-1]=0;CHECK(!nutroot_leaf_parse(ctx,leaf,len,&parsed));leaf[len-1]=2;CHECK(!nutroot_leaf_parse(ctx,leaf,len,&parsed));
-    CHECK(!nutroot_leaf_parse(ctx,leaf,sizeof(leaf),&parsed));
-    unsigned char hashes[9*32]={0},root[32];CHECK(!nutroot_merkle_root(hashes,9,root));CHECK(!nutroot_root_from_path(hashes,hashes,4,root));
+    CHECK(nutroot_tx_digest(&tx,txhash)&&equal_hex(txhash,32,"37e64e944b7580653f44cfa06b416fac9a548d5bbf372e6545c9c982e5a3a70f"));
+    CHECK(nutroot_quote_input_digest(txhash,&mint,digest)&&equal_hex(digest,32,"b8218d99fe1d3138c16230ed0b119a8ea8a17975131fedd9b7459f2af9aa483a"));
+    mint.amount=4;mint.issued=3;mint.quote_id="quote-mint-0004";outputs[0].amount=4;
+    CHECK(nutroot_tx_digest(&tx,txhash)&&equal_hex(txhash,32,"90d943e1f02938e5d50a7ead9f04ec1a633bc207bf7976f54569632db62d8d4d"));
+    CHECK(nutroot_quote_input_digest(txhash,&mint,digest)&&equal_hex(digest,32,"7754960e452ae522213f1112c6eb5946b0bac278b0a307e38927d59531ed558e"));
+    CHECK(nutroot_verify_witness(ctx,lock_key,digest,"{\"signatures\":[\"c6709751b0d3c14fef333326f4cd9d45c7af327ea4659a7b4637e92d9a82b0f6c25a4bce9e99385f40f39ea6fe26af9ba07bfaf2c378f2f47a1eb2d474a0a7a6\"]}",2000000000));
+    mint.issued=0;CHECK(nutroot_tx_digest(&tx,txhash)&&!equal_hex(txhash,32,"90d943e1f02938e5d50a7ead9f04ec1a633bc207bf7976f54569632db62d8d4d"));
+    tx.n_mint_quote_inputs=0;tx.n_proof_inputs=1;tx.n_blinded_outputs=0;
+    nutroot_quote_t melt={.amount=8,.quote_id="quote-melt-0001"};tx.melt_quote_outputs=&melt;tx.n_melt_quote_outputs=1;
+    CHECK(nutroot_tx_digest(&tx,txhash)&&equal_hex(txhash,32,"f2fd9eaf27d572e47d776bd09856f760b3bb18338a9b497bee18b5ebec804048"));
+    CHECK(nutroot_input_digest(txhash,&inputs[0],digest)&&equal_hex(digest,32,"e5bde063cdeb9187aafc8e521a63c3463188836ff8e1c6575e60c5a045f620b6"));
+    melt.quote_id="quote-melt-0002";outputs[0].amount=outputs[1].amount=0;tx.n_blinded_outputs=2;
+    CHECK(nutroot_tx_digest(&tx,txhash)&&equal_hex(txhash,32,"6649c7b016115b0d7f94fecef9af59ed616a32bb3e9f0313222427d29d087b80"));
+    inputs[0].witness="{\"signatures\":[\"8129d244fa8d370a70c511f934788f2327f35739b8a60dac4545f190882a72774a947323ef6399d3e5e16e8687810549c19dcaab054f700caf05cbcd2e9c457b\"]}";CHECK(nutroot_verify_transaction(ctx,&tx,2000000000));
+    melt.quote_id="quote-melt-0003";melt.has_fee_index=1;tx.n_blinded_outputs=0;
+    CHECK(nutroot_tx_digest(&tx,txhash)&&equal_hex(txhash,32,"ce3fff2131053b7a062c0edd1c3f8b0f63d32b272802b4926e148aa1c811c938"));
+    melt.fee_index=1;CHECK(nutroot_tx_digest(&tx,txhash)&&equal_hex(txhash,32,"333e212a256868bca7624df989a90a55e812b173269dd5e42ab9845b11179f9f"));
+    unsigned char point[33],input_digest[32],leaf[514],lh[32],root[32];nutroot_leaf_t parsed;
+    CHECK(hex_to_bytes("02d310a4d661e3158e7d360617e739d6bacbf015431b24a43168db0ab99ef8f828",point,33));
+    CHECK(hex_to_bytes("e1d7170b89a2b6eedec90453e32b6c320dfadd590e6a6454bddec95a0e3834cd",input_digest,32));
+    const char *script="{\"leaf\":\"00020200010104002102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1306000468a3be80\",\"control\":{\"K\":\"03a3e12cc077e5605f36441046f50c114fcc883b079a34028bed66732e3a419e51\",\"path\":[]},\"signatures\":[\"8e78d060669184b2aad25d26dc7b332c3c75c4f669d3cfcb39c203e84ebaa8db61e8b28e161b2009b524c3bd8f554aaa498e7bf583b2870948b2c17bbca0dc7e\"]}";
+    CHECK(nutroot_verify_witness(ctx,point,input_digest,script,2000000000));
+    CHECK(!nutroot_verify_witness(ctx,point,input_digest,script,0));
+    CHECK(nutroot_verify_witness(ctx,point,input_digest,"{\"signatures\":[\"619e0726595b5adff06cc3e6ea1c409f10f7b064cf8888f0eed0efbac854eabf4632642930bdc7c4d7d983379301a4f263991dbd19d96e5ebcfab9e8583bd510\"]}",2000000000));
+    size_t len=49;CHECK(hex_to_bytes("00020200010104002102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1306000468a3be80",leaf,len));
+    CHECK(nutroot_leaf_hash(leaf,len,lh)&&nutroot_script_digest(input_digest,lh,digest));
+    CHECK(equal_hex(digest,32,"e3b48916cf9e794ad1242edf3120d354cdd252057e2f685f4afef082fe9b5545"));
+    CHECK(!nutroot_verify_witness(ctx,point,input_digest,"{\"signatures\":[\"619e0726595b5adff06cc3e6ea1c409f10f7b064cf8888f0eed0efbac854eabf4632642930bdc7c4d7d983379301a4f263991dbd19d96e5ebcfab9e8583bd510\"],\"extra\":1}",2000000000));
+    CHECK(!nutroot_verify_witness(ctx,point,input_digest,"{\"signatures\":[\"619e0726595b5adff06cc3e6ea1c409f10f7b064cf8888f0eed0efbac854eabf4632642930bdc7c4d7d983379301a4f263991dbd19d96e5ebcfab9e8583bd510\"],\"preimage\":\"0000000000000000000000000000000000000000000000000000000000000000\"}",2000000000));
+    CHECK(!nutroot_verify_witness(ctx,point,input_digest,"{\"signatures\":[\"619e0726595b5adff06cc3e6ea1c409f10f7b064cf8888f0eed0efbac854eabf4632642930bdc7c4d7d983379301a4f263991dbd19d96e5ebcfab9e8583bd510\"],\"control\":{}}",2000000000));
+    CHECK(!nutroot_verify_witness(ctx,point,input_digest,"{\"signatures\":[\"619e0726595b5adff06cc3e6ea1c409f10f7b064cf8888f0eed0efbac854eabf4632642930bdc7c4d7d983379301a4f263991dbd19d96e5ebcfab9e8583bd510\"],\"signatures\":[\"619e0726595b5adff06cc3e6ea1c409f10f7b064cf8888f0eed0efbac854eabf4632642930bdc7c4d7d983379301a4f263991dbd19d96e5ebcfab9e8583bd510\"]}",2000000000));
+    CHECK(!nutroot_verify_witness(ctx,point,input_digest,"{\"leaf\":\"00020200010104002102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1306000468a3be80\",\"control\":{\"K\":\"03a3e12cc077e5605f36441046f50c114fcc883b079a34028bed66732e3a419e51\",\"path\":[]},\"signatures\":[\"8e78d060669184b2aad25d26dc7b332c3c75c4f669d3cfcb39c203e84ebaa8db61e8b28e161b2009b524c3bd8f554aaa498e7bf583b2870948b2c17bbca0dc7e\",\"bad\"]}",2000000000));
+    CHECK(!nutroot_verify_witness(ctx,point,input_digest,"{\"leaf\":\"00020200010104002102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1306000468a3be80\",\"control\":{\"K\":\"03a3e12cc077e5605f36441046f50c114fcc883b079a34028bed66732e3a419e51\",\"path\":[]},\"signatures\":[\"8e78d060669184b2aad25d26dc7b332c3c75c4f669d3cfcb39c203e84ebaa8db61e8b28e161b2009b524c3bd8f554aaa498e7bf583b2870948b2c17bbca0dc7e\",123]}",2000000000));
+    CHECK(hex_to_bytes("00010200010104002102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9090004deadbeef",leaf,49)&&!nutroot_leaf_parse(ctx,leaf,49,&parsed));
+    CHECK(hex_to_bytes("00ff0200010104002102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",leaf,42)&&!nutroot_leaf_parse(ctx,leaf,42,&parsed));
+    CHECK(hex_to_bytes("000408002064451ff981aa92887b070762e97302df00a0ab97a853c323394b0a9cfaf46fae",leaf,37)&&nutroot_leaf_parse(ctx,leaf,37,&parsed)&&parsed.type==NUTROOT_LEAF_COMMIT);
+    CHECK(hex_to_bytes("00040200010108002064451ff981aa92887b070762e97302df00a0ab97a853c323394b0a9cfaf46fae",leaf,41)&&!nutroot_leaf_parse(ctx,leaf,41,&parsed));
+    unsigned char hashes[9*32]={0};CHECK(!nutroot_merkle_root(hashes,9,root));CHECK(!nutroot_root_from_path(hashes,hashes,4,root));
     /* Raw x-coordinate ECDH and NUT-28 slot derivation. */
     unsigned char e[32],p[32],E[33],P[33],zx[32],other[32],r[32];
     CHECK(hex_to_bytes("1cedb9df0c6872188b560ace9e35fd55c2532d53e19ae65b46159073886482ca",e,32));
@@ -85,15 +119,22 @@ int nutroot_current_run_tests(const secp256k1_context *ctx) {
     /* Current NUT-13: explicit length framing, full u64 counters, all
      * per-proof branches, and reference rejection-loop outputs. */
     nutroot_kdf_t kdf;
-    CHECK(nutroot_kdf_init(&kdf,(const unsigned char *)"nut13 v3 test seed",sizeof("nut13 v3 test seed")-1,id,33));
-    static const char *keys[]={"47196dc081150ce13fd0e478b8b71831b825be389211c9c56a8062a61af70347","659a545656334a47e08de62377e2f3128c72cd27e576908842e1ab359d395247","cee0df42cdaee25b228300b460edcbfab94be650ce2676abd77ef0697311e5e2","46c2c20d79496e1ebe19805ba4df33535474800eefefc252140e1f20d0284ffe"};
-    static const char *factors[]={"156857a0bce1b2788895f1885a21c56cf000df0de1e855608c7ccb6d9e2d7728","6de008e7a6c418b76a94e48c4b71a11078173de70abb3eaeb7cc1273a6dccede","35f56bb2016802a96a2846de8635712281d68182788410735b9826a211499fd4","65724fcdbc4ccfbb2a610b1bddd14238492b81d3761584b6492fcbadfeb9355f"};
+    unsigned char seed[64];CHECK(hex_to_bytes("6e757431332076332074657374207365656400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",seed,64));
+    CHECK(!nutroot_kdf_init(&kdf,seed,64,id,8));
+    CHECK(!nutroot_kdf_init(&kdf,seed,64,NULL,0));
+    CHECK(!nutroot_kdf_init(&kdf,seed,32,id,33));
+    CHECK(nutroot_kdf_init(&kdf,seed,64,id,33));
+    static const char *keys[]={"930c88ad9dc8531c147862d4ef9c0981200ff1f510c0a9e1c024db725a1d56c6","a2ac179175fc3bb7c8cf05542193017a0d33b3316ea5d8a97777c7660d2a55b6","fec1f9c77a85ea144b6ea2ecd90a61a226855b4ed692a7e8c7db7afb600f7205","1aa7018e67ac4655d3d6dd120a2c715adb6bcd6b54dbf90a685ae452916edb61"};
+    static const char *factors[]={"4381a54d5fb006bf9cd63a30e857f0ef4b58a5a123c7cd8909099abe77d5736e","2349fa461401f98e1ffa80d34baf1c11bbe62014bbd076985229f0706cda83f1","7121cd4ce638011afaea356eefe1834b03a86080064c7c28f1eab45c32d7b06e","46186ec0f98f00aaf51a7cb59472c65e35a33f94e2785b6b384d1666b9c1759c"};
+    char id_hex[67];bytes_to_hex(id,33,id_hex);
     for(unsigned i=0;i<4;i++) {
+        CHECK(cashu_suite_bls.derive_secret(seed,64,id_hex,i,p)&&equal_hex(p,32,keys[i]));
+        CHECK(cashu_suite_bls.derive_r(seed,64,id_hex,i,r)&&equal_hex(r,32,factors[i]));
         CHECK(nutroot_kdf_derive(&kdf,i,0,0,p)&&equal_hex(p,32,keys[i]));
         CHECK(nutroot_kdf_derive(&kdf,i,1,0,r)&&equal_hex(r,32,factors[i]));
     }
-    CHECK(nutroot_kdf_derive(&kdf,0,2,0,p)&&equal_hex(p,32,"4af68649f3230c5589879f0cf33fd6d9f007cd3a54a2e6ed8699a576630fc025"));
-    CHECK(nutroot_kdf_derive(&kdf,0,3,2,p)&&equal_hex(p,32,"ba7a8fc52b8c77b7412e5edaae211d92f2c79980788e3e3a480eb0dccac0b33e"));
+    CHECK(nutroot_kdf_derive(&kdf,0,2,0,p)&&equal_hex(p,32,"c4b697b346799e55a80ba7a0b6f7670a7f62a985c97de685dc693e87dc6d137a"));
+    CHECK(nutroot_kdf_derive(&kdf,0,3,2,p)&&equal_hex(p,32,"520f39607492fad03cf0b2c44929680ef3b0955adf20a9b2d9b64b18bffaeaa4"));
     CHECK(nutroot_kdf_derive(&kdf,UINT64_MAX,0,0,p)&&nutroot_kdf_derive(&kdf,UINT32_MAX,0,0,r)&&memcmp(p,r,32));
     CHECK(!nutroot_kdf_derive(&kdf,0,4,0,p));
     nutroot_kdf_clear(&kdf);CHECK(!nutroot_kdf_derive(&kdf,0,0,0,p));
@@ -101,7 +142,7 @@ int nutroot_current_run_tests(const secp256k1_context *ctx) {
     CHECK(equal_hex(P,33,"028edfebd6fdea3e1d89359af20868a2e76315b36cdb1a79de497a1757ca7bd407"));
     CHECK(nutroot_nums_verify(ctx,p,P));p[31]=8;CHECK(!nutroot_nums_verify(ctx,p,P));p[31]=0;CHECK(!nutroot_nums_key(ctx,p,P));
     CHECK(secp256k1_nucula_sqrt_compare(64));
-    REPORT("current proposal: transcript, per-input witnesses, routing, disclosure, caps and ECDH vectors OK");
+    REPORT("current proposal: transcript, per-input witnesses, routing, script binding, strict witnesses, caps and ECDH vectors OK");
     return 1;
 }
 #ifdef NUCULA_HOST_TEST_MAIN
@@ -136,7 +177,7 @@ typedef struct {
 } current_input;
 typedef struct {
     current_input in[CURRENT_N];
-    unsigned char Ks[CURRENT_N*96], C[CURRENT_N*48], B[CURRENT_N*48];
+    unsigned char Ks[CURRENT_N*96], C[CURRENT_N*48], B[CURRENT_N*48], Y[CURRENT_N*48];
     unsigned char Cblind[CURRENT_N*48], unblinded[CURRENT_N*48], rs[CURRENT_N*32];
     unsigned char out_secrets[CURRENT_N][33], receiver_sk[32], receiver_pk[33];
     const unsigned char *secrets[CURRENT_N], *outputs[CURRENT_N];size_t lengths[CURRENT_N];
@@ -200,18 +241,18 @@ void nutroot_current_benchmark(const secp256k1_context *ctx) {
         blst_scalar scalar;unsigned attempt=0;
         do {fixture_scalar("blinding",i,attempt++,w->rs+32*i);blst_scalar_from_bendian(&scalar,w->rs+32*i);}while(!blst_sk_check(&scalar));
         hex_to_bytes(crypto_bls_bench_key_hex(i),w->Ks+96*i,96);
-        w->inputs[i]=(nutroot_input_t){.amount=1ULL<<i,.keyset_id=keyset_id,.keyset_id_len=33,.secret=in->point,.secret_len=33,.C=w->C+48*i,.C_len=48};
+        w->inputs[i]=(nutroot_input_t){.amount=1ULL<<i,.keyset_id=keyset_id,.keyset_id_len=33,.secret=in->point,.secret_len=33,.C=w->C+48*i,.C_len=48,.Y=w->Y+48*i,.Y_len=48};
         w->outs[i]=(nutroot_output_t){.amount=1ULL<<i,.keyset_id=keyset_id,.keyset_id_len=33,.B_=w->B+48*i,.B_len=48};
         size_t length=48;ok&=cashu_suite_bls.blind(NULL,w->outputs[i],33,w->rs+32*i,32,w->B+48*i,&length);
         blst_hw_acquire();
         blst_p1 point,signed_point;blst_p1_affine affine;unsigned char a[32]={0};a[0]=2+i;
-        blst_hash_to_g1(&point,in->point,33,BLS_DST,sizeof(BLS_DST)-1,NULL,0);blst_p1_mult(&signed_point,&point,a,256);blst_p1_compress(w->C+48*i,&signed_point);
+        blst_hash_to_g1(&point,in->point,33,BLS_DST,sizeof(BLS_DST)-1,NULL,0);blst_p1_compress(w->Y+48*i,&point);blst_p1_mult(&signed_point,&point,a,256);blst_p1_compress(w->C+48*i,&signed_point);
         ok&=blst_p1_uncompress(&affine,w->B+48*i)==BLST_SUCCESS;blst_p1_from_affine(&point,&affine);blst_p1_mult(&signed_point,&point,a,256);blst_p1_compress(w->Cblind+48*i,&signed_point);
         blst_hw_release();vTaskDelay(2);
     }
     w->tx=(nutroot_tx_t){.proof_inputs=w->inputs,.n_proof_inputs=CURRENT_N,.blinded_outputs=w->outs,.n_blinded_outputs=CURRENT_N};
     if(!ok){REPORT("FAILED: current fixture setup");goto done;}
-    REPORT("NUT-10 a3f04b97154b; 10 distinct keys, 33B point secrets, full-width factors, fresh E per receiver-keyed output; BLS=%u Nutroot=%u",cashu_bls_options(),nutroot_optimizations());
+    REPORT("NUT-10 b6c07bdc198f; 10 distinct keys, 33B point secrets, full-width factors, fresh E per receiver-keyed output; BLS=%u Nutroot=%u",cashu_bls_options(),nutroot_optimizations());
     cashu_bls_clear_key_cache();
     TIMED("BLS verify cold n=10",1,ok&=cashu_suite_bls.verify_proofs(NULL,CURRENT_N,w->Ks,w->C,w->secrets,w->lengths));
     TIMED("BLS verify warm n=10",4,ok&=cashu_suite_bls.verify_proofs(NULL,CURRENT_N,w->Ks,w->C,w->secrets,w->lengths));
@@ -251,12 +292,12 @@ void nutroot_current_benchmark(const secp256k1_context *ctx) {
     ok&=cashu_bls_configure(saved_bls,cashu_bls_capacity());
     {
         nutroot_kdf_t kdf;nutroot_prepared_output_t entry,entries[10];
-        static const unsigned char seed[]="synthetic preparation seed";
-        ok&=nutroot_kdf_init(&kdf,seed,sizeof(seed)-1,keyset_id,33);
+        static const unsigned char seed[64]="synthetic preparation seed";
+        ok&=nutroot_kdf_init(&kdf,seed,sizeof(seed),keyset_id,33);
         unsigned char scalar[32],K[33];
         TIMED("KDF cached prefix n=10",3,for(unsigned i=0;i<10;i++)ok&=nutroot_kdf_derive(&kdf,100+i,1,0,scalar));
         TIMED("KDF new context n=10",3,for(unsigned i=0;i<10;i++) {
-            nutroot_kdf_t fresh;ok&=nutroot_kdf_init(&fresh,seed,sizeof(seed)-1,keyset_id,33)&&nutroot_kdf_derive(&fresh,100+i,1,0,scalar);nutroot_kdf_clear(&fresh);
+            nutroot_kdf_t fresh;ok&=nutroot_kdf_init(&fresh,seed,sizeof(seed),keyset_id,33)&&nutroot_kdf_derive(&fresh,100+i,1,0,scalar);nutroot_kdf_clear(&fresh);
         });
         TIMED("prepare fresh outputs n=10",3,for(unsigned i=0;i<10;i++)ok&=nutroot_prepare_bare(ctx,&kdf,100+10*(unsigned)repeat+i,&entries[i]));
         TIMED("read prepared outputs n=10",3,for(unsigned i=0;i<10;i++){memcpy(&entry,&entries[i],sizeof(entry));ok&=entry.ready;});

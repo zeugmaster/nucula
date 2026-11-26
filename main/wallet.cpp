@@ -7,6 +7,9 @@
 #include "hex.h"
 #include "http.h"
 #include "nut10.hpp"
+#include "nutroot_wallet.hpp"
+#include <array>
+#include <set>
 #include "unit.hpp"
 
 #include <algorithm>
@@ -261,31 +264,30 @@ static void counter_key(char* buf, size_t sz, const std::string& keyset_id)
     snprintf(buf, sz, "c_%.13s", keyset_id.c_str());
 }
 
-uint32_t Wallet::load_counter(const std::string& keyset_id)
+bool Wallet::load_counter(const std::string& keyset_id, uint64_t& counter)
 {
+    counter=0;
     nvs_handle_t handle;
-    if (nvs_open(NVS_NS, NVS_READONLY, &handle) != ESP_OK)
-        return 0;
-    char key[16];
-    counter_key(key, sizeof(key), keyset_id);
-    uint32_t val = 0;
-    nvs_get_u32(handle, key, &val);
+    esp_err_t err=nvs_open(NVS_NS,NVS_READONLY,&handle);
+    if(err==ESP_ERR_NVS_NOT_FOUND)return true;
+    if(err!=ESP_OK)return false;
+    char key[16];counter_key(key,sizeof(key),keyset_id);
+    err=nvs_get_u64(handle,key,&counter);
+    if(err==ESP_ERR_NVS_TYPE_MISMATCH) {
+        uint32_t old=0;err=nvs_get_u32(handle,key,&old);counter=old;
+    }
     nvs_close(handle);
-    return val;
+    return err==ESP_OK||err==ESP_ERR_NVS_NOT_FOUND;
 }
 
-bool Wallet::save_counter(const std::string& keyset_id, uint32_t counter)
+bool Wallet::save_counter(const std::string& keyset_id, uint64_t counter)
 {
     nvs_handle_t handle;
-    if (nvs_open(NVS_NS, NVS_READWRITE, &handle) != ESP_OK)
-        return false;
-    char key[16];
-    counter_key(key, sizeof(key), keyset_id);
-    esp_err_t err = nvs_set_u32(handle, key, counter);
-    if (err == ESP_OK)
-        err = nvs_commit(handle);
-    nvs_close(handle);
-    return err == ESP_OK;
+    if(nvs_open(NVS_NS,NVS_READWRITE,&handle)!=ESP_OK)return false;
+    char key[16];counter_key(key,sizeof(key),keyset_id);
+    esp_err_t err=nvs_set_u64(handle,key,counter);
+    if(err==ESP_OK)err=nvs_commit(handle);
+    nvs_close(handle);return err==ESP_OK;
 }
 
 // -------------------------------------------------------------------------
@@ -344,6 +346,8 @@ bool Wallet::erase_nvs()
     nvs_erase_key(handle, key);
     slot_key(key, sizeof(key), "proofs", nvs_slot_);
     nvs_erase_key(handle, key);
+    slot_key(key, sizeof(key), "op", nvs_slot_);
+    nvs_erase_key(handle, key);
     // Legacy single-blob keyset entry
     slot_key(key, sizeof(key), "keys", nvs_slot_);
     nvs_erase_key(handle, key);
@@ -401,16 +405,20 @@ bool Wallet::save_proofs()
 
 bool Wallet::load_proofs()
 {
+    proof_storage_error_ = true;
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NS, NVS_READONLY, &handle);
-    if (err != ESP_OK)
+    if (err != ESP_OK) {
+        proof_storage_error_ = err != ESP_ERR_NVS_NOT_FOUND;
         return false;
+    }
 
     char key[16];
     slot_key(key, sizeof(key), "proofs", nvs_slot_);
     size_t required = 0;
     err = nvs_get_blob(handle, key, nullptr, &required);
     if (err != ESP_OK || required == 0) {
+        if (err == ESP_ERR_NVS_NOT_FOUND) proof_storage_error_ = false;
         nvs_close(handle);
         return false;
     }
@@ -425,6 +433,7 @@ bool Wallet::load_proofs()
     if (!proofs_from_json(blob.c_str(), loaded))
         return false;
 
+    proof_storage_error_ = false;
     proofs_ = std::move(loaded);
     ESP_LOGI(TAG, "[%d] loaded %d proofs from NVS", nvs_slot_, (int)proofs_.size());
     return true;
@@ -819,7 +828,7 @@ const Keyset* Wallet::active_keyset_for_mint(const std::string& unit) const
 // a ppk sum across different units would be meaningless.
 int Wallet::calculate_fee(const std::vector<Proof>& inputs) const
 {
-    int sum_ppk = 0;
+    int64_t sum_ppk = 0;
     for (const auto& p : inputs) {
         for (const auto& k : keysets_) {
             if (k.id == p.id) {
@@ -828,7 +837,7 @@ int Wallet::calculate_fee(const std::vector<Proof>& inputs) const
             }
         }
     }
-    return (sum_ppk + 999) / 1000;
+    return static_cast<int>(std::min<int64_t>((sum_ppk + 999) / 1000, INT32_MAX));
 }
 
 // -------------------------------------------------------------------------
@@ -857,6 +866,7 @@ bool Wallet::generate_outputs(const std::vector<int>& amounts,
     out.outputs.clear();
     out.secrets.clear();
     out.blinding_factors.clear();
+    out.spend_info.clear();
 
     const cashu_suite_t* suite = suite_for_id(keyset_id);
     if (!suite) {
@@ -865,28 +875,39 @@ bool Wallet::generate_outputs(const std::vector<int>& amounts,
         return false;
     }
 
-    uint32_t counter = 0;
+    const bool v3=keyset_version(keyset_id)==KeysetVersion::v3;
+    if(v3) {
+        const Keyset* ks=keyset_for_id(keyset_id);
+        if(!ks||!verify_keyset_id(*ks))return false;
+    }
+    uint64_t counter = 0;
     bool deterministic = s_seed_loaded;
     if (deterministic) {
-        counter = load_counter(keyset_id);
+        if (!load_counter(keyset_id,counter) || amounts.size()>UINT64_MAX-counter ||
+            !save_counter(keyset_id,counter+amounts.size())) return false;
         ESP_LOGI(TAG, "deterministic outputs: keyset=%.16s... counter=%lu n=%d",
                  keyset_id.c_str(), (unsigned long)counter, (int)amounts.size());
     }
 
     for (size_t i = 0; i < amounts.size(); i++) {
         int amt = amounts[i];
-        unsigned char secret_bytes[32];
-        unsigned char r_bytes[32];
+        if (amt < 0) return false;
+        struct Secrets {
+            unsigned char k[32], r[32];
+            ~Secrets() { volatile unsigned char *p=k, *q=r; for(unsigned j=0;j<32;j++){p[j]=0;q[j]=0;} }
+        } private_bytes;
+        auto& secret_bytes=private_bytes.k;
+        auto& r_bytes=private_bytes.r;
 
         if (deterministic) {
             if (!suite->derive_secret(s_seed, 64, keyset_id.c_str(),
-                                      counter + (uint32_t)i, secret_bytes)) {
+                                      counter + i, secret_bytes)) {
                 ESP_LOGE(TAG, "derive_secret failed at counter %lu",
                          (unsigned long)(counter + i));
                 return false;
             }
             if (!suite->derive_r(s_seed, 64, keyset_id.c_str(),
-                                 counter + (uint32_t)i, r_bytes)) {
+                                 counter + i, r_bytes)) {
                 ESP_LOGE(TAG, "derive_r failed at counter %lu",
                          (unsigned long)(counter + i));
                 return false;
@@ -896,15 +917,31 @@ bool Wallet::generate_outputs(const std::vector<int>& amounts,
             esp_fill_random(r_bytes, 32);
         }
 
-        char secret_hex[65];
-        bytes_to_hex(secret_bytes, 32, secret_hex);
-        std::string secret(secret_hex);
+        unsigned char point[33];
+        std::optional<std::string> spend_info;
+        std::string secret;
+        if(v3) {
+            secp256k1_pubkey pub;size_t len=33;
+            if(!deterministic) {
+                for(int tries=0;tries<8&&!secp256k1_ec_seckey_verify(ctx_,secret_bytes);tries++)
+                    esp_fill_random(secret_bytes,32);
+            }
+            if(!secp256k1_ec_pubkey_create(ctx_,&pub,secret_bytes)||
+               !secp256k1_ec_pubkey_serialize(ctx_,point,&len,&pub,SECP256K1_EC_COMPRESSED))return false;
+            char hex[67];bytes_to_hex(point,33,hex);secret=hex;
+            bytes_to_hex(secret_bytes,32,hex);
+            spend_info=std::string("{\"k\":\"")+hex+"\"}";
+            volatile char* wipe=hex;for(unsigned j=0;j<sizeof(hex);j++)wipe[j]=0;
+        } else {
+            char hex[65];bytes_to_hex(secret_bytes,32,hex);secret=hex;
+        }
+        const unsigned char* message=v3?point:reinterpret_cast<const unsigned char*>(secret.data());
+        const size_t message_len=v3?33:secret.size();
 
         unsigned char B_ser[CASHU_MAX_POINT_LEN];
         size_t B_len = sizeof(B_ser);
         bool blinded = suite->blind((void*)ctx_,
-                                    (const unsigned char*)secret.c_str(),
-                                    secret.size(), r_bytes, 32, B_ser, &B_len);
+                                    message, message_len, r_bytes, 32, B_ser, &B_len);
         // A random r can fall outside the suite's scalar range (~55% odds
         // against the BLS12-381 Fr order); the deterministic path already
         // rejection-samples inside derive_r, so only random r retries here.
@@ -912,8 +949,7 @@ bool Wallet::generate_outputs(const std::vector<int>& amounts,
             esp_fill_random(r_bytes, 32);
             B_len = sizeof(B_ser);
             blinded = suite->blind((void*)ctx_,
-                                   (const unsigned char*)secret.c_str(),
-                                   secret.size(), r_bytes, 32, B_ser, &B_len);
+                                   message, message_len, r_bytes, 32, B_ser, &B_len);
         }
         if (!blinded) {
             ESP_LOGE(TAG, "blind_message failed");
@@ -927,11 +963,8 @@ bool Wallet::generate_outputs(const std::vector<int>& amounts,
 
         out.outputs.push_back(BlindedMessage{amt, std::string(B_hex), keyset_id});
         out.secrets.push_back(secret);
+        out.spend_info.push_back(std::move(spend_info));
         out.blinding_factors.push_back(std::string(r_hex));
-    }
-
-    if (deterministic) {
-        save_counter(keyset_id, counter + (uint32_t)amounts.size());
     }
 
     return true;
@@ -993,6 +1026,7 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
             for (size_t i = 0; i < size(); i++) p[i] = 0;
         }
     } batch_rs;
+    std::vector<std::vector<unsigned char>> messages(signatures.size());
     std::vector<const unsigned char*> batch_secrets;
     std::vector<size_t> batch_secret_lens;
     if (suite->verify_proofs) {
@@ -1005,6 +1039,9 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
 
     for (size_t i = 0; i < signatures.size(); i++) {
         const auto& sig = signatures[i];
+        if (sig.id != keyset.id || sig.amount <= 0 ||
+            (blinding.outputs[i].amount != 0 && sig.amount != blinding.outputs[i].amount)) return false;
+        if (retained_bls && sig.C_.find_first_not_of("0123456789abcdef") != std::string::npos) return false;
         uint64_t amt = (uint64_t)sig.amount;
 
         std::string K_hex;
@@ -1031,14 +1068,8 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
         // NUT-12: verify the DLEQ proof on the BlindSignature before we trust C_.
         if (sig.dleq) {
             if (!suite->has_dleq) {
-                // v3 spec: the mint MUST NOT include a dleq. nutshell PR #999
-                // (the reference v3 mint) currently sends a dummy e=s=1 anyway,
-                // so tolerate it: warn, never verify against it, never store or
-                // forward it. Security is unaffected — v3 verification is
-                // always the pairing batch below, and a has_dleq=0 suite can
-                // never be tricked into DLEQ-verifying attacker-chosen (e, s).
-                ESP_LOGW(TAG, "sig[%d]: mint sent a dleq on a %s signature "
-                              "(spec violation, ignoring)", (int)i, suite->name);
+                ESP_LOGE(TAG, "v3 signature must not include DLEQ");
+                return false;
             } else {
                 unsigned char e_b[32], s_b[32];
                 if (!hex_to_bytes(sig.dleq->e.c_str(), e_b, 32) ||
@@ -1089,15 +1120,20 @@ bool Wallet::unblind_signatures(const std::vector<BlindSignature>& signatures,
         if (suite->verify_proofs) {
             batch_Ks.insert(batch_Ks.end(), K_bytes, K_bytes + klen);
             batch_Cs.insert(batch_Cs.end(), C_ser, C_ser + C_len);
-            batch_secrets.push_back(
-                (const unsigned char*)blinding.secrets[i].data());
-            batch_secret_lens.push_back(blinding.secrets[i].size());
+            Proof message;message.id=keyset.id;message.secret=blinding.secrets[i];
+            if(!proof_secret_bytes(message,messages[i]))return false;
+            batch_secrets.push_back(messages[i].data());
+            batch_secret_lens.push_back(messages[i].size());
         }
 
         Proof proof;
         proof.id = keyset.id;
         proof.amount = sig.amount;
         proof.secret = blinding.secrets[i];
+        if(keyset_version(keyset.id)==KeysetVersion::v3) {
+            if(i>=blinding.spend_info.size()||!blinding.spend_info[i])return false;
+            proof.spend_info=blinding.spend_info[i];
+        }
         if (!retained_bls) proof.C = std::string(C_hex);
         // Attach the DLEQ for later forwarding (NUT-12 Carol-mode) — only for
         // DLEQ suites: a spurious v3 dleq must not end up in our tokens.
@@ -1262,6 +1298,7 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
                   std::vector<Proof>& new_proofs,
                   std::vector<Proof>& change)
 {
+    if (has_pending_operation()) { recover_pending_operation(); return false; }
     if (inputs.empty()) {
         ESP_LOGE(TAG, "swap: no inputs");
         return false;
@@ -1284,10 +1321,11 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
 
     int fee = calculate_fee(inputs);
     int64_t input_sum = proofs_sum(inputs);
+    if (input_sum <= fee || input_sum > INT32_MAX) return false;
 
     int return_amount, change_amount;
     if (amount >= 0) {
-        if (input_sum < amount + fee) {
+        if (input_sum < static_cast<int64_t>(amount) + fee) {
             ESP_LOGE(TAG, "swap: insufficient inputs (%lld < %d + %d)",
                      (long long)input_sum, amount, fee);
             return false;
@@ -1311,10 +1349,10 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
     if (!generate_outputs(combined, ks->id, blinding))
         return false;
 
-    // Strip DLEQ from inputs before sending
+    // Keep private spend data until signing; the request serializer strips it.
     std::vector<Proof> stripped;
     for (const auto& p : inputs)
-        stripped.push_back(Proof{p.id, p.amount, p.secret, p.C, std::nullopt, p.witness});
+        stripped.push_back(p);
 
     // NUT-11: any input whose secret is a P2PK structured secret locked to
     // our pubkey gets a witness signature attached. Unlocked inputs are a
@@ -1347,6 +1385,7 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
         cJSON_Delete(witness);
     }
 
+    if(!nutroot_sign_proofs(ctx_,stripped,blinding.outputs,p2pk_privkey()))return false;
     SwapRequest req{stripped, blinding.outputs};
     std::string body = serialize(req);
     if (body.empty()) {
@@ -1354,6 +1393,7 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
         return false;
     }
 
+    if (!begin_operation("/v1/swap", body, inputs, blinding)) return false;
     std::string url = mint_url_ + "/v1/swap";
     http_response_t resp = {};
     esp_err_t err = http_post_json(url.c_str(), body.c_str(), &resp);
@@ -1364,7 +1404,8 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
     }
 
     if (resp.status != 200) {
-        log_mint_error("swap", resp);
+        int code = log_mint_error("swap", resp);
+        if (resp.status == 400 && code != 0) clear_operation();
         http_response_free(&resp);
         return false;
     }
@@ -1380,6 +1421,8 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
     std::vector<Proof> all_proofs;
     if (!unblind_signatures(swap_resp.signatures, blinding, *ks, all_proofs))
         return false;
+
+    if (!finish_operation(inputs, all_proofs)) return false;
 
     // Separate send proofs from change proofs
     new_proofs.clear();
@@ -1408,17 +1451,23 @@ bool Wallet::swap(std::vector<Proof>& inputs, int amount,
 // Receive (swap a token for new proofs)
 // -------------------------------------------------------------------------
 
-bool Wallet::verify_incoming_proofs(const std::vector<Proof>& inputs)
+bool Wallet::verify_incoming_proofs(const std::vector<Proof>& inputs, bool offline)
 {
     // Batch accumulator for suites with intrinsic verification (v3): one
     // pairing-batch call per token covers every such proof.
     std::vector<unsigned char> batch_Ks, batch_Cs;
+    std::vector<std::vector<unsigned char>> messages(inputs.size());
     std::vector<const unsigned char*> batch_secrets;
     std::vector<size_t> batch_secret_lens;
     const cashu_suite_t* batch_suite = nullptr;
+    std::set<std::string> seen;
 
     for (size_t i = 0; i < inputs.size(); i++) {
         const auto& p = inputs[i];
+        if (p.amount <= 0 || !seen.insert(p.secret).second) return false;
+        if (keyset_version(p.id) == KeysetVersion::v3 &&
+            (p.id.find_first_not_of("0123456789abcdef") != std::string::npos ||
+             p.C.find_first_not_of("0123456789abcdef") != std::string::npos)) return false;
         const cashu_suite_t* suite = suite_for_id(p.id);
         const Keyset* ks = keyset_for_id(p.id);
         if (!suite || !ks) {
@@ -1427,14 +1476,7 @@ bool Wallet::verify_incoming_proofs(const std::vector<Proof>& inputs)
             return false;
         }
 
-        if (p.dleq && !suite->has_dleq) {
-            // v3 spec: a Proof MUST NOT carry a dleq — but wallets built on
-            // nutshell PR #999 may forward its dummy one. Warn and ignore:
-            // the proof still has to pass the pairing batch below, which is
-            // the only verification a has_dleq=0 suite ever runs.
-            ESP_LOGW(TAG, "verify: spurious dleq on %s proof[%d] (ignoring)",
-                     suite->name, (int)i);
-        }
+        if (p.dleq && !suite->has_dleq) return false;
 
         if (suite->verify_proofs) {
             if (batch_suite && batch_suite != suite) {
@@ -1464,8 +1506,12 @@ bool Wallet::verify_incoming_proofs(const std::vector<Proof>& inputs)
                 ESP_LOGE(TAG, "verify: invalid C hex on proof[%d]", (int)i);
                 return false;
             }
-            batch_secrets.push_back((const unsigned char*)p.secret.data());
-            batch_secret_lens.push_back(p.secret.size());
+            unsigned char spend_key[32];
+            bool spendable=nutroot_spend_key(ctx_,p,p2pk_privkey(),spend_key,offline);
+            volatile unsigned char* wipe=spend_key;for(unsigned j=0;j<32;j++)wipe[j]=0;
+            if(!spendable||!proof_secret_bytes(p,messages[i]))return false;
+            batch_secrets.push_back(messages[i].data());
+            batch_secret_lens.push_back(messages[i].size());
             continue;
         }
 
@@ -1599,13 +1645,9 @@ bool Wallet::receive(const Token& token, std::vector<Proof>& proofs_out)
     for (auto& p : proofs_out)
         p.witness = std::nullopt;
 
-    for (const auto& p : proofs_out)
-        proofs_.push_back(p);
-
     char amt[48];
     format_amount(amt, sizeof(amt), proofs_sum(proofs_out), unit.c_str());
     ESP_LOGI(TAG, "received %s (%d proofs)", amt, (int)proofs_out.size());
-    save_proofs();
     return true;
 }
 
@@ -1694,14 +1736,14 @@ bool Wallet::select_proofs(int amount_needed, const std::string& unit,
         return proofs_[a].amount > proofs_[b].amount;
     });
 
-    int sum = 0;
+    int64_t sum = 0;
     bool enough = false;
     for (size_t idx : candidates) {
         if (!enough) {
             selected.push_back(proofs_[idx]);
             sum += proofs_[idx].amount;
             int fee = calculate_fee(selected);
-            if (sum >= amount_needed + fee)
+            if (sum >= static_cast<int64_t>(amount_needed) + fee)
                 enough = true;
         } else {
             remaining.push_back(proofs_[idx]);
@@ -1709,8 +1751,8 @@ bool Wallet::select_proofs(int amount_needed, const std::string& unit,
     }
 
     if (!enough) {
-        ESP_LOGE(TAG, "select_proofs: insufficient %s balance (%d < %d)",
-                 unit.c_str(), sum, amount_needed);
+        ESP_LOGE(TAG, "select_proofs: insufficient %s balance (%lld < %d)",
+                 unit.c_str(), (long long)sum, amount_needed);
         selected.clear();
         remaining.clear();
         return false;
@@ -1722,9 +1764,37 @@ bool Wallet::select_proofs(int amount_needed, const std::string& unit,
 // NUT-04: Mint tokens (method-generic)
 // -------------------------------------------------------------------------
 
+// Quote keys are persisted before requesting payment and recovered by the returned pubkey.
+// shortcut: retain quote keys until wallet reset; prune only when a quote cannot receive more funds.
+static bool quote_lock_key(const secp256k1_context* ctx, const std::string& pubkey,
+                           unsigned char key[32], bool save)
+{
+    unsigned char hash[32];char hex[65],name[16];
+    if(pubkey.size()!=66||!cashu_sha256(reinterpret_cast<const unsigned char*>(pubkey.data()),pubkey.size(),hash))return false;
+    bytes_to_hex(hash,32,hex);snprintf(name,sizeof(name),"q_%.13s",hex);
+    nvs_handle_t handle;
+    if(nvs_open(NVS_NS,save?NVS_READWRITE:NVS_READONLY,&handle)!=ESP_OK)return false;
+    size_t length=32;unsigned char existing[32];
+    esp_err_t err=nvs_get_blob(handle,name,existing,&length);
+    if(save) {
+        if(err==ESP_ERR_NVS_NOT_FOUND)err=nvs_set_blob(handle,name,key,32);
+        else if(err==ESP_OK&&(length!=32||memcmp(existing,key,32)))err=ESP_FAIL;
+        if(err==ESP_OK)err=nvs_commit(handle);
+    } else if(err==ESP_OK&&length==32)memcpy(key,existing,32);
+    else err=ESP_FAIL;
+    volatile unsigned char* wipe=existing;for(unsigned j=0;j<32;j++)wipe[j]=0;
+    nvs_close(handle);
+    if(err!=ESP_OK)return false;
+    secp256k1_pubkey point;unsigned char serialized[33];length=33;char expected[67];
+    if(!secp256k1_ec_pubkey_create(ctx,&point,key)||
+       !secp256k1_ec_pubkey_serialize(ctx,serialized,&length,&point,SECP256K1_EC_COMPRESSED))return false;
+    bytes_to_hex(serialized,33,expected);return pubkey==expected;
+}
+
 bool Wallet::request_mint_quote(int amount, const std::string& unit,
                                 const std::string& method, MintQuote& quote_out)
 {
+    if (has_pending_operation()) { recover_pending_operation(); return false; }
     // Both strings reach the URL/body — enforce the NUT-04 charset before
     // interpolation (console input flows through here).
     if (!unit_token_valid(unit.c_str()) || !unit_token_valid(method.c_str())) {
@@ -1743,9 +1813,25 @@ bool Wallet::request_mint_quote(int amount, const std::string& unit,
         return false;
     }
 
+    std::string lock_pubkey;
+    const Keyset* quote_keyset=active_keyset_for_mint(unit);
+    if(quote_keyset&&keyset_version(quote_keyset->id)==KeysetVersion::v3) {
+        unsigned char key[32];secp256k1_pubkey point;bool valid=false;
+        for(int tries=0;tries<8&&!valid;tries++) {
+            esp_fill_random(key,32);valid=secp256k1_ec_pubkey_create(ctx_,&point,key);
+        }
+        unsigned char serialized[33];size_t len=33;char hex[67];
+        if(valid)valid=secp256k1_ec_pubkey_serialize(ctx_,serialized,&len,&point,SECP256K1_EC_COMPRESSED);
+        if(valid) {bytes_to_hex(serialized,33,hex);lock_pubkey=hex;valid=quote_lock_key(ctx_,lock_pubkey,key,true);}
+        volatile unsigned char* wipe=key;for(unsigned i=0;i<32;i++)wipe[i]=0;
+        if(!valid)return false;
+    }
     cJSON* body = cJSON_CreateObject();
-    cJSON_AddNumberToObject(body, "amount", amount);
-    cJSON_AddStringToObject(body, "unit", unit.c_str());
+    if(!body||!cJSON_AddNumberToObject(body,"amount",amount)||
+       !cJSON_AddStringToObject(body,"unit",unit.c_str())||
+       (!lock_pubkey.empty()&&!cJSON_AddStringToObject(body,"pubkey",lock_pubkey.c_str()))) {
+        cJSON_Delete(body);return false;
+    }
     char* body_str = cJSON_PrintUnformatted(body);
     cJSON_Delete(body);
     if (!body_str) {
@@ -1775,6 +1861,8 @@ bool Wallet::request_mint_quote(int amount, const std::string& unit,
         ESP_LOGE(TAG, "mint quote: failed to parse response");
         return false;
     }
+
+    if(!lock_pubkey.empty()&&quote_out.pubkey!=lock_pubkey)return false;
 
     // Stamp what we asked for when the mint omits the echo, so mint_tokens
     // targets the right keyset and endpoint.
@@ -1812,13 +1900,20 @@ bool Wallet::check_mint_quote(const std::string& quote_id,
         return false;
     }
 
-    bool ok = deserialize(resp.body, quote_out);
+    MintQuote fresh;
+    bool ok = deserialize(resp.body, fresh);
     http_response_free(&resp);
     if (!ok) {
         ESP_LOGD(TAG, "check mint quote: failed to parse response");
         return false;
     }
 
+    if (fresh.quote != quote_id) return false;
+    if (quote_out.quote == quote_id &&
+        ((quote_out.updated_at && (!fresh.updated_at || *fresh.updated_at < *quote_out.updated_at)) ||
+         (quote_out.amount_paid && (!fresh.amount_paid || *fresh.amount_paid < *quote_out.amount_paid)) ||
+         (quote_out.amount_issued && (!fresh.amount_issued || *fresh.amount_issued < *quote_out.amount_issued)))) return false;
+    quote_out = std::move(fresh);
     if (quote_out.method.empty())
         quote_out.method = method;
 
@@ -1830,6 +1925,8 @@ bool Wallet::check_mint_quote(const std::string& quote_id,
 
 bool Wallet::mint_tokens(const MintQuote& quote, int amount)
 {
+    if (has_pending_operation()) { recover_pending_operation(); return false; }
+    if (amount <= 0) return false;
     const std::string unit = quote.unit.empty() ? std::string("sat") : quote.unit;
     const std::string method = quote.method.empty() ? std::string("bolt11")
                                                     : quote.method;
@@ -1849,13 +1946,22 @@ bool Wallet::mint_tokens(const MintQuote& quote, int amount)
     if (!generate_outputs(amounts, ks->id, blinding))
         return false;
 
-    MintRequest req{quote.quote, blinding.outputs};
+    MintRequest req{quote.quote, blinding.outputs, std::nullopt};
+    if(keyset_version(ks->id)==KeysetVersion::v3) {
+        unsigned char key[32]={0};std::string signature;
+        bool ok=quote_lock_key(ctx_,quote.pubkey,key,false)&&
+                nutroot_sign_quote(ctx_,quote,amount,blinding.outputs,key,signature);
+        volatile unsigned char* wipe=key;for(unsigned i=0;i<32;i++)wipe[i]=0;
+        if(!ok)return false;
+        req.signature=std::move(signature);
+    }
     std::string body = serialize(req);
     if (body.empty()) {
         ESP_LOGE(TAG, "mint: request serialization failed");
         return false;
     }
 
+    if (!begin_operation("/v1/mint/" + method, body, {}, blinding)) return false;
     std::string url = mint_url_ + "/v1/mint/" + method;
     http_response_t resp = {};
     esp_err_t err = http_post_json(url.c_str(), body.c_str(), &resp);
@@ -1865,7 +1971,8 @@ bool Wallet::mint_tokens(const MintQuote& quote, int amount)
         return false;
     }
     if (resp.status != 200) {
-        log_mint_error("mint", resp);
+        int code = log_mint_error("mint", resp);
+        if (resp.status == 400 && code != 0) clear_operation();
         http_response_free(&resp);
         return false;
     }
@@ -1886,13 +1993,11 @@ bool Wallet::mint_tokens(const MintQuote& quote, int amount)
     for (auto& p : new_proofs)
         p.witness = std::nullopt;
 
-    for (const auto& p : new_proofs)
-        proofs_.push_back(p);
+    if (!finish_operation({}, new_proofs)) return false;
 
     char amt[48];
     format_amount(amt, sizeof(amt), proofs_sum(new_proofs), unit.c_str());
     ESP_LOGI(TAG, "minted %s (%d proofs)", amt, (int)new_proofs.size());
-    save_proofs();
     return true;
 }
 
@@ -2009,6 +2114,9 @@ bool Wallet::check_melt_quote(const std::string& quote_id,
 bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
 {
     change_amount = 0;
+    if (has_pending_operation()) { recover_pending_operation(); return false; }
+    if (quote.amount <= 0 || quote.fee_reserve < 0 ||
+        static_cast<int64_t>(quote.amount) + quote.fee_reserve > INT32_MAX) return false;
 
     const std::string unit = quote.unit.empty() ? std::string("sat") : quote.unit;
     const std::string method = quote.method.empty() ? std::string("bolt11")
@@ -2029,9 +2137,9 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
     if (!select_proofs(needed, unit, selected, leftover))
         return false;
 
-    int input_sum = 0;
-    for (const auto& p : selected)
-        input_sum += p.amount;
+    int64_t selected_sum = proofs_sum(selected);
+    if (selected_sum > INT32_MAX) return false;
+    int input_sum = static_cast<int>(selected_sum);
     int input_fee = calculate_fee(selected);
 
     // Max possible change: if actual LN fee is 0, we get back fee_reserve + excess
@@ -2055,11 +2163,14 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
             return false;
     }
 
-    // Strip DLEQ from inputs
+    // Sign before the request serializer strips private spend data.
     std::vector<Proof> stripped;
     for (const auto& p : selected)
-        stripped.push_back(Proof{p.id, p.amount, p.secret, p.C, std::nullopt, p.witness});
+        stripped.push_back(p);
 
+    nutroot_quote_t melt_input={};melt_input.amount=static_cast<uint64_t>(quote.amount)+quote.fee_reserve;
+    melt_input.quote_id=quote.quote.c_str();
+    if(!nutroot_sign_proofs(ctx_,stripped,change_blinding.outputs,p2pk_privkey(),&melt_input))return false;
     MeltRequest req;
     req.quote = quote.quote;
     req.inputs = stripped;
@@ -2072,6 +2183,7 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
         return false;
     }
 
+    if (!begin_operation("/v1/melt/" + method, body, selected, change_blinding)) return false;
     std::string url = mint_url_ + "/v1/melt/" + method;
     http_response_t resp = {};
     esp_err_t err = http_post_json_timeout(url.c_str(), body.c_str(), &resp, 120000);
@@ -2081,7 +2193,8 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
         return false;
     }
     if (resp.status != 200) {
-        log_mint_error("melt", resp);
+        int code = log_mint_error("melt", resp);
+        if (resp.status == 400 && code != 0) clear_operation();
         http_response_free(&resp);
         return false;
     }
@@ -2094,13 +2207,13 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
         return false;
     }
 
-    if (melt_resp.state != "PAID" && melt_resp.state != "PENDING") {
+    if (melt_resp.state != "PAID") {
         ESP_LOGE(TAG, "melt: unexpected state: %s", melt_resp.state.c_str());
         return false;
     }
 
-    // Remove spent proofs
-    proofs_ = leftover;
+    std::vector<Proof> change_proofs;
+    if (melt_resp.change && melt_resp.change->size() > change_blinding.outputs.size()) return false;
 
     // Unblind change if returned. The mint may return fewer signatures
     // than blank outputs we sent (only enough to cover actual change).
@@ -2111,24 +2224,24 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
             truncated.outputs.resize(sig_count);
             truncated.secrets.resize(sig_count);
             truncated.blinding_factors.resize(sig_count);
+            truncated.spend_info.resize(sig_count);
         }
-        std::vector<Proof> change_proofs;
         if (unblind_signatures(*melt_resp.change, truncated, *ks, change_proofs)) {
-            for (auto& p : change_proofs) {
-                p.witness = std::nullopt;
-                change_amount += p.amount;
-                proofs_.push_back(p);
-            }
+            const int64_t returned = proofs_sum(change_proofs);
+            if (returned > max_change) return false;
+            change_amount = static_cast<int>(returned);
+            for (auto& p : change_proofs) p.witness = std::nullopt;
             char amt[48];
             format_amount(amt, sizeof(amt), change_amount, unit.c_str());
             ESP_LOGI(TAG, "melt: received %s change (%d proofs)",
                      amt, (int)change_proofs.size());
         } else {
             ESP_LOGW(TAG, "melt: failed to unblind change signatures");
+            return false;
         }
     }
 
-    save_proofs();
+    if (proofs_sum(change_proofs) > max_change || !finish_operation(selected, change_proofs)) return false;
 
     ESP_LOGI(TAG, "melt: state=%s input=%d change=%d",
              melt_resp.state.c_str(), input_sum, change_amount);
@@ -2141,12 +2254,12 @@ bool Wallet::melt_tokens(const MeltQuote& quote, int& change_amount)
 
 bool Wallet::clear_proofs()
 {
-    proofs_.clear();
-    return save_proofs();
+    return remove_proofs(proofs_);
 }
 
 bool Wallet::remove_proofs(const std::vector<Proof>& to_remove)
 {
+    if (has_pending_operation()) return false;
     std::vector<Proof> kept;
     kept.reserve(proofs_.size());
     for (const auto& p : proofs_) {

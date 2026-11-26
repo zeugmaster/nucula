@@ -152,7 +152,7 @@ int cashu_pubkey_parse(const secp256k1_context *ctx,
  * @return 1 on success, 0 on failure
  */
 int cashu_derive_secret(const unsigned char *seed, size_t seed_len,
-                        const char *keyset_id, uint32_t counter,
+                        const char *keyset_id, uint64_t counter,
                         unsigned char secret_out[32]);
 
 /**
@@ -169,7 +169,7 @@ int cashu_derive_secret(const unsigned char *seed, size_t seed_len,
  * @return 1 on success, 0 on failure (including r == 0)
  */
 int cashu_derive_r(const unsigned char *seed, size_t seed_len,
-                   const char *keyset_id, uint32_t counter,
+                   const char *keyset_id, uint64_t counter,
                    unsigned char r_out[32]);
 
 /**

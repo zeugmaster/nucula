@@ -27,15 +27,6 @@ static void *checked_calloc(size_t n, size_t size) {
 #undef malloc
 #undef calloc
 
-int cashu_nut13_hmac(const unsigned char *seed, size_t seed_len,
-                    const char *id, uint32_t counter, unsigned char type,
-                    const unsigned char *suffix, size_t suffix_len,
-                    unsigned char out[32]) {
-    (void)seed; (void)seed_len; (void)id; (void)counter; (void)type;
-    (void)suffix; (void)suffix_len; (void)out;
-    abort(); /* Derivation is outside this test's scope. */
-}
-
 int main(void) {
     enum {N = 64};
     unsigned char keys[N*96], signatures[N*48], messages[N][33];

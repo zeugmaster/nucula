@@ -19,7 +19,7 @@ int nutroot_kdf_init(nutroot_kdf_t *kdf,const unsigned char *seed,size_t seed_le
                       const unsigned char *id,size_t id_len) {
     if(!kdf)return 0;
     memset(kdf,0,sizeof(*kdf));
-    if((!seed&&seed_len)||(!id&&id_len)||id_len>UINT32_MAX||(id_len&&id[0]!=2))return 0;
+    if(!seed||seed_len!=64||!id||id_len!=33||id[0]!=2)return 0;
     unsigned char block[64]={0},length[4];int ok=1;
     if(seed_len>64)ok=mbedtls_sha256(seed,seed_len,block,0)==0;
     else if(seed_len)memcpy(block,seed,seed_len);
@@ -32,12 +32,12 @@ int nutroot_kdf_init(nutroot_kdf_t *kdf,const unsigned char *seed,size_t seed_le
     be32(length,(uint32_t)id_len);
     ok=ok&&mbedtls_sha256_update(&kdf->prefix,domain,sizeof(domain)-1)==0&&
            mbedtls_sha256_update(&kdf->prefix,length,4)==0&&mbedtls_sha256_update(&kdf->prefix,id,id_len)==0;
-    wipe(block,sizeof(block));kdf->quote=id_len==0;kdf->valid=ok;
+    wipe(block,sizeof(block));kdf->valid=ok;
     if(!ok)nutroot_kdf_clear(kdf);
     return ok;
 }
 int nutroot_kdf_derive(const nutroot_kdf_t *kdf,uint64_t counter,unsigned type,uint32_t index,unsigned char out[32]) {
-    if(!kdf||!kdf->valid||!out||type>4||(type==4)!=kdf->quote)return 0;
+    if(!kdf||!kdf->valid||!out||type>3||(type!=3&&index!=0))return 0;
     unsigned char suffix[17],digest[32];mbedtls_sha256_context inner,outer;
     mbedtls_sha256_init(&inner);mbedtls_sha256_init(&outer);
     for(unsigned i=0;i<8;i++)suffix[i]=(unsigned char)(counter>>(56-8*i));

@@ -7,10 +7,10 @@
 extern "C" {
 #endif
 /* Current NUT-13 v3 framing. Contexts contain seed-derived state and must be
- * cleared. Each context belongs to one keyset (or empty id for quote keys). */
+ * cleared. Each context belongs to one full v3 keyset ID. */
 typedef struct {
     mbedtls_sha256_context prefix, outer;
-    int valid, quote;
+    int valid;
 } nutroot_kdf_t;
 int nutroot_kdf_init(nutroot_kdf_t *kdf,const unsigned char *seed,size_t seed_len,
                       const unsigned char *keyset_id,size_t keyset_len);

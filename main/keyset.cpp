@@ -63,7 +63,7 @@ const cashu_suite_t *suite_for_id(const std::string &id)
     // BLS (v3) is the only non-secp scheme. Everything else — v1, v2, and
     // legacy/pre-NUT-02 ids — uses secp256k1 BDHKE, so secp is the default.
     if (keyset_version(id) == KeysetVersion::v3)
-        return &cashu_suite_bls;  // scaffold (stub ops)
+        return &cashu_suite_bls;
     return &cashu_suite_secp256k1;
 }
 
@@ -92,13 +92,7 @@ static std::string derive_keyset_id_v1(const Keyset &ks)
     return std::string("00") + std::string(hex).substr(0, 14);
 }
 
-// v2/v3 share one preimage: "<version prefix>" + sha256 of the UTF-8 string
-//   "<amt>:<pk_hex>,<amt>:<pk_hex>,...|unit:<unit>[|input_fee_ppk:<f>][|final_expiry:<e>]"
-// pubkeys lowercased; input_fee_ppk appended iff > 0; final_expiry appended iff
-// present (matching nutshell derive_keyset_id_v2 — `if final_expiry is not None`).
-// Only the version prefix and the key length differ: v2 = 66-hex compressed
-// secp256k1, v3 = 192-hex compressed BLS12-381 G2. A key of the wrong length
-// fails derivation outright rather than hashing garbage into the preimage.
+// v2 retains the legacy textual commitment, including final_expiry.
 static std::string derive_keyset_id_sha256(const Keyset &ks, const char *prefix,
                                            size_t key_hex_len, bool lower_unit)
 {
@@ -142,11 +136,38 @@ static std::string derive_keyset_id_v2(const Keyset &ks)
     return derive_keyset_id_sha256(ks, "01", 66, /*lower_unit=*/false);
 }
 
-// v3 (BLS12-381, nuts PR #371): same preimage over 96-byte compressed G2
-// mint keys, lowercased unit per the spec text.
+// NUT-02 v3 commits framed binary fields; expiry is mutable metadata.
 static std::string derive_keyset_id_v3(const Keyset &ks)
 {
-    return derive_keyset_id_sha256(ks, "02", 192, /*lower_unit=*/true);
+    if (ks.keys.empty() || ks.unit.empty() || ks.input_fee_ppk < 0 ||
+        ks.unit.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_-") != std::string::npos)
+        return "";
+    auto minimal = [](uint64_t n) {
+        std::string bytes;
+        while (n) { bytes.insert(bytes.begin(), static_cast<char>(n & 255)); n >>= 8; }
+        return bytes;
+    };
+    auto framed = [](const std::string &bytes) {
+        std::string result;
+        for (int shift = 24; shift >= 0; shift -= 8)
+            result += static_cast<char>((bytes.size() >> shift) & 255);
+        return result + bytes;
+    };
+    std::string keys;
+    for (const auto &kv : ks.keys) {
+        unsigned char key[96];
+        if (kv.second.find_first_not_of("0123456789abcdef") != std::string::npos ||
+            !hex_to_bytes(kv.second.c_str(), key, sizeof(key))) return "";
+        keys += framed(minimal(kv.first));
+        keys += framed(std::string(reinterpret_cast<const char *>(key), sizeof(key)));
+    }
+    const std::string preimage = framed(keys) + framed(ks.unit) + framed(minimal(ks.input_fee_ppk));
+    unsigned char digest[32];
+    if (!cashu_sha256(reinterpret_cast<const unsigned char *>(preimage.data()), preimage.size(), digest))
+        return "";
+    char hex[65];
+    bytes_to_hex(digest, sizeof(digest), hex);
+    return std::string("02") + hex;
 }
 
 std::string derive_keyset_id(const Keyset &ks)
@@ -170,7 +191,8 @@ bool verify_keyset_id(const Keyset &ks)
     const std::string derived = derive_keyset_id(ks);
     if (derived.empty())
         return false;
-    return to_lower(derived) == to_lower(ks.id);
+    return keyset_version(ks.id) == KeysetVersion::v3 ? derived == ks.id
+                                                   : to_lower(derived) == to_lower(ks.id);
 }
 
 bool keyset_keys_distinct(const Keyset &ks)
@@ -271,8 +293,7 @@ bool keyset_run_tests()
         check("keyset_id v2 (fee+expiry)", ks, ks.id);
     }
 
-    // v3 (BLS12-381) vectors from nuts PR #371 tests/02-tests.md: 192-hex
-    // compressed G2 mint keys, same preimage layout as v2.
+    // v3 binary commitment vectors; 192-hex compressed G2 mint keys.
     const std::map<uint64_t, std::string> bls_keys = {
         {1, "8d0273f6bf31ed37c3b8d68083ec3d8e20b5f2cc170fa24b9b5be35b34ed013f"
             "9a921f1cad1644d4bdb14674247234c8049cd1dbb2d2c3581e54c088135fef36"
@@ -287,7 +308,7 @@ bool keyset_run_tests()
         ks.active = true;
         ks.input_fee_ppk = 0;
         ks.keys = bls_keys;
-        ks.id = "02abd02ebc1ff44652153375162407deaf0b30e590844cca0b6e4894a08a8828dd";
+        ks.id = "02b7e077d020fabed456a6be138a8e20e9ef40b44d873fa12c005b656eb0cf99f6";
         check("keyset_id v3 (no fee/expiry)", ks, ks.id);
     }
     { // v3: input_fee_ppk + final_expiry (vector 2 extends the key map to 4)
@@ -305,8 +326,13 @@ bool keyset_run_tests()
             "a55dafcdf339360f74e3fd32296d062d5e36db3c2570e13a889b38502c0ff718"
             "64b19e324bc9c661c29b07c9cc378b5919c1656979648d7c3ef4bd6501fcc964"
             "90a34e47fe25afc8b14d60f1c3772138acaf8a0a5e4f940f57206eba74fdc973";
-        ks.id = "020c5210bbb16757130c7e26061df3ea3f97a47046d2cebb54a21b3b4c370f42d8";
+        ks.id = "027f0dcd008156363a8418b88f38ddd5155a38c46a3f27c15c7eb40ec5f04cb4b3";
         check("keyset_id v3 (fee+expiry)", ks, ks.id);
+        ks.final_expiry.reset(); check("v3 expiry does not change id", ks, ks.id);
+        ks.input_fee_ppk=0; ks.id="022546ab0a2dee9f79510f4e20a4e3d9e894a97361047c594902573a7e64f9d701";
+        check("NUT-02 v3 vector 1", ks, ks.id);
+        ks.unit="SAT"; if (!derive_keyset_id(ks).empty()) ok=false;
+        ks.unit="sat";ks.keys[1][0]='Z';if (!derive_keyset_id(ks).empty()) ok=false;
     }
     { // v3 negative: a 66-hex (secp-length) key must fail derivation
         Keyset ks;
@@ -315,7 +341,7 @@ bool keyset_run_tests()
         ks.input_fee_ppk = 0;
         ks.keys = bls_keys;
         ks.keys[4] = "03a40f20667ed53513075dc51e715ff2046cad64eb68960632269ba7f0210e38bc";
-        ks.id = "02abd02ebc1ff44652153375162407deaf0b30e590844cca0b6e4894a08a8828dd";
+        ks.id = "02b7e077d020fabed456a6be138a8e20e9ef40b44d873fa12c005b656eb0cf99f6";
         if (derive_keyset_id(ks) != "" || verify_keyset_id(ks)) {
             ESP_LOGE(TAG, "v3 wrong-length key FAIL: derivation should reject");
             ok = false;
@@ -328,10 +354,12 @@ bool keyset_run_tests()
         ks.unit = "sat";
         ks.keys = bls_keys;
         ks.keys[4] = bls_keys.at(1); // reuse amount-1 key
+        Keyset distinct = ks;
+        distinct.keys = bls_keys;
         if (keyset_keys_distinct(ks)) {
             ESP_LOGE(TAG, "keyset_keys_distinct FAIL: duplicate not detected");
             ok = false;
-        } else if (!keyset_keys_distinct({.keys = bls_keys})) {
+        } else if (!keyset_keys_distinct(distinct)) {
             ESP_LOGE(TAG, "keyset_keys_distinct FAIL: false positive");
             ok = false;
         } else {

@@ -1,6 +1,8 @@
 #include "cashu_cbor.hpp"
 #include "base64url.hpp"
 #include "cashu_suite.h"
+#include "cashu_json.hpp"
+#include <set>
 #include "hex.h"
 
 #include <cstring>
@@ -18,8 +20,19 @@ namespace cashu {
 static bool cbor_find_in_map(CborValue *map, const char *key, CborValue *out)
 {
     if (!cbor_value_is_map(map)) return false;
-    return cbor_value_map_find_value(map, key, out) == CborNoError
-           && out->type != CborInvalidType;
+    CborValue it;
+    if(cbor_value_enter_container(map,&it)!=CborNoError)return false;
+    std::set<std::string> keys;
+    while(!cbor_value_at_end(&it)) {
+        size_t len=0;
+        if(!cbor_value_is_text_string(&it)||cbor_value_get_string_length(&it,&len)!=CborNoError)return false;
+        std::string name(len+1,'\0');
+        if(cbor_value_copy_text_string(&it,name.data(),&len,nullptr)!=CborNoError)return false;
+        name.resize(len);
+        if(!keys.insert(name).second||cbor_value_advance(&it)!=CborNoError||
+           cbor_value_advance(&it)!=CborNoError)return false;
+    }
+    return cbor_value_map_find_value(map,key,out)==CborNoError&&out->type!=CborInvalidType;
 }
 
 static bool cbor_get_string(CborValue *val, std::string &out)
@@ -104,6 +117,46 @@ static bool decode_v4_dleq(CborValue *map, DLEQ &dleq)
     return true;
 }
 
+static bool decode_spend_info(CborValue *map, std::string &out)
+{
+    if (!cbor_value_is_map(map)) return false;
+    cJSON *json = cJSON_CreateObject();
+    if (!json) return false;
+    CborValue it;
+    bool ok = cbor_value_enter_container(map, &it) == CborNoError;
+    std::set<std::string> seen;
+    while (ok && !cbor_value_at_end(&it)) {
+        std::string key;
+        ok = cbor_get_string(&it, key) && seen.insert(key).second && cbor_value_advance(&it) == CborNoError;
+        if (!ok) break;
+        const char *name = key=="k" ? "k" : key=="e" ? "E" : key=="i" ? "K" : key=="u" ? "u" : nullptr;
+        if (name) {
+            std::string hex;
+            ok = cbor_get_bytes_as_hex(&it, hex) && hex.size() == ((key=="k"||key=="u") ? 64u : 66u) &&
+                 cJSON_AddStringToObject(json, name, hex.c_str());
+        } else if (key=="t") {
+            cJSON *tree = cJSON_AddArrayToObject(json, "tree");
+            CborValue leaf;
+            ok = tree && cbor_value_is_array(&it) && cbor_value_enter_container(&it, &leaf)==CborNoError;
+            unsigned count=0;
+            while (ok && !cbor_value_at_end(&leaf)) {
+                std::string hex;
+                ok = ++count<=8 && cbor_get_bytes_as_hex(&leaf,hex) && !hex.empty() && hex.size()<=1026;
+                cJSON *entry = ok ? cJSON_CreateString(hex.c_str()) : nullptr;
+                if (!entry || !cJSON_AddItemToArray(tree,entry)) { cJSON_Delete(entry);ok=false; }
+                if (ok) ok=cbor_value_advance(&leaf)==CborNoError;
+            }
+            ok=ok&&count>0;
+        }
+        if (ok) ok=cbor_value_advance(&it)==CborNoError;
+    }
+    char *text = ok ? cJSON_PrintUnformatted(json) : nullptr;
+    if (text) out=text;
+    ok=ok&&text;
+    cJSON_free(text);cJSON_Delete(json);
+    return ok;
+}
+
 static bool decode_v4_proof(CborValue *it, Proof &proof, const std::string &keyset_id)
 {
     if (!cbor_value_is_map(it)) return false;
@@ -135,6 +188,18 @@ static bool decode_v4_proof(CborValue *it, Proof &proof, const std::string &keys
             proof.witness = w;
     }
 
+    CborValue si;
+    if (cbor_find_in_map(it,"si",&si)) {
+        std::string text;
+        if (!decode_spend_info(&si,text)) return false;
+        proof.spend_info=std::move(text);
+    }
+    if (proof.id.compare(0,2,"02")==0) {
+        if(proof.secret.size()!=66||proof.secret.find_first_not_of("0123456789abcdef")!=std::string::npos||
+           (proof.secret.compare(0,2,"02")&&proof.secret.compare(0,2,"03"))||proof.C.size()!=96||
+           cbor_find_in_map(it,"d",&dval))return false;
+        proof.witness.reset();
+    }
     return true;
 }
 
@@ -191,10 +256,7 @@ bool deserialize_token_v4(const char *token_str, Token &out)
 
     out.proofs.clear();
     while (!cbor_value_at_end(&t_it)) {
-        if (!cbor_value_is_map(&t_it)) {
-            cbor_value_advance(&t_it);
-            continue;
-        }
+        if (!cbor_value_is_map(&t_it)) return false;
 
         CborValue i_val;
         std::string keyset_id_hex;
@@ -216,11 +278,11 @@ bool deserialize_token_v4(const char *token_str, Token &out)
                 return false;
             out.proofs.push_back(std::move(proof));
             if (cbor_value_advance(&p_it) != CborNoError)
-                break;
+                return false;
         }
 
         if (cbor_value_advance(&t_it) != CborNoError)
-            break;
+            return false;
     }
 
     ESP_LOGI(TAG, "decoded V4 token: %d proofs from %s",
@@ -238,7 +300,7 @@ bool deserialize_token_v4(const char *token_str, Token &out)
 static bool encode_hex_bytes(CborEncoder *enc, const std::string &hex,
                              size_t max_bytes)
 {
-    uint8_t bytes[CASHU_MAX_POINT_LEN]; /* covers points (<= 48) and ids (33) */
+    uint8_t bytes[513]; /* largest NUT-10 serialized leaf */
     size_t len = hex.size() / 2;
     if ((hex.size() % 2) != 0 || len > max_bytes || max_bytes > sizeof(bytes))
         return false;
@@ -246,6 +308,37 @@ static bool encode_hex_bytes(CborEncoder *enc, const std::string &hex,
         return false;
     cbor_encode_byte_string(enc, bytes, len);
     return true;
+}
+
+static bool encode_spend_info(CborEncoder *enc, const std::string &text)
+{
+    cJSON *json=cJSON_ParseWithOpts(text.c_str(),nullptr,true);
+    if (!cJSON_IsObject(json)||!json_unique_members(json)) { cJSON_Delete(json);return false; }
+    const char *names[]={"k","E","K","u","tree"};
+    const char *keys[]={"k","e","i","u","t"};
+    size_t count=0;
+    for (const char *name:names) if(cJSON_GetObjectItemCaseSensitive(json,name)) count++;
+    CborEncoder map;cbor_encoder_create_map(enc,&map,count);
+    bool ok=true;
+    for (unsigned i=0;i<5&&ok;i++) {
+        const cJSON *value=cJSON_GetObjectItemCaseSensitive(json,names[i]);
+        if(!value)continue;
+        cbor_encode_text_stringz(&map,keys[i]);
+        if(i<4) {
+            size_t length=(i==0||i==3)?32:33;
+            ok=cJSON_IsString(value)&&strlen(value->valuestring)==length*2&&encode_hex_bytes(&map,value->valuestring,length);
+        } else {
+            int n=cJSON_GetArraySize(value);ok=cJSON_IsArray(value)&&n>0&&n<=8;
+            if(!ok)break;
+            CborEncoder tree;cbor_encoder_create_array(&map,&tree,n);
+            const cJSON *leaf;
+            cJSON_ArrayForEach(leaf,value) {
+                if(!cJSON_IsString(leaf)||!encode_hex_bytes(&tree,leaf->valuestring,513)) {ok=false;break;}
+            }
+            cbor_encoder_close_container(&map,&tree);
+        }
+    }
+    cbor_encoder_close_container(enc,&map);cJSON_Delete(json);return ok;
 }
 
 // One encoding pass. Returns false on malformed fields; buffer overflow is
@@ -298,7 +391,13 @@ static bool encode_token_v4(const Token &token,
         for (const Proof *p : proofs) {
             int proof_items = 3;
             if (p->dleq) proof_items++;
-            if (p->witness) proof_items++;
+            const bool v3=p->id.compare(0,2,"02")==0;
+            if(v3&&(p->dleq||p->secret.size()!=66||p->C.size()!=96||
+               (p->secret.compare(0,2,"02")&&p->secret.compare(0,2,"03"))||
+               p->secret.find_first_not_of("0123456789abcdef")!=std::string::npos||
+               p->C.find_first_not_of("0123456789abcdef")!=std::string::npos))return false;
+            if (p->witness&&!v3) proof_items++;
+            if (p->spend_info) proof_items++;
 
             CborEncoder p_map;
             cbor_encoder_create_map(&p_arr, &p_map, proof_items);
@@ -338,11 +437,15 @@ static bool encode_token_v4(const Token &token,
                 cbor_encoder_close_container(&p_map, &dleq_map);
             }
 
-            if (p->witness) {
+            if (p->witness&&!v3) {
                 cbor_encode_text_stringz(&p_map, "w");
                 cbor_encode_text_stringz(&p_map, p->witness->c_str());
             }
 
+            if (p->spend_info) {
+                cbor_encode_text_stringz(&p_map,"si");
+                if (!encode_spend_info(&p_map,*p->spend_info)) return false;
+            }
             cbor_encoder_close_container(&p_arr, &p_map);
         }
         cbor_encoder_close_container(&entry_map, &p_arr);
@@ -703,7 +806,8 @@ bool cashu_cbor_run_tests()
     Proof p3; // BLS v3: 48-byte C (the NUT-00 vector's unblinded C), no dleq
     p3.id = "02abd02ebc1ff44652153375162407deaf0b30e590844cca0b6e4894a08a8828dd";
     p3.amount = 8;
-    p3.secret = "test_message";
+    p3.secret = "0240c186f3e19f6f8cd00db81c5266d5c74ddca48ff848efd0e3e125b2846f30d9";
+    p3.spend_info=R"({"k":"930c88ad9dc8531c147862d4ef9c0981200ff1f510c0a9e1c024db725a1d56c6"})";
     p3.C = "b7a4881059133fd91a8753600d9a5e524c65d6224f6fe2d5aef9e59f1507fdad"
            "90b3b4d48ee46da5c8dfaa0b88e28b69";
     t.proofs.push_back(p3);

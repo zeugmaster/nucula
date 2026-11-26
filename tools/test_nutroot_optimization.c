@@ -25,14 +25,14 @@ int main(void) {
         if(!secp256k1_ec_pubkey_create(ctx,&pk,sk)||!secp256k1_ec_pubkey_serialize(ctx,i==15?internal:keys+33*i,&len,&pk,SECP256K1_EC_COMPRESSED))return 1;
     }
     unsigned char kid[8]={2},c[48]={0x80},b[48]={0x80};
-    nutroot_input_t input={.amount=8,.keyset_id=kid,.keyset_id_len=8,.secret=point,.secret_len=33,.C=c,.C_len=48};
+    nutroot_input_t input={.amount=8,.keyset_id=kid,.keyset_id_len=8,.secret=point,.secret_len=33,.C=c,.C_len=48,.Y=c,.Y_len=48};
     nutroot_output_t output={.amount=8,.keyset_id=kid,.keyset_id_len=8,.B_=b,.B_len=48};
     nutroot_tx_t tx={.proof_inputs=&input,.n_proof_inputs=1,.blinded_outputs=&output,.n_blinded_outputs=1};
     unsigned comparisons=0;
     for(unsigned trial=0;trial<250;trial++) {
         unsigned m=1+random_word()%15,n=1+random_word()%m;
         size_t length=sizeof(leaf);
-        if(!nutroot_leaf_build(NUTROOT_LEAF_THRESHOLD,n,keys,m,0,NULL,leaf,&length)||!nutroot_leaf_hash(leaf,length,root)||!nutroot_tweak_pubkey(ctx,internal,root,point)||!nutroot_tx_digest(&tx,transaction)||!nutroot_input_digest(transaction,&input,digest))return 2;
+        if(!nutroot_leaf_build(NUTROOT_LEAF_THRESHOLD,n,keys,m,0,NULL,leaf,&length)||!nutroot_leaf_hash(leaf,length,root)||!nutroot_tweak_pubkey(ctx,internal,root,point)||!nutroot_tx_digest(&tx,transaction)||!nutroot_input_digest(transaction,&input,digest)||!nutroot_script_digest(digest,root,digest))return 2;
         for(unsigned i=0;i<m;i++) { unsigned char sig[64];secret(i,sk);if(!nutroot_sign_digest(ctx,sk,digest,sig))return 3;bytes_to_hex(sig,64,signatures[i]); }
         char lh[1041],kh[67];bytes_to_hex(leaf,length,lh);bytes_to_hex(internal,33,kh);
         cJSON *w=cJSON_CreateObject(),*ctl=cJSON_AddObjectToObject(w,"control"),*sigs=cJSON_AddArrayToObject(w,"signatures");
@@ -44,8 +44,8 @@ int main(void) {
             unsigned kind=trial%5==0?0:random_word()%16;
             if(kind<11) { cJSON_AddItemToArray(sigs,cJSON_CreateString(signatures[idx]));mask|=1u<<idx; }
             else if(kind==11) { cJSON_AddItemToArray(sigs,cJSON_CreateNumber(42));malformed=1; }
-            else if(kind==12) cJSON_AddItemToArray(sigs,cJSON_CreateString("a123"));
-            else if(kind==13) { char bad[129];memcpy(bad,signatures[idx],129);bad[17]='z';cJSON_AddItemToArray(sigs,cJSON_CreateString(bad)); }
+            else if(kind==12) { cJSON_AddItemToArray(sigs,cJSON_CreateString("a123"));malformed=1; }
+            else if(kind==13) { char bad[129];memcpy(bad,signatures[idx],129);bad[17]='z';malformed=1;cJSON_AddItemToArray(sigs,cJSON_CreateString(bad)); }
             else { char bad[129];memcpy(bad,signatures[idx],129);bad[64]=bad[64]=='a'?'b':'a';cJSON_AddItemToArray(sigs,cJSON_CreateString(bad)); }
         }
         input.witness=cJSON_PrintUnformatted(w);cJSON_Delete(w);

@@ -98,7 +98,7 @@ static int redeem_or_stash_token(const std::string &token_str,
             }
             p.id = ks->id;
         }
-        if (!w->verify_incoming_proofs(inputs)) {
+        if (!w->verify_incoming_proofs(inputs, true)) {
             ESP_LOGE(TAG, "offline: proof verification failed, refusing token");
             return -1;
         }

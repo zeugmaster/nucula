@@ -65,6 +65,8 @@ struct Proof {
     std::string C;
     std::optional<DLEQ> dleq;
     std::optional<std::string> witness;
+    // Local/token data; never include this object in a request to a mint.
+    std::optional<std::string> spend_info;
 };
 
 // Sum of proof amounts, 64-bit so a large wallet can't overflow int.
@@ -115,6 +117,8 @@ struct MintQuote {
     int64_t expiry = 0;
     std::optional<int> amount_paid;
     std::optional<int> amount_issued;
+    std::string pubkey;
+    std::optional<int64_t> updated_at;
 
     // Claimable now: paid minus issued when the accounting pair is
     // present, else `amount` iff the legacy state says PAID.
@@ -130,6 +134,7 @@ struct MintQuote {
 struct MintRequest {
     std::string quote;
     std::vector<BlindedMessage> outputs;
+    std::optional<std::string> signature;
 };
 
 struct MintResponse {

@@ -276,13 +276,11 @@ static void sub256(const unsigned char a[32], const unsigned char b[32],
  * message = "Cashu_KDF_HMAC_SHA256" || keyset_id_bytes || counter_be64 ||
  *           type_byte || suffix
  *
- * The suffix is empty for the secp v1/v2 derivations; the BLS v3 blinding
- * factor appends u32_BE(attempt) for its rejection-sampling loop. Exported
- * (declared in cashu_suite.h) so crypto_bls.c shares the KDF without
- * pulling in secp256k1 headers.
+ * Legacy v1/v2 derivations use an empty suffix. The length-framed v3
+ * derivation lives in nutroot_prepare.c.
  */
 int cashu_nut13_hmac(const unsigned char *seed, size_t seed_len,
-                     const char *keyset_id, uint32_t counter,
+                     const char *keyset_id, uint64_t counter,
                      unsigned char type_byte,
                      const unsigned char *suffix, size_t suffix_len,
                      unsigned char digest[32])
@@ -310,14 +308,8 @@ int cashu_nut13_hmac(const unsigned char *seed, size_t seed_len,
     pos += id_byte_len;
 
     /* counter as big-endian uint64 */
-    msg[pos++] = 0;
-    msg[pos++] = 0;
-    msg[pos++] = 0;
-    msg[pos++] = 0;
-    msg[pos++] = (counter >> 24) & 0xFF;
-    msg[pos++] = (counter >> 16) & 0xFF;
-    msg[pos++] = (counter >> 8) & 0xFF;
-    msg[pos++] = counter & 0xFF;
+    for (int shift = 56; shift >= 0; shift -= 8)
+        msg[pos++] = (unsigned char)(counter >> shift);
 
     /* derivation type */
     msg[pos++] = type_byte;
@@ -338,7 +330,7 @@ int cashu_nut13_hmac(const unsigned char *seed, size_t seed_len,
 }
 
 int cashu_derive_secret(const unsigned char *seed, size_t seed_len,
-                        const char *keyset_id, uint32_t counter,
+                        const char *keyset_id, uint64_t counter,
                         unsigned char secret_out[32])
 {
     return cashu_nut13_hmac(seed, seed_len, keyset_id, counter, 0x00,
@@ -346,7 +338,7 @@ int cashu_derive_secret(const unsigned char *seed, size_t seed_len,
 }
 
 int cashu_derive_r(const unsigned char *seed, size_t seed_len,
-                   const char *keyset_id, uint32_t counter,
+                   const char *keyset_id, uint64_t counter,
                    unsigned char r_out[32])
 {
     unsigned char digest[32];

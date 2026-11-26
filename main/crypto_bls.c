@@ -1,4 +1,6 @@
 #include "cashu_suite.h"
+#include "nutroot_prepare.h"
+#include "hex.h"
 #include "crypto_bls.h"
 #include <stdlib.h>
 #include <limits.h>
@@ -18,7 +20,7 @@
 
 /*
  * BLS12-381 crypto suite (keyset v3, version byte 0x02) over the vendored
- * blst component, per nuts PR #371:
+ * blst component, per nuts PR #443:
  *
  *   - token points Y, B_, C_, C: compressed G1 (48 B); mint keys K:
  *     compressed G2 (96 B); scalars: 32-byte big-endian in (0, Fr order).
@@ -899,42 +901,27 @@ int cashu_bls_unblind_verify(size_t n, const unsigned char *Ks,
     return ok;
 }
 
-/* NUT-13 v3 secret derivation: identical to v2 — the raw 32 HMAC bytes. */
+/* NUT-13 v3 derives an internal private key, not the public point secret. */
+static int bls_derive_scalar(const unsigned char *seed, size_t seed_len,
+                             const char *keyset_id, uint64_t counter,
+                             unsigned type, unsigned char out[32])
+{
+    unsigned char id[33];
+    if (!keyset_id || !hex_to_bytes(keyset_id,id,sizeof(id))) return 0;
+    nutroot_kdf_t kdf;
+    if (!nutroot_kdf_init(&kdf,seed,seed_len,id,sizeof(id))) return 0;
+    int ok=nutroot_kdf_derive(&kdf,counter,type,0,out);
+    nutroot_kdf_clear(&kdf);
+    return ok;
+}
 static int bls_derive_secret(const unsigned char *seed, size_t seed_len,
-                             const char *keyset_id, uint32_t counter,
+                             const char *keyset_id, uint64_t counter,
                              unsigned char *secret_out)
-{
-    return cashu_nut13_hmac(seed, seed_len, keyset_id, counter, 0x00,
-                            NULL, 0, secret_out);
-}
-
-/* NUT-13 v3 blinding factor: rejection sampling against the Fr order (a
- * modular reduction would bias ~7.5% since Fr order is ~0.45*2^256). The
- * KDF message appends u32_BE(attempt), present from attempt 0. ~45%
- * acceptance per attempt; 64 attempts bounds p(fail) around 2^-55. */
+{ return bls_derive_scalar(seed,seed_len,keyset_id,counter,0,secret_out); }
 static int bls_derive_r(const unsigned char *seed, size_t seed_len,
-                        const char *keyset_id, uint32_t counter,
+                        const char *keyset_id, uint64_t counter,
                         unsigned char *r_out)
-{
-    for (uint32_t attempt = 0; attempt < 64; attempt++) {
-        unsigned char suffix[4] = {
-            (unsigned char)(attempt >> 24), (unsigned char)(attempt >> 16),
-            (unsigned char)(attempt >> 8), (unsigned char)attempt,
-        };
-        unsigned char x[32];
-        if (!cashu_nut13_hmac(seed, seed_len, keyset_id, counter, 0x01,
-                              suffix, 4, x))
-            return 0;
-        int nonzero = 0;
-        for (int i = 0; i < 32; i++)
-            if (x[i]) { nonzero = 1; break; }
-        if (nonzero && be_lt(x, FR_ORDER_BE)) {
-            memcpy(r_out, x, 32);
-            return 1;
-        }
-    }
-    return 0;
-}
+{ return bls_derive_scalar(seed,seed_len,keyset_id,counter,1,r_out); }
 
 const cashu_suite_t cashu_suite_bls = {
     .version_byte = 0x02,

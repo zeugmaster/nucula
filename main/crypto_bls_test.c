@@ -762,24 +762,24 @@ static int test_bls_suite(void)
 
     /* NUT-13 v3 vector (tests/13-tests.md): counter 3, attempt 0 rejected,
      * attempt 1 accepted — proves the rejection loop and u32_BE framing. */
-    const unsigned char *seed = (const unsigned char *)"nut13 v3 test seed";
+    const unsigned char seed[64] = "nut13 v3 test seed";
     const char *ks_id =
-        "02abd02ebc1ff44652153375162407deaf0b30e590844cca0b6e4894a08a8828dd";
+        "022546ab0a2dee9f79510f4e20a4e3d9e894a97361047c594902573a7e64f9d701";
     unsigned char out32[32];
-    if (!s->derive_secret(seed, 18, ks_id, 3, out32)) {
+    if (!s->derive_secret(seed, 64, ks_id, 3, out32)) {
         ESP_LOGE(TAG, "suite derive_secret: failed");
         pass = 0;
     } else {
         pass &= check_hex(out32, 32,
-            "7a45e04943504b25273e9569ab7019ab62f814dade23998c12f5f4cb1bb7978a",
+            "1aa7018e67ac4655d3d6dd120a2c715adb6bcd6b54dbf90a685ae452916edb61",
             "NUT-13 v3 secret");
     }
-    if (!s->derive_r(seed, 18, ks_id, 3, out32)) {
+    if (!s->derive_r(seed, 64, ks_id, 3, out32)) {
         ESP_LOGE(TAG, "suite derive_r: failed");
         pass = 0;
     } else {
         pass &= check_hex(out32, 32,
-            "236dbcb12fc064ceeae6c5e2de7f79258374dccbf23ac0afdf72cf9eb53540c9",
+            "46186ec0f98f00aaf51a7cb59472c65e35a33f94e2785b6b384d1666b9c1759c",
             "NUT-13 v3 r (attempt=1)");
     }
 

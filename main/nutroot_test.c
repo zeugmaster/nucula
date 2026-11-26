@@ -446,8 +446,8 @@ static int test_transcript(void)
         outs[i].keyset_id = kid; outs[i].keyset_id_len = 33;
         outs[i].B_ = B; outs[i].B_len = 48;
     }
-    nutroot_quote_t mint_q = {8, "quote-mint-0001"};
-    nutroot_quote_t melt_q = {8, "quote-melt-0001"};
+    nutroot_quote_t mint_q = {.amount=8, .quote_id="quote-mint-0001"};
+    nutroot_quote_t melt_q = {.amount=8, .quote_id="quote-melt-0001"};
 
     unsigned char d[32];
     nutroot_tx_t tx = {0};

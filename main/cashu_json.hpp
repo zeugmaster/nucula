@@ -6,6 +6,8 @@
 
 namespace cashu {
 
+bool json_unique_members(const cJSON* value);
+
 // Serialize model to cJSON object. Caller owns the returned pointer
 // and must free it with cJSON_Delete().
 cJSON* to_json(const DLEQ& v);
@@ -41,8 +43,13 @@ bool from_json(const cJSON* j, Token& out);
 template<typename T>
 cJSON* to_json_array(const std::vector<T>& items) {
     cJSON* arr = cJSON_CreateArray();
-    for (const auto& item : items)
-        cJSON_AddItemToArray(arr, to_json(item));
+    if (!arr) return nullptr;
+    for (const auto& item : items) {
+        cJSON* value=to_json(item);
+        if (!value||!cJSON_AddItemToArray(arr,value)) {
+            cJSON_Delete(value);cJSON_Delete(arr);return nullptr;
+        }
+    }
     return arr;
 }
 
@@ -75,9 +82,9 @@ std::string serialize(const T& v) {
 // Convenience: deserialize from JSON string
 template<typename T>
 bool deserialize(const char* json_str, T& out) {
-    cJSON* j = cJSON_Parse(json_str);
+    cJSON* j = cJSON_ParseWithOpts(json_str,nullptr,true);
     if (!j) return false;
-    bool ok = from_json(j, out);
+    bool ok = json_unique_members(j) && from_json(j, out);
     cJSON_Delete(j);
     return ok;
 }

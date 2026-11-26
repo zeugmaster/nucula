@@ -4,6 +4,8 @@ A Cashu ecash wallet for the ESP32-C3 with NFC tap-to-pay.
 
 Nucula can store ecash from multiple mints, receive payments over NFC, mint new tokens via Lightning invoices, and melt tokens to pay Lightning invoices — all from a device that fits in your pocket. Tokens received while offline are stashed and redeemed automatically once WiFi returns.
 
+This branch implements the v3 proposal pinned in [the compatibility notes](docs/keyset-v3.md), including wallet flows and interrupted-request recovery.
+
 ## Hardware
 
 Reference board: Seeed XIAO ESP32-C3. All three peripherals share one I2C bus; each is probed at boot and the firmware runs fine (console + wallet) with any or all of them absent.
@@ -79,6 +81,7 @@ nucula> balance
 | `nfc request <amount>` | Start an NFC payment request |
 | `nfc stop` | Stop NFC |
 | `stickup` | Drain all funds as V4 tokens |
+| `recover` | Recover interrupted mint, swap, or melt requests |
 | `seed [show\|generate\|restore\|wipe]` | Manage the BIP-39 wallet seed |
 | `keypad scan` | Probe PCF8574 keypad wiring |
 | `heap` / `tasks` | Heap and task-stack telemetry |

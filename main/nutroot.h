@@ -9,16 +9,16 @@ extern "C" {
 #endif
 
 /*
- * Nutroot secrets (v3 keysets, NUT-10 rev. cashubtc/nuts#421): taproot-style
+ * Nutroot secrets (v3 keysets, NUT-00/10, cashubtc/nuts#443): taproot-style
  * commitments in the proof secret. A v3 secret is a 33-byte compressed
  * secp256k1 point P = K + t*G committing to a merkle tree of declarative
  * condition leaves; spends carry a BIP-340 witness over the transaction
  * digest, key-path (one signature by P's key) or script-path (reveal one
  * leaf, its merkle path, and enough signatures to satisfy it).
  *
- * Current rules are pinned to cashubtc/nuts#421, head a3f04b97154b
- * (2026-09-10): per-input signing digests, version-based routing, 512-byte
- * leaf bodies, eight leaves, and disclosure mode 1. Historical transcript
+ * Current rules are pinned to cashubtc/nuts#443, head b6c07bdc198f
+ * (2026-11-26): per-input and script digests, 512-byte leaf bodies,
+ * eight leaves, and optional advertised leaf types. Historical transcript
  * entry points exist only for reproducing the original benchmark.
  *
  * Like crypto_bls.c this file is ESP-free (secp256k1 + mbedtls + cJSON +
@@ -31,6 +31,7 @@ extern "C" {
 #define NUTROOT_LEAF_THRESHOLD   0x01
 #define NUTROOT_LEAF_AFTER       0x02
 #define NUTROOT_LEAF_HASHLOCK    0x03
+#define NUTROOT_LEAF_COMMIT      0x04
 /* Normative caps. The leaf body excludes the leading version byte. */
 #define NUTROOT_MAX_LEAF_BODY    512
 #define NUTROOT_MAX_TREE_DEPTH   3
@@ -53,7 +54,6 @@ typedef struct {
     uint8_t type;                /* NUTROOT_LEAF_* */
     uint8_t n;                   /* threshold, 1..num_keys */
     uint8_t num_keys;
-    uint8_t disclosure;          /* 0 absent, 1 publish exercised witness */
     const unsigned char *keys;   /* num_keys * 33 bytes, concatenated */
     int64_t time;                /* after leaves; 0 otherwise */
     const unsigned char *hash;   /* 32 bytes for hashlock leaves; NULL else */
@@ -139,6 +139,7 @@ typedef struct {
     const unsigned char *secret;    size_t secret_len;
     const unsigned char *C;         size_t C_len;
     const char *witness;            /* raw witness JSON; NULL = none */
+    const unsigned char *Y; size_t Y_len; /* hash-to-curve(secret), current transcript */
 } nutroot_input_t;
 
 typedef struct {
@@ -150,10 +151,14 @@ typedef struct {
 typedef struct {
     uint64_t amount;
     const char *quote_id;           /* utf8, non-empty */
+    const unsigned char *lock_key;  /* mint input: compressed secp256k1, 33 bytes */
+    uint64_t issued;                /* mint input: starting amount_issued */
+    uint64_t fee_index;             /* melt output: selected NUT-30 option */
+    int has_fee_index;
 } nutroot_quote_t;
 
-/* Mirrors nutshell's TransactionShape: containers 0x01 proof input, 0x02
- * mint quote input, 0x03 blinded output, 0x04 melt quote output; types
+/* NUT-00 containers: 0x11 proof input, 0x12
+ * mint quote input, 0x21 blinded output, 0x22 melt quote output; types
  * ascend, request order within a type. */
 typedef struct {
     const nutroot_input_t  *proof_inputs;       size_t n_proof_inputs;
@@ -169,10 +174,14 @@ int nutroot_input_digest(const unsigned char tx_digest[32],
                          const nutroot_input_t *input, unsigned char digest[32]);
 int nutroot_quote_input_digest(const unsigned char tx_digest[32],
                                const nutroot_quote_t *input, unsigned char digest[32]);
+int nutroot_script_digest(const unsigned char input_digest[32],
+                          const unsigned char leaf_hash[32], unsigned char digest[32]);
 
-/* Verifies proof-input witnesses, selecting v3 by keyset version >= 0x02.
+/* Verifies proof-input witnesses, selecting v3 by keyset version 0x02.
  * The caller must separately validate the transaction, BLS signatures,
  * duplicate proofs, keyset authorization and pre-v3 spending rules. */
+int nutroot_verify_witness(const secp256k1_context *ctx, const unsigned char secret[33],
+                           const unsigned char digest[32], const char *witness, int64_t now);
 int nutroot_verify_transaction(const secp256k1_context *ctx,
                                const nutroot_tx_t *tx, int64_t now);
 

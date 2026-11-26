@@ -18,7 +18,7 @@ enum class KeysetVersion {
     unknown = -1,
     v1 = 0x00,   // deprecated: "00" + 14 hex of sha256(sorted pubkeys); 8 bytes / 16 hex
     v2 = 0x01,   // current:    "01" + sha256(amt:pk,...|unit|fee|expiry); 33 bytes / 66 hex
-    v3 = 0x02,   // BLS12-381:  "02" + sha256(same preimage as v2, G2 keys); 33 bytes / 66 hex
+    v3 = 0x02,   // BLS12-381:  "02" + sha256(framed G2 keys, unit, fee); 33 bytes / 66 hex
 };
 
 // Per-version policy. Independent of the crypto suite, which v1 and v2 share.
@@ -44,7 +44,7 @@ const cashu_suite_t *suite_for_id(const std::string &id);
 std::string derive_keyset_id(const Keyset &ks);
 
 // True iff the keyset's claimed ID matches the ID re-derived from its keys
-// (case-insensitive). Closes the NUT-02 gap where the mint's claimed ID was
+// (v3 requires canonical lowercase). Closes the NUT-02 gap where the mint's claimed ID was
 // trusted verbatim.
 bool verify_keyset_id(const Keyset &ks);
 

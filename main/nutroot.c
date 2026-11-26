@@ -1,7 +1,6 @@
 /* Nutroot secrets (v3 keysets) core: tagged hashes, leaf TLV, merkle fold,
  * tweak math, transaction transcript, and witness verification per NUT-10
- * (cashubtc/nuts#421), byte-mirroring nutshell's
- * bench/nutroot-witness-verification branch. See nutroot.h.
+ * (cashubtc/nuts#443). See the pinned revision in nutroot.h.
  *
  * ESP-free on purpose: secp256k1 + mbedtls + cJSON + libc only, so the host
  * harness compiles this file verbatim. No logging — integer returns only. */
@@ -30,13 +29,12 @@ static const char TX_TAG[]     = "Cashu_Transaction_v1";
 #define FIELD_KEYS 0x04
 #define FIELD_TIME 0x06
 #define FIELD_HASH 0x08
-#define FIELD_DISCLOSURE 0x0a
 
 /* Transcript container types. */
-#define CONTAINER_PROOF_INPUT      0x01
-#define CONTAINER_MINT_QUOTE_IN    0x02
-#define CONTAINER_BLINDED_OUTPUT   0x03
-#define CONTAINER_MELT_QUOTE_OUT   0x04
+#define CONTAINER_PROOF_INPUT      0x11
+#define CONTAINER_MINT_QUOTE_IN    0x12
+#define CONTAINER_BLINDED_OUTPUT   0x21
+#define CONTAINER_MELT_QUOTE_OUT   0x22
 
 /* secp256k1 group order, big-endian. */
 static const unsigned char ORDER_BE[32] = {
@@ -170,6 +168,14 @@ int nutroot_leaf_build(uint8_t type, uint8_t n,
                        int64_t time, const unsigned char *hash32,
                        unsigned char *out, size_t *out_len)
 {
+    if (!out || !out_len) return 0;
+    if (type == NUTROOT_LEAF_COMMIT) {
+        if (!hash32 || n || num_keys || keys || time || *out_len < 37) return 0;
+        out[0] = NUTROOT_LEAF_VERSION; out[1] = type;
+        tlv_header(out + 2, FIELD_HASH, 32);
+        memcpy(out + 5, hash32, 32); *out_len = 37;
+        return 1;
+    }
     if (type < NUTROOT_LEAF_THRESHOLD || type > NUTROOT_LEAF_HASHLOCK)
         return 0;
     if (n < 1 || num_keys < 1 || n > num_keys || !keys)
@@ -221,7 +227,7 @@ static int leaf_parse(const secp256k1_context *ctx,
     if (leaf[0] != NUTROOT_LEAF_VERSION)
         return 0;
     uint8_t type = leaf[1];
-    if (type < NUTROOT_LEAF_THRESHOLD || type > NUTROOT_LEAF_HASHLOCK)
+    if (type < NUTROOT_LEAF_THRESHOLD || type > NUTROOT_LEAF_COMMIT)
         return 0;
 
     memset(out, 0, sizeof(*out));
@@ -277,10 +283,6 @@ static int leaf_parse(const secp256k1_context *ctx,
             have_time = 1;
             break;
         }
-        case FIELD_DISCLOSURE:
-            if (rlen != 1 || val[0] != 1) return 0;
-            out->disclosure = 1;
-            break;
         case FIELD_HASH:
             if (rlen != 32)
                 return 0;
@@ -292,6 +294,8 @@ static int leaf_parse(const secp256k1_context *ctx,
         }
     }
 
+    if (type == NUTROOT_LEAF_COMMIT)
+        return have_hash && !have_n && !have_keys && !have_time;
     if (!have_n || !have_keys || out->n > out->num_keys)
         return 0;
     /* Each type carries exactly the fields its evaluation rule reads. */
@@ -527,82 +531,77 @@ static int sha_amount(mbedtls_sha256_context *sha, uint64_t amount)
     return sha_tlv(sha, 0x01, amt, alen);
 }
 
-static int sha_proof_input(mbedtls_sha256_context *sha, const nutroot_input_t *p)
+static int sha_proof_input(mbedtls_sha256_context *sha, const nutroot_input_t *p, int legacy)
 {
-    if (!p || !p->keyset_id || !p->secret || !p->C || !p->secret_len ||
-        p->keyset_id_len > 0xffff || p->secret_len > 0xffff || p->C_len > 0xffff) return 0;
-    size_t len = amount_record_len(p->amount) + 9 + p->keyset_id_len + p->secret_len + p->C_len;
+    if (!p || !p->keyset_id || !p->keyset_id_len || !p->C) return 0;
+    const unsigned char *identity = legacy ? p->secret : p->Y;
+    size_t identity_len = legacy ? p->secret_len : p->Y_len;
+    if (!identity || !identity_len || p->keyset_id_len > 0xffff ||
+        identity_len > 0xffff || p->C_len > 0xffff) return 0;
+    if (!legacy && (identity_len != (p->keyset_id[0] == 2 ? 48u : 33u) ||
+                    p->C_len != identity_len)) return 0;
+    size_t len = amount_record_len(p->amount) + 9 + p->keyset_id_len + identity_len + p->C_len;
     if (len > 0xffff) return 0;
-    unsigned char hdr[3]; tlv_header(hdr, CONTAINER_PROOF_INPUT, len);
+    unsigned char hdr[3]; tlv_header(hdr, legacy ? 1 : CONTAINER_PROOF_INPUT, len);
     return sha_update(sha, hdr, 3) && sha_amount(sha, p->amount) &&
            sha_tlv(sha, 0x02, p->keyset_id, p->keyset_id_len) &&
-           sha_tlv(sha, 0x03, p->secret, p->secret_len) && sha_tlv(sha, 0x04, p->C, p->C_len);
+           sha_tlv(sha, 0x03, identity, identity_len) && sha_tlv(sha, 0x04, p->C, p->C_len);
+}
+
+static int sha_quote(mbedtls_sha256_context *sha, const nutroot_quote_t *q, int mint, int legacy)
+{
+    if (!q || !q->quote_id || !*q->quote_id || (!legacy && mint && !q->lock_key)) return 0;
+    size_t qlen = strlen(q->quote_id);
+    size_t vlen = amount_record_len(q->amount) + 3 + qlen;
+    unsigned char value[8];
+    size_t length = minimal_be(mint ? q->issued : q->fee_index, value);
+    if (!legacy && mint) vlen += 36 + 3 + length;
+    if (!legacy && !mint && q->has_fee_index) vlen += 3 + length;
+    if (qlen > 0xffff || vlen > 0xffff) return 0;
+    unsigned char hdr[3];
+    tlv_header(hdr, legacy ? (mint ? 2 : 4) : (mint ? CONTAINER_MINT_QUOTE_IN : CONTAINER_MELT_QUOTE_OUT), vlen);
+    int ok = sha_update(sha, hdr, 3) && sha_amount(sha, q->amount) &&
+             sha_tlv(sha, 2, (const unsigned char *)q->quote_id, qlen);
+    if (!legacy && mint) ok = ok && sha_tlv(sha, 3, q->lock_key, 33) && sha_tlv(sha, 4, value, length);
+    if (!legacy && !mint && q->has_fee_index) ok = ok && sha_tlv(sha, 3, value, length);
+    return ok;
 }
 
 static int tx_digest(const nutroot_tx_t *tx, unsigned char digest[32], int legacy)
-
 {
-    if (!tx || (tx->n_proof_inputs && !tx->proof_inputs) ||
+    if (!tx || !digest || (tx->n_proof_inputs && !tx->proof_inputs) ||
         (tx->n_blinded_outputs && !tx->blinded_outputs) ||
         (tx->n_mint_quote_inputs && !tx->mint_quote_inputs) ||
         (tx->n_melt_quote_outputs && !tx->melt_quote_outputs)) return 0;
-    if (tx->n_proof_inputs == 0 && tx->n_mint_quote_inputs == 0)
-        return 0;
-    if (tx->n_blinded_outputs == 0 && tx->n_melt_quote_outputs == 0)
-        return 0;
-
+    if ((!tx->n_proof_inputs && !tx->n_mint_quote_inputs) ||
+        (!tx->n_blinded_outputs && !tx->n_melt_quote_outputs)) return 0;
     mbedtls_sha256_context sha;
     mbedtls_sha256_init(&sha);
     int ok = mbedtls_sha256_starts(&sha, 0) == 0 &&
              (!legacy || sha_update(&sha, (const unsigned char *)TX_TAG, strlen(TX_TAG)));
-
     for (size_t i = 0; ok && i < tx->n_proof_inputs; i++)
-        ok = sha_proof_input(&sha, &tx->proof_inputs[i]);
-    for (size_t i = 0; ok && i < tx->n_mint_quote_inputs; i++) {
-        const nutroot_quote_t *q = &tx->mint_quote_inputs[i];
-        size_t qlen = q->quote_id ? strlen(q->quote_id) : 0;
-        if (qlen == 0 || qlen > 0xffff) {
-            ok = 0;
-            break;
-        }
-        size_t vlen = amount_record_len(q->amount) + 3 + qlen;
-        unsigned char hdr[3];
-        tlv_header(hdr, CONTAINER_MINT_QUOTE_IN, vlen);
-        ok = vlen <= 0xffff && sha_update(&sha, hdr, 3) &&
-             sha_amount(&sha, q->amount) &&
-             sha_tlv(&sha, 0x02, (const unsigned char *)q->quote_id, qlen);
-    }
+        ok = sha_proof_input(&sha, &tx->proof_inputs[i], legacy);
+    for (size_t i = 0; ok && i < tx->n_mint_quote_inputs; i++)
+        ok = sha_quote(&sha, &tx->mint_quote_inputs[i], 1, legacy);
     for (size_t i = 0; ok && i < tx->n_blinded_outputs; i++) {
         const nutroot_output_t *o = &tx->blinded_outputs[i];
-        if (o->keyset_id_len > 0xffff || o->B_len > 0xffff || !o->keyset_id || !o->B_) { ok = 0; break; }
-        size_t vlen = amount_record_len(o->amount) + 3 + o->keyset_id_len +
-                      3 + o->B_len;
-        unsigned char hdr[3];
-        if (vlen > 0xffff) {
-            ok = 0;
-            break;
+        if (!o->keyset_id || !o->keyset_id_len || !o->B_ ||
+            o->keyset_id_len > 0xffff || o->B_len > 0xffff) { ok = 0; break; }
+        unsigned char hash[32];
+        const unsigned char *point = o->B_; size_t point_len = o->B_len;
+        if (!legacy) {
+            if (o->B_len != (o->keyset_id[0] == 2 ? 48u : 33u) ||
+                mbedtls_sha256(o->B_, o->B_len, hash, 0) != 0) { ok = 0; break; }
+            point = hash; point_len = 32;
         }
-        tlv_header(hdr, CONTAINER_BLINDED_OUTPUT, vlen);
-        ok = sha_update(&sha, hdr, 3) &&
-             sha_amount(&sha, o->amount) &&
-             sha_tlv(&sha, 0x02, o->keyset_id, o->keyset_id_len) &&
-             sha_tlv(&sha, 0x03, o->B_, o->B_len);
+        size_t vlen = amount_record_len(o->amount) + 6 + o->keyset_id_len + point_len;
+        if (vlen > 0xffff) { ok = 0; break; }
+        unsigned char hdr[3]; tlv_header(hdr, legacy ? 3 : CONTAINER_BLINDED_OUTPUT, vlen);
+        ok = sha_update(&sha, hdr, 3) && sha_amount(&sha, o->amount) &&
+             sha_tlv(&sha, 2, o->keyset_id, o->keyset_id_len) && sha_tlv(&sha, 3, point, point_len);
     }
-    for (size_t i = 0; ok && i < tx->n_melt_quote_outputs; i++) {
-        const nutroot_quote_t *q = &tx->melt_quote_outputs[i];
-        size_t qlen = q->quote_id ? strlen(q->quote_id) : 0;
-        if (qlen == 0 || qlen > 0xffff) {
-            ok = 0;
-            break;
-        }
-        size_t vlen = amount_record_len(q->amount) + 3 + qlen;
-        unsigned char hdr[3];
-        tlv_header(hdr, CONTAINER_MELT_QUOTE_OUT, vlen);
-        ok = vlen <= 0xffff && sha_update(&sha, hdr, 3) &&
-             sha_amount(&sha, q->amount) &&
-             sha_tlv(&sha, 0x02, (const unsigned char *)q->quote_id, qlen);
-    }
-
+    for (size_t i = 0; ok && i < tx->n_melt_quote_outputs; i++)
+        ok = sha_quote(&sha, &tx->melt_quote_outputs[i], 0, legacy);
     ok = ok && mbedtls_sha256_finish(&sha, digest) == 0;
     mbedtls_sha256_free(&sha);
     return ok;
@@ -616,9 +615,10 @@ int nutroot_legacy_tx_digest(const nutroot_tx_t *tx, unsigned char digest[32])
 int nutroot_input_digest(const unsigned char transaction[32], const nutroot_input_t *input,
                          unsigned char digest[32])
 {
+    if (!transaction || !digest) return 0;
     unsigned char id[32];
     mbedtls_sha256_context sha; mbedtls_sha256_init(&sha);
-    int ok = mbedtls_sha256_starts(&sha, 0) == 0 && sha_proof_input(&sha, input) &&
+    int ok = mbedtls_sha256_starts(&sha, 0) == 0 && sha_proof_input(&sha, input, 0) &&
              mbedtls_sha256_finish(&sha, id) == 0;
     mbedtls_sha256_free(&sha);
     return ok && tagged_hash2("Cashu_TransactionInput", transaction, 32, id, 32, digest);
@@ -626,16 +626,18 @@ int nutroot_input_digest(const unsigned char transaction[32], const nutroot_inpu
 int nutroot_quote_input_digest(const unsigned char transaction[32], const nutroot_quote_t *input,
                                unsigned char digest[32])
 {
-    if (!input || !input->quote_id) return 0;
-    size_t len = strlen(input->quote_id), size = amount_record_len(input->amount) + 3;
-    if (!len || len > 0xffff-size) return 0;
-    unsigned char hdr[3], id[32]; tlv_header(hdr, CONTAINER_MINT_QUOTE_IN, size+len);
+    if (!transaction || !digest) return 0;
+    unsigned char id[32];
     mbedtls_sha256_context sha; mbedtls_sha256_init(&sha);
-    int ok = mbedtls_sha256_starts(&sha, 0) == 0 && sha_update(&sha, hdr, 3) &&
-             sha_amount(&sha, input->amount) && sha_tlv(&sha, 2, (const unsigned char *)input->quote_id, len) &&
+    int ok = mbedtls_sha256_starts(&sha, 0) == 0 && sha_quote(&sha, input, 1, 0) &&
              mbedtls_sha256_finish(&sha, id) == 0;
     mbedtls_sha256_free(&sha);
     return ok && tagged_hash2("Cashu_TransactionInput", transaction, 32, id, 32, digest);
+}
+int nutroot_script_digest(const unsigned char input[32], const unsigned char leaf_hash[32],
+                          unsigned char digest[32])
+{
+    return input && leaf_hash && digest && tagged_hash2("Cashu_NutrootScript", input, 32, leaf_hash, 32, digest);
 }
 
 /* --------------------------------------------------------- verification */
@@ -794,7 +796,7 @@ done:
 static int verify_script_path(const secp256k1_context *ctx,
                               const nutroot_input_t *in,
                               const cJSON *witness,
-                              const unsigned char digest[32], int64_t now)
+                              const unsigned char input_digest[32], int64_t now, int legacy)
 {
     const char *leaf_hex = json_string(witness, "leaf");
     const cJSON *control = cJSON_GetObjectItemCaseSensitive(witness, "control");
@@ -838,7 +840,7 @@ static int verify_script_path(const secp256k1_context *ctx,
     }
 
     int ok = 0;
-    unsigned char lh[32], root[32], P33[33];
+    unsigned char lh[32], root[32], P33[33], digest[32];
     nutroot_leaf_t parsed;
     secp256k1_xonly_pubkey parsed_keys[15];
     secp256k1_xonly_pubkey *retained = (optimization_flags & 4) ? parsed_keys : NULL;
@@ -847,16 +849,19 @@ static int verify_script_path(const secp256k1_context *ctx,
         !nutroot_tweak_pubkey(ctx, K33, root, P33) ||
         memcmp(P33, in->secret, 33) != 0)
         goto out;
-    if (!leaf_parse(ctx, leaf, leaf_len, &parsed, retained))
+    if (!leaf_parse(ctx, leaf, leaf_len, &parsed, retained) || parsed.type == NUTROOT_LEAF_COMMIT)
         goto out;
 
+    if (legacy) memcpy(digest, input_digest, 32);
+    else if (!nutroot_script_digest(input_digest, lh, digest)) goto out;
+    if (parsed.type != NUTROOT_LEAF_HASHLOCK && cJSON_GetObjectItemCaseSensitive(witness, "preimage")) goto out;
     if (parsed.type == NUTROOT_LEAF_AFTER && now < parsed.time)
         goto out;
     if (parsed.type == NUTROOT_LEAF_HASHLOCK) {
         unsigned char preimage[32], ph[32];
         size_t pre_len;
         if (!hex_field(json_string(witness, "preimage"), preimage, 32,
-                       &pre_len))
+                       &pre_len) || (!legacy && pre_len != 32))
             goto out;
         if (mbedtls_sha256(preimage, pre_len, ph, 0) != 0 ||
             memcmp(ph, parsed.hash, 32) != 0)
@@ -866,8 +871,14 @@ static int verify_script_path(const secp256k1_context *ctx,
     /* Thresholds count satisfied keys, so signatures beyond the leaf's key
      * count can never verify and reject outright. */
     int n_sigs = cJSON_GetArraySize(sigs);
-    if (n_sigs > parsed.num_keys)
-        goto out;
+    if (n_sigs > parsed.num_keys) goto out;
+    if (!legacy) {
+        unsigned char decoded[64];
+        for (int i = 0; i < n_sigs; i++) {
+            const cJSON *entry = cJSON_GetArrayItem(sigs, i);
+            if (!cJSON_IsString(entry) || !hex_to_bytes(entry->valuestring, decoded, 64)) goto out;
+        }
+    }
     if (optimization_flags & 1) {
         ok = satisfy_threshold(ctx, &parsed, sigs, digest, retained);
         goto out;
@@ -907,6 +918,41 @@ out:
     return ok;
 }
 
+static int witness_hex_canonical(const cJSON *value)
+{
+    if (cJSON_IsString(value))
+        return strlen(value->valuestring) == strspn(value->valuestring, "0123456789abcdef");
+    const cJSON *item;
+    cJSON_ArrayForEach(item, value)
+        if (!witness_hex_canonical(item)) return 0;
+    return 1;
+}
+
+static int witness_members_valid(const cJSON *witness)
+{
+    if (!witness_hex_canonical(witness)) return 0;
+    if (!cJSON_IsObject(witness)) return 0;
+    const cJSON *field;
+    cJSON_ArrayForEach(field, witness) {
+        if (!field->string || (strcmp(field->string, "signatures") && strcmp(field->string, "leaf") &&
+            strcmp(field->string, "control") && strcmp(field->string, "preimage"))) return 0;
+        for (const cJSON *prev = witness->child; prev != field; prev = prev->next)
+            if (!strcmp(prev->string, field->string)) return 0;
+    }
+    const cJSON *control = cJSON_GetObjectItemCaseSensitive(witness, "control");
+    if (control) {
+        if (!cJSON_IsObject(control)) return 0;
+        cJSON_ArrayForEach(field, control) {
+            if (!field->string || (strcmp(field->string, "K") && strcmp(field->string, "path"))) return 0;
+            for (const cJSON *prev = control->child; prev != field; prev = prev->next)
+                if (!strcmp(prev->string, field->string)) return 0;
+        }
+    }
+    if (!cJSON_GetObjectItemCaseSensitive(witness, "leaf") &&
+        (control || cJSON_GetObjectItemCaseSensitive(witness, "preimage"))) return 0;
+    return 1;
+}
+
 static int keypath_batch(const secp256k1_context *ctx, const nutroot_tx_t *tx,
                          const unsigned char transaction[32], int legacy)
 {
@@ -918,11 +964,11 @@ static int keypath_batch(const secp256k1_context *ctx, const nutroot_tx_t *tx,
     int result = -1;
     for (size_t i = 0; i < capacity; i++) {
         const nutroot_input_t *in = &tx->proof_inputs[i];
-        if (legacy ? !is_point_secret(ctx, in) : in->keyset_id[0] < 2) continue;
+        if (legacy ? !is_point_secret(ctx, in) : in->keyset_id[0] != 2) continue;
         if (in->secret_len != 33 || (in->secret[0] != 2 && in->secret[0] != 3) ||
             !in->witness || strlen(in->witness) > NUTROOT_MAX_WITNESS_LEN) { result = 0; goto done; }
         cJSON *witness = cJSON_ParseWithOpts(in->witness, NULL, 1);
-        if (!witness || !cJSON_IsObject(witness)) { cJSON_Delete(witness); result = 0; goto done; }
+        if (!witness || !cJSON_IsObject(witness) || (!legacy && !witness_members_valid(witness))) { cJSON_Delete(witness); result = 0; goto done; }
         if (cJSON_GetObjectItemCaseSensitive(witness, "leaf") ||
             cJSON_GetObjectItemCaseSensitive(witness, "control")) { cJSON_Delete(witness); goto done; }
         const cJSON *array = cJSON_GetObjectItemCaseSensitive(witness, "signatures");
@@ -943,6 +989,46 @@ done:
     return result;
 }
 
+static int verify_witness(const secp256k1_context *ctx, const nutroot_input_t *in,
+                          const unsigned char digest[32], int64_t now, int legacy)
+{
+    secp256k1_pubkey point;
+    if (!in || !in->secret || in->secret_len != 33 || !in->witness ||
+        strlen(in->witness) > NUTROOT_MAX_WITNESS_LEN ||
+        !secp256k1_ec_pubkey_parse(ctx, &point, in->secret, 33)) return 0;
+    cJSON *witness = cJSON_ParseWithOpts(in->witness, NULL, 1);
+    if (!witness || !cJSON_IsObject(witness) || (!legacy && !witness_members_valid(witness))) { cJSON_Delete(witness); return 0; }
+    int ok;
+    const cJSON *leaf = cJSON_GetObjectItemCaseSensitive(witness, "leaf");
+    const cJSON *control =
+        cJSON_GetObjectItemCaseSensitive(witness, "control");
+    if (leaf || control) {
+        /* leaf and control must be provided together. */
+        ok = leaf && control &&
+             verify_script_path(ctx, in, witness, digest, now, legacy);
+    } else {
+        /* Key path: exactly one BIP-340 signature by the secret's key;
+         * anything more is rejected, not skipped. */
+        const cJSON *sigs =
+            cJSON_GetObjectItemCaseSensitive(witness, "signatures");
+        const cJSON *sig0 = sigs ? cJSON_GetArrayItem(sigs, 0) : NULL;
+        secp256k1_xonly_pubkey xonly;
+        ok = sigs && cJSON_IsArray(sigs) && cJSON_GetArraySize(sigs) == 1 &&
+             sig0 && cJSON_IsString(sig0) &&
+             secp256k1_xonly_pubkey_from_pubkey(ctx, &xonly, NULL, &point) &&
+             sig_matches(ctx, &xonly, sig0->valuestring, digest);
+    }
+    cJSON_Delete(witness);
+    return ok;
+}
+
+int nutroot_verify_witness(const secp256k1_context *ctx, const unsigned char secret[33],
+                           const unsigned char digest[32], const char *witness, int64_t now)
+{
+    nutroot_input_t input = {.secret=secret, .secret_len=33, .witness=witness};
+    return ctx && secret && digest && verify_witness(ctx, &input, digest, now, 0);
+}
+
 static int verify_transaction(const secp256k1_context *ctx,
                                const nutroot_tx_t *tx, int64_t now, int legacy)
 {
@@ -952,7 +1038,8 @@ static int verify_transaction(const secp256k1_context *ctx,
     for (size_t i = 0; i < tx->n_proof_inputs; i++) {
         const nutroot_input_t *in = &tx->proof_inputs[i];
         if (!in->keyset_id || !in->keyset_id_len) return 0;
-        any_point |= legacy ? is_point_secret(ctx, in) : in->keyset_id[0] >= 2;
+        if (!legacy && in->keyset_id_len == 33 && in->keyset_id[0] > 2) return 0;
+        any_point |= legacy ? is_point_secret(ctx, in) : in->keyset_id[0] == 2;
     }
     if (!any_point) return 1;
     if (legacy && !tx->n_blinded_outputs && !tx->n_melt_quote_outputs) return 1;
@@ -964,7 +1051,7 @@ static int verify_transaction(const secp256k1_context *ctx,
     }
     for (size_t i = 0; i < tx->n_proof_inputs; i++) {
         const nutroot_input_t *in = &tx->proof_inputs[i];
-        if (legacy ? !is_point_secret(ctx, in) : in->keyset_id[0] < 2) continue;
+        if (legacy ? !is_point_secret(ctx, in) : in->keyset_id[0] != 2) continue;
         secp256k1_pubkey point;
         if (!in->secret || in->secret_len != 33 ||
             (in->secret[0] != 2 && in->secret[0] != 3) ||
@@ -976,31 +1063,7 @@ static int verify_transaction(const secp256k1_context *ctx,
         if (!in->witness || strlen(in->witness) > NUTROOT_MAX_WITNESS_LEN)
             return 0;
 
-        cJSON *witness = cJSON_ParseWithOpts(in->witness, NULL, 1);
-        if (!witness || !cJSON_IsObject(witness)) { cJSON_Delete(witness); return 0; }
-        int ok;
-        const cJSON *leaf = cJSON_GetObjectItemCaseSensitive(witness, "leaf");
-        const cJSON *control =
-            cJSON_GetObjectItemCaseSensitive(witness, "control");
-        if (leaf || control) {
-            /* leaf and control must be provided together. */
-            ok = leaf && control &&
-                 verify_script_path(ctx, in, witness, digest, now);
-        } else {
-            /* Key path: exactly one BIP-340 signature by the secret's key;
-             * anything more is rejected, not skipped. */
-            const cJSON *sigs =
-                cJSON_GetObjectItemCaseSensitive(witness, "signatures");
-            const cJSON *sig0 = sigs ? cJSON_GetArrayItem(sigs, 0) : NULL;
-            secp256k1_xonly_pubkey xonly;
-            ok = sigs && cJSON_IsArray(sigs) && cJSON_GetArraySize(sigs) == 1 &&
-                 sig0 && cJSON_IsString(sig0) &&
-                 secp256k1_xonly_pubkey_from_pubkey(ctx, &xonly, NULL, &point) &&
-                 sig_matches(ctx, &xonly, sig0->valuestring, digest);
-        }
-        cJSON_Delete(witness);
-        if (!ok)
-            return 0;
+        if (!verify_witness(ctx, in, digest, now, legacy)) return 0;
         maybe_yield();
     }
     return 1;
