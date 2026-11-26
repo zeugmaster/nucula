@@ -1138,6 +1138,8 @@ extern "C" void app_main(void)
         ESP_LOGE(TAG, "wallet store init failed");
         return;
     }
+    // Console wallet commands wait until the remaining shared startup finishes.
+    wallet_store_guard boot_guard;
     web_setup_register(true);
     console_start();
 

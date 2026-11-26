@@ -637,6 +637,8 @@ static int test_bls_suite(void)
         pass = 0;
     }
 
+    vTaskDelay(2);  /* Let idle run between back-to-back small pairing checks. */
+
     /* Multi-key batch: every amount has a DISTINCT mint key within a keyset,
      * so real tokens batch across many keys. Keys 2*g2, 3*g2, 2*g2 — the
      * non-adjacent repeat also exercises the last-validated-K cache miss.
@@ -711,6 +713,8 @@ static int test_bls_suite(void)
     }
     if (pass)
         ESP_LOGI(TAG, "suite input validation: OK");
+
+    vTaskDelay(2);
 
     /* Chunk-boundary coverage for the multi-miller batching: 10 proofs under
      * 10 distinct keys crosses the MILLER_CHUNK=8 boundary (one full chunk +
