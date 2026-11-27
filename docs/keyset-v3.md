@@ -38,7 +38,7 @@ idf.py -B /tmp/nucula-build -D IDF_TARGET=esp32c3 build
 
 Use a fresh output directory for each host run. The runners require Clang, OpenSSL and cJSON (default prefix `/opt/homebrew`; override with `--prefix`). The wallet runner additionally uses TinyCBOR from `managed_components`, provisioned by an ESP-IDF build, and mbedTLS from `IDF_PATH`.
 
-Coverage includes valid and malformed witnesses, quote/transaction binding, receiver keys, mint/send/receive/melt, private-data isolation, token round trips, JSON allocation failures, counter migration/overflow, lost responses, proof-save failures, invalid mint signatures and recovery across reload. Firmware flashing, Wi-Fi connection, restored storage and on-device crypto/protocol self-tests were checked on Nucula v2 Rev B. NFC payment timing, hardware power-cut testing and interoperability with a deployed PR #443 mint still require validation.
+Coverage includes valid and malformed witnesses, quote/transaction binding, receiver keys, mint/send/receive/melt, private-data isolation, token round trips, JSON allocation failures, counter migration/overflow, lost responses, proof-save failures, invalid mint signatures and recovery across reload. Firmware flashing, Wi-Fi connection, restored storage and on-device crypto/protocol self-tests were checked on Nucula v2 Rev B. The deployed FakeWallet v3 flows and reset recovery were validated as detailed below. NFC payment timing with a compatible v3 sender and physical power-cut testing still require validation.
 
 ## Rev B and Wi-Fi compatibility
 
@@ -49,3 +49,23 @@ Wi-Fi settings and the private USB setup protocol come from `perf/esp32c3-optimi
 The OLED driver and its failure tests were carried from the Rev B work in the original workspace. The console retains the v3 branch's 24 KB stack for BLS verification. Startup preserves unreadable NVS instead of erasing it.
 
 Rev B uses DIO flash mode. An application built for QIO must not be flashed over a DIO bootloader: runtime flash reads return invalid data and NVS can reinitialize pages. The defaults now explicitly select DIO for app-only updates.
+
+
+## Live Rev B validation (2026-11-27)
+
+Tested the production wallet on the physical ESP32-C3 Rev B against [the Nutroot FakeWallet mint](https://nutroot.fake.macadamia.cash), which advertises `cdk-mintd/0.18.0`, active v3 sat/USD keysets and zero input fees. Only a separate test-mint slot was used; the existing wallet's proofs, identity and Wi-Fi settings were compared byte for byte against a private NVS backup.
+
+| Check | Observed result |
+| --- | --- |
+| Locked quote, mint and repeated claim | Minted 64 test sat; repeated claim reported already issued |
+| Scoped V4 export and receive | Exported 64 test sat from the selected mint; received/swapped them back with valid nutroot witnesses and BLS signatures |
+| Melt and change | Paid 13 test sat plus a 1 sat fee; verified 50 sat change in three proofs and independently confirmed the mint's PAID quote |
+| Invalid input/replay | Rejected a modified signature locally and a spent-token replay at the mint; balance unchanged |
+| Payment failure | FakeWallet returned payment-failed error 20004; balance stayed at 50 test sat and no operation remained pending |
+| Lost melt response | Reset after submitting a 7 test sat payment and before its response; startup recovered automatically to 42 test sat, including the 1 sat fee |
+| Persistence | Both 32-key BLS keysets and change proofs survived reboot; original wallet data stayed unchanged |
+| Export selection | Invalid slot rejected; selected-mint export left the other mint untouched |
+
+The first live keyset load exposed unnecessary duplicate key maps retained during NVS serialization. Releasing those maps before saving fixes the memory peak; keyset serialization now fails completely on allocation failure instead of emitting partial keysets. The ASan/UBSan wallet suite includes allocation-failure coverage for a 32-key BLS keyset. `stickup [mint_idx]` allows isolated token-export testing without draining other mints.
+
+A USB-controlled hardware reset exercised lost-response recovery; this does not establish behavior under an actual brownout or power cut. End-to-end NFC payment with a v3-capable sender remains untested.

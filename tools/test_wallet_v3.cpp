@@ -193,6 +193,9 @@ int main() {
     mint_keyset.id=derive_keyset_id(mint_keyset);assert(mint_keyset.id=="022546ab0a2dee9f79510f4e20a4e3d9e894a97361047c594902573a7e64f9d701");
     assert(keyset_run_tests()&&cashu_json_run_tests()&&cashu_cbor_run_tests());
     receiver_test();
+    Keyset large_keyset=mint_keyset;large_keyset.final_expiry=1893456000;
+    for(unsigned i=0;i<32;i++)large_keyset.keys[uint64_t{1}<<i]=mint_keyset.keys.begin()->second;
+    allocation_test(large_keyset);
     unsigned char seed[64]={1};assert(Wallet::save_seed(seed,"test mnemonic"));
     Wallet wallet("https://mint.test",ctx,0);assert(wallet.load_keysets());
     uint64_t counter=0;assert(Wallet::load_counter(mint_keyset.id,counter)&&counter==0);

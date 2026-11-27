@@ -1,4 +1,5 @@
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
@@ -748,10 +749,20 @@ static void cmd_melt(const char *arg)
 static void cmd_stickup(const char *arg)
 {
     wallet_store_guard guard;
-    (void)arg;
+    int selected = -1;
+    if (arg && *arg) {
+        char *end;
+        long slot = strtol(arg, &end, 10);
+        if (end == arg || *end || slot < 0 || slot >= MAX_MINTS || !wallet_store_get(slot)) {
+            nucula_console_write("error: invalid mint index; usage: stickup [mint_idx]\r\n");
+            return;
+        }
+        selected = (int)slot;
+    }
 
     bool any = false;
     for (int i = 0; i < MAX_MINTS; i++) {
+        if (selected >= 0 && i != selected) continue;
         auto *w = wallet_store_get(i);
         if (!w || w->proofs().empty()) continue;
 
@@ -1113,7 +1124,7 @@ extern "C" void app_main(void)
     console_register_cmd("recover", cmd_recover, "recover interrupted mint/swap/melt requests");
     console_register_cmd("claim",   cmd_claim,    "claim <quote_id> [m=|w=]");
     console_register_cmd("melt",    cmd_melt,     "melt <request> [u=|m=|a=|w=]");
-    console_register_cmd("stickup", cmd_stickup,  "drain wallet into v4 tokens");
+    console_register_cmd("stickup", cmd_stickup,  "stickup [mint_idx] — export one mint or all mints as v4 tokens");
     console_register_cmd("seed",    cmd_seed,     "seed [show|generate|restore|wipe]");
     console_register_cmd("keypad",  cmd_keypad,   "keypad scan — probe PCF8574 wiring");
     console_register_cmd("reboot",  cmd_reboot,   "restart the device");

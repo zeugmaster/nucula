@@ -795,10 +795,13 @@ bool Wallet::load_keysets()
                  (int)k.keys.size(), k.input_fee_ppk);
     }
 
+    // Release the duplicate key maps before allocating their NVS JSON copies.
+    result.clear();
+
     // Each refresh used to rewrite every keyset blob (~16 KB of flash
     // writes) even when nothing changed — which is the common case.
-    if (changed)
-        save_keysets();
+    if (changed && !save_keysets())
+        return false;
     return true;
 }
 

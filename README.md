@@ -81,7 +81,7 @@ nucula> balance
 | `receive <token>` | Receive a cashuA or cashuB token |
 | `nfc request <amount>` | Start an NFC payment request |
 | `nfc stop` | Stop NFC |
-| `stickup` | Drain all funds as V4 tokens |
+| `stickup [mint_idx]` | Export one mint's funds as V4 tokens, or all mints when omitted |
 | `recover` | Recover interrupted mint, swap, or melt requests |
 | `seed [show\|generate\|restore\|wipe]` | Manage the BIP-39 wallet seed |
 | `keypad scan` | Probe PCF8574 keypad wiring |

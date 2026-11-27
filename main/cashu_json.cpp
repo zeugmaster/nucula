@@ -215,18 +215,21 @@ bool from_json(const cJSON* j, Proof& out) {
 
 cJSON* to_json(const Keyset& v) {
     cJSON* j = cJSON_CreateObject();
-    cJSON_AddStringToObject(j, "id", v.id.c_str());
-    cJSON_AddStringToObject(j, "unit", v.unit.c_str());
-    cJSON_AddBoolToObject(j, "active", v.active);
-    cJSON_AddNumberToObject(j, "input_fee_ppk", v.input_fee_ppk);
-    if (v.final_expiry)
-        cJSON_AddNumberToObject(j, "final_expiry", (double)*v.final_expiry);
-    cJSON* keys = cJSON_CreateObject();
+    if (!j || !cJSON_AddStringToObject(j, "id", v.id.c_str()) ||
+        !cJSON_AddStringToObject(j, "unit", v.unit.c_str()) ||
+        !cJSON_AddBoolToObject(j, "active", v.active) ||
+        !cJSON_AddNumberToObject(j, "input_fee_ppk", v.input_fee_ppk) ||
+        (v.final_expiry && !cJSON_AddNumberToObject(j, "final_expiry", (double)*v.final_expiry))) {
+        cJSON_Delete(j); return nullptr;
+    }
+    cJSON* keys = cJSON_AddObjectToObject(j, "keys");
+    if (!keys) { cJSON_Delete(j); return nullptr; }
     for (const auto& [amount, pubkey] : v.keys) {
         std::string key = std::to_string(amount);
-        cJSON_AddStringToObject(keys, key.c_str(), pubkey.c_str());
+        if (!cJSON_AddStringToObject(keys, key.c_str(), pubkey.c_str())) {
+            cJSON_Delete(j); return nullptr;
+        }
     }
-    cJSON_AddItemToObject(j, "keys", keys);
     return j;
 }
 
